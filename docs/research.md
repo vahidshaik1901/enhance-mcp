@@ -227,3 +227,14 @@ the OpenAPI spec and the WHMCS module (which bundles a generated PHP client). Pr
 Decision: generate TypeScript types with `openapi-typescript` and use `openapi-fetch` for
 the typed client, with a preprocessing step that patches `type: int` and vendors the spec
 at a pinned version. Add a CI job that diffs the upstream spec and fails on drift.
+
+## Preflight endpoints verified live (2026-09-04)
+
+| Endpoint | Result on the test panel |
+|---|---|
+| `GET /branding?orgId=` | `nameServers: ns1..ns4.stableserver.net`, `stagingDomain: sgp1.mystaging.site`, `controlPanelDomain`, `phpMyAdminDomain`. This is where "the nameservers given by the server" come from |
+| `POST /orgs/{org}/domains/check` | `vahi.dev` -> `inUseCurrentOrg` + websiteId; `mcp-e2e-x1.test` -> `notInUse`; `example-not-mine.com` -> `notInUse` |
+| `GET /orgs/{org}/domains/{id}/auth-ns` | vahi.dev: Cloudflare nameservers, `ips: []`, `matchesPlatform: true` (semantics unclear; do not rely on it alone) |
+| `GET …/dns-status` | vahi.dev: `ForeignServer` (behind Cloudflare). Valid state, not an error |
+| `GET /v2/domains/{id}/ssl` | vahi.dev: self-signed placeholder, issuer `vahi.dev`, issued 1975-01-01, expires 4096-01-01, sans include www. Must be detected as "no real certificate" |
+| `GET …/server_domains` | all arrays empty on this panel |

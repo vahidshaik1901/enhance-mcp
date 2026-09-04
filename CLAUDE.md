@@ -43,9 +43,13 @@ Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`. After approval,
 
 ### Remaining before code
 
-- User reviews the spec. Then `superpowers:writing-plans` for milestone A (client,
-  server skeleton, gate, account/website/domain/ssh tools, connect + deploy skills,
-  tests, plugin packaging), then implement with TDD against the live panel.
+- User reviews the spec. Then `superpowers:writing-plans` for milestone A, then implement
+  with TDD against the live panel.
+- Milestone ladder (each ends with a live test pass that feeds changes back):
+  A static site + preflight (domain check, DNS, SSL, SSH), B PHP + databases,
+  C Node.js + persistent apps, D advanced (WordPress, email, backups, DNS zone,
+  staging) + deploy modes B (GitHub Actions) and C (git push to server).
+- Deploy modes: A direct rsync (implemented first); B and C documented, built in D.
 
 ## Live test panel (verified 2026-09-04, read-only probes)
 

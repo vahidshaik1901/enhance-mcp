@@ -1,7 +1,8 @@
 # Enhance MCP + Skills: Design Specification
 
 **Date:** 2026-09-04
-**Status:** Approved in brainstorming; awaiting final spec review
+**Status:** Approved in brainstorming; revised with the fresh-hosting flow and the
+milestone ladder; awaiting final spec review
 **Scope of this spec:** v1 (customer tier), all three milestones. v2 (reseller) and v3
 (platform) are designed for, not designed here.
 
@@ -17,8 +18,11 @@ hosting provider.
 
 ### Goals
 
-1. A customer connects once, then asks Claude Code to "deploy this to vahi.dev" and it
-   happens, safely, with the customer seeing every step.
+1. A customer with fresh hosting connects once, then asks Claude Code to "put this site
+   live on vahi.dev" and it happens, safely, with the customer seeing every step:
+   site exists or is created, DNS is checked and the customer is told exactly what to
+   set, SSL is checked and issued, SSH is prepared, files are deployed, the result is
+   verified.
 2. Every read in the customer tier of the Enhance API is available as a tool.
 3. Every write is explicit about what it touched.
 4. Every destructive action requires a confirmation the model cannot fake, or when the
@@ -291,82 +295,115 @@ panel's own server-side log for cross-checking.
 Risk: R read, W write, D destructive (gated). Names are final unless the plan finds a
 conflict.
 
-### Milestone A: foundation and the core story
+### Milestone ladder
+
+Milestones follow the test ladder the product must pass: a static site, then PHP, then
+Node.js, then everything else. Each milestone ends with a live test pass on the test
+panel, and every finding from that pass is folded back into the tools, the skills, and
+this spec before the next milestone starts.
+
+### Milestone A: foundation, preflight, static site
 
 | Tool | Risk | Endpoint(s) |
 |---|---|---|
 | `auth_status` | R | `/login`, `/login/memberships`, `/orgs/{org}/access_tokens`, `/version` |
-| `subscriptions_list` | R | `/orgs/{org}/subscriptions` |
+| `subscriptions_list` | R | `/orgs/{org}/subscriptions` (quotas, allowances, allowed apps) |
 | `activity_log` | R | `/v2/orgs/{org}/activities` |
+| `platform_info` | R | `/branding?orgId=` (platform nameservers, staging domain, phpMyAdmin host) |
+| `domain_check` | R | `POST /orgs/{org}/domains/check` (`notInUse`, `inUseCurrentOrg`+websiteId, `inUseAnotherOrg`, `inUseDeletedSite`, `prohibited`) |
 | `websites_list` | R | `/orgs/{org}/websites` |
-| `website_get` | R | `/orgs/{org}/websites/{id}` (+ `canUse`, `unixUser`, IPs) |
+| `website_get` | R | `/orgs/{org}/websites/{id}` (`canUse`, `unixUser`, IPs, php, status) |
 | `website_create` | W | `POST /orgs/{org}/websites` |
 | `website_set_php_version` | W | `PATCH /orgs/{org}/websites/{id}` |
 | `website_restart_php` | W | `POST /v2/websites/{id}/restart_php` |
+| `website_preview_domain` | W | `POST …/preview` (returns existing if present) |
 | `website_delete` | D | `DELETE /orgs/{org}/websites/{id}` (soft only) |
-| `domains_list` | R | `/orgs/{org}/websites/{id}/domains?withSsl=true` |
+| `domains_list` | R | `…/domains?withSsl=true` |
 | `domain_add` | W | `POST …/domains` (addon, alias, subdomain) |
 | `domain_set_primary` | W | `PUT …/domains/primary` |
 | `domain_remove` | D | `DELETE …/domains/{domain_id}` |
-| `domain_dns_status` | R | `…/domains/{domain_id}/dns-status`, `/dns-query` |
-| `domain_ssl_get` | R | `/v2/domains/{domain_id}/ssl` |
-| `domain_ssl_issue_letsencrypt` | W | `/v2/domains/{id}/letsencrypt_preflight` then `/letsencrypt` |
+| `domain_dns_status` | R | `…/dns-status` (`Resolved`, `ForeignServer`, `Failed`, `Mixed`) plus `/orgs/{org}/domains/{id}/auth-ns` (current nameservers, `matchesPlatform`) plus the A-record target from `serverIps` |
+| `domain_dns_query` | R | `…/dns-query` (full delegation walk, for debugging) |
+| `domain_ssl_get` | R | `/v2/domains/{id}/ssl`; flags the self-signed placeholder (issuer equals cn, or issued 1975) as "no real certificate" |
+| `domain_ssl_issue` | W | `/v2/domains/{id}/letsencrypt_preflight` then `/letsencrypt`; returns the preflight error verbatim if `canIssue` is false |
 | `domain_set_force_ssl` | W | `PUT /v2/domains/{id}/ssl/force_ssl` |
-| `ssh_connection_info` | R | derived from `website_get`: `ssh -p 22 <unixUser>@<ip>`, home, docroot |
+| `ssh_connection_info` | R | derived: `ssh -p 22 <unixUser>@<ip>`, home, docroot, rsync example |
 | `ssh_keys_list` | R | `…/ssh/keys` |
-| `ssh_key_add` | W | `POST …/ssh/keys` (idempotent: skips if the same key exists) |
+| `ssh_key_add` | W | `POST …/ssh/keys` (idempotent on identical key) |
 | `ssh_key_remove` | D | `DELETE …/ssh/keys/{key_id}` |
 | `confirm_action` | – | gate fallback |
 
-Also in A: `enhance-mcp doctor` CLI, the `enhance-connect` and `enhance-deploy` skills,
-unit and e2e test harnesses, plugin manifest, CI.
+Also in A: `enhance-mcp doctor`, the `enhance-connect` and `enhance-deploy` skills (deploy
+mode A only), unit, MCP, and e2e harnesses, plugin manifest, CI.
 
-### Milestone B: data and mail
+**Live test A:** on the test panel, with a plain HTML/CSS/JS site: preflight a new
+domain, create the site, read the DNS instructions, issue SSL on the preview domain,
+prepare SSH, deploy, verify over HTTP, then delete through the gate.
+
+### Milestone B: PHP and databases
+
+PHP: `php_extensions_get`, `php_extension_enable`, `php_extension_disable`,
+`php_ini_get`, `php_ini_set`, `php_error_log`, `redis_get`, `redis_set`, `cache_clear`,
+`htaccess_rewrites_get`, `htaccess_rewrites_update`, `ip_rules_get`, `ip_rules_set`.
 
 MySQL: `db_list`, `db_create`, `db_delete` (D), `db_users_list`, `db_user_create`,
 `db_user_update`, `db_user_delete` (D), `db_user_set_privileges`,
-`db_user_access_hosts_set`, `db_phpmyadmin_url`, `db_export_sql`, `db_import_sql` (D,
-executes SQL against a live database).
+`db_user_access_hosts_set`, `db_phpmyadmin_url`, `db_export_sql`, `db_import_sql` (D).
 
 PostgreSQL: `pg_db_list`, `pg_db_create`, `pg_db_delete` (D), `pg_users_list`,
 `pg_user_create`, `pg_user_update`, `pg_user_delete` (D), `pg_user_grant`,
 `pg_user_revoke` (D).
 
+Cron: `cron_get`, `cron_update`, `cron_delete` (D).
+
+`enhance-database` skill.
+
+**Live test B:** a plain PHP site with a MySQL table, then a Laravel app deployed with
+`composer install` over SSH, migrations run, `.env` written from tool output.
+
+### Milestone C: Node.js
+
+Node: `node_install`, `node_versions_available`, `node_versions_installed`,
+`node_version_install`, `node_version_set_default`.
+Persistent apps: `persistent_apps_list`, `persistent_app_create`,
+`persistent_app_update`, `persistent_app_delete` (D), `persistent_app_log`.
+
+`enhance-deploy` gains the Node path: install Node, rsync, `npm ci` over SSH, create or
+update the persistent app with its proxy port, tail the log, verify.
+
+**Live test C:** an Express app, then a Next.js app, each reachable on the domain
+through the web server proxy and surviving a restart.
+
+### Milestone D: advanced and the other deploy modes
+
 Email: `emails_list`, `email_get`, `email_create`, `email_update`, `email_delete` (D),
 `email_forwarders_set`, `email_autoresponder_get`, `email_autoresponder_set`,
 `email_autoresponder_delete` (D), `email_client_config`, `email_auth_get`,
-`email_auth_set`, `email_auth_validate`, `email_local_remote_get`,
-`email_local_remote_set`.
+`email_auth_set`, `email_auth_validate`, `email_local_remote_get`, `email_local_remote_set`.
 
 Backups: `backups_list`, `backup_get`, `backup_create`, `backup_status`,
 `backup_restore` (D), `backup_restore_status`, `backup_delete` (D),
 `backups_disabled_get`, `backups_disabled_set`.
 
-DNS: `dns_zone_get`, `dns_zone_update_soa`, `dns_record_create`, `dns_record_update`,
+DNS zone: `dns_zone_get`, `dns_zone_update_soa`, `dns_record_create`, `dns_record_update`,
 `dns_record_delete` (D), `dnssec_enable`, `dnssec_disable` (D).
 
-### Milestone C: apps, PHP, staging
+Apps and WordPress: `apps_list`, `apps_installable`, `app_install`, `app_delete` (D),
+`wp_installations`, `wp_info`, `wp_settings_get`, `wp_settings_update`, `wp_plugins_list`,
+`wp_plugin_install`, `wp_plugin_update`, `wp_plugin_delete` (D), `wp_themes_list`,
+`wp_theme_install`, `wp_theme_activate`, `wp_theme_update`, `wp_theme_delete` (D),
+`wp_users_list`, `wp_user_create`, `wp_user_update`, `wp_user_delete` (D),
+`wp_user_sso_url`, `wp_version_get`, `wp_version_update`, `wp_maintenance_get`,
+`wp_maintenance_set`, `wp_config_get`, `wp_config_set`, `wp_siteurl_get`, `wp_siteurl_set`.
 
-Apps: `apps_list`, `apps_installable`, `app_install`, `app_delete` (D).
-Node: `node_install`, `node_versions_available`, `node_versions_installed`,
-`node_version_install`, `node_version_set_default`.
-Persistent apps: `persistent_apps_list`, `persistent_app_create`,
-`persistent_app_update`, `persistent_app_delete` (D), `persistent_app_log`.
-WordPress: `wp_installations`, `wp_info`, `wp_settings_get`, `wp_settings_update`,
-`wp_plugins_list`, `wp_plugin_install`, `wp_plugin_update`, `wp_plugin_delete` (D),
-`wp_themes_list`, `wp_theme_install`, `wp_theme_activate`, `wp_theme_update`,
-`wp_theme_delete` (D), `wp_users_list`, `wp_user_create`, `wp_user_update`,
-`wp_user_delete` (D), `wp_user_sso_url`, `wp_version_get`, `wp_version_update`,
-`wp_maintenance_get`, `wp_maintenance_set`, `wp_config_get`, `wp_config_set`,
-`wp_siteurl_get`, `wp_siteurl_set`.
-PHP: `php_extensions_get`, `php_extension_enable`, `php_extension_disable`,
-`php_ini_get`, `php_ini_set`, `php_error_log`, `redis_get`, `redis_set`,
-`cache_clear`, `htaccess_rewrites_get`, `htaccess_rewrites_update`, `ip_rules_get`,
-`ip_rules_set`.
-Cron: `cron_get`, `cron_update`, `cron_delete` (D).
-Staging: `staging_create`, `clone_start`, `clone_status`, `clone_log`, `push_live` (D,
-overwrites the live site).
+Staging: `staging_create`, `clone_start`, `clone_status`, `clone_log`, `push_live` (D).
 Metrics: `website_metrics`, `subscription_bandwidth`.
+
+Skills: `enhance-wordpress`, `enhance-staging`, and deploy modes B (GitHub auto-deploy)
+and C (git push to server) added to `enhance-deploy`.
+
+**Live test D:** WordPress install and plugin management, a backup and restore cycle,
+staging clone and push live, and one deploy each through modes B and C.
 
 Around 100 tools in total. Claude Code loads MCP tool schemas lazily, so the count is
 not a context cost; descriptions are written to be searchable.
@@ -393,26 +430,50 @@ state the sandbox rule for SSH.
 
 ### `enhance-deploy`
 
-Triggers: "deploy", "push to my site", "publish to <domain>".
-Steps:
-1. Resolve the site with `website_get`; read `canUse`, `phpVersion`, `documentRoot`.
-2. Detect project type: static, PHP, Laravel, WordPress theme or plugin, Node.
-3. Build locally if needed; never build on the server for PHP, optionally for Node.
-4. `ssh_keys_list`; if the local public key is absent, `ssh_key_add`.
-5. `ssh_connection_info`; run `rsync --dry-run` first and show the summary.
-6. Run the real rsync into the docroot or a named subdirectory, never into the home dir
-   root. `--delete` only when the user asked for it explicitly.
-7. Remote steps over the same SSH: composer install, migrations, `wp cache flush`.
-8. `website_restart_php` and `cache_clear` when relevant.
-9. Verify with an HTTP request to the preview domain or primary domain.
-10. Sandbox rule: rsync and ssh must run with the Claude Code sandbox disabled for that
-    command or with the app server host allowlisted. Say so before running.
-For Node: `node_install` if absent, then `persistent_app_create` or update, then read
-`persistent_app_log`.
+Triggers: "deploy", "publish", "put this live on <domain>", "push to my site".
+
+Three deploy modes are offered to the customer. Only mode A is implemented in milestone
+A; B and C are documented as "coming" until milestone D.
+
+| Mode | Flow | Implemented |
+|---|---|---|
+| A. Direct | Local Claude Code, rsync over SSH to the site | Milestone A |
+| B. GitHub auto-deploy | Push to GitHub, Actions rsyncs to the site on every push; deploy key only, never a panel token | Milestone D |
+| C. Git push to server | Bare repo plus post-receive hook in the container, `git push enhance main` | Milestone D |
+
+**Fresh-hosting flow (mode A):**
+
+1. **Domain.** `domain_check`. `inUseCurrentOrg` means use that site. `notInUse` means
+   offer `website_create` on a subscription with free `websites` quota. `inUseAnotherOrg`
+   or `prohibited` means stop and explain. `inUseDeletedSite` means explain that a
+   deleted site holds the domain and the panel can restore it.
+2. **Site.** `website_get`. Read `canUse`, `phpVersion`, `documentRoot`, `serverIps`,
+   preview domain.
+3. **DNS.** `domain_dns_status`. Present one of two instructions, taken from
+   `platform_info` and `website_get`: point the registrar at the platform nameservers,
+   or keep existing DNS and set an A record to the app server IP. `ForeignServer`
+   with a CDN in front is a valid state; say so and continue. Never modify the
+   customer's registrar.
+4. **SSL.** `domain_ssl_get`. If placeholder or expiring, `domain_ssl_issue`. If the
+   preflight says the domain is not yet reachable, defer SSL until DNS propagates and
+   continue on the preview domain.
+5. **SSH.** `ssh_keys_list`; add the local public key with `ssh_key_add` if absent;
+   `ssh_connection_info`.
+6. **Build.** Detect project type: static, PHP, Laravel, WordPress theme or plugin,
+   Node. Build locally. Never build PHP on the server.
+7. **Deploy.** `rsync --dry-run` first, show the summary. Then rsync into the docroot
+   or a named subdirectory, never the home dir root. `--delete` only on explicit
+   request.
+8. **Post-deploy.** Over SSH: `composer install --no-dev`, migrations, `wp cache flush`
+   as applicable. `website_restart_php` and `cache_clear` when relevant.
+9. **Verify.** HTTP request to the preview domain, then the primary domain when DNS
+   resolves. Report the URLs.
+10. **Sandbox rule.** rsync and ssh must run with the Claude Code sandbox disabled for
+    that command or with the app server host allowlisted. State this before running.
 
 ### `enhance-database`, `enhance-staging`, `enhance-wordpress`
 
-Written with their milestones. Each follows the same shape: triggers, preconditions from
+Written with milestones B and D. Each follows the same shape: triggers, preconditions from
 `canUse`, ordered steps naming tools, verification, and rollback notes.
 
 ## 8. Testing
@@ -462,6 +523,8 @@ confirmation.
 3. `npm` name `enhance-mcp` is available; fallback `@enhance-mcp/server`.
 4. The `ssh` field on the website detail has a meaning worth surfacing; until known,
    it is reported as-is and not interpreted.
-5. The panel accepts a throwaway domain such as `mcp-e2e-<rand>.test` for the e2e
+5. Verified live: `domain_check` returns `notInUse` for `mcp-e2e-x1.test`, so a
+   throwaway `.test` domain is accepted by the check. Website creation with it is still
+   to be verified. The panel accepts a throwaway domain such as `mcp-e2e-<rand>.test` for the e2e
    site; if the platform's prohibited-domains list rejects it, use a subdomain of a
    domain the user controls, supplied as `ENHANCE_E2E_DOMAIN`.
