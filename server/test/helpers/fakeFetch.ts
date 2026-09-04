@@ -25,7 +25,9 @@ export function fakeFetch(routes: Route[]): FakeFetch {
     const req = new Request(input, init);
     const url = new URL(req.url);
     const path = url.pathname.replace(/^\/api/, '');
-    const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.text();
+    // Read the body off a clone so a route's own `handler` (e.g. one that calls req.json())
+    // still finds an unconsumed stream on `req` itself.
+    const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.clone().text();
     calls.push({ method: req.method, path: path + url.search, headers: req.headers, body });
     const route = routes.find((r) => r.method.toUpperCase() === req.method && (typeof r.path === 'string' ? r.path === path : r.path.test(path)));
     if (!route) {
