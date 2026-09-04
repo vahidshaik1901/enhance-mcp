@@ -12,7 +12,9 @@ function cell(v: unknown): string {
   if (v === undefined || v === null || v === '') return '-';
   if (Array.isArray(v)) return v.map(cell).join(', ');
   if (typeof v === 'object') return JSON.stringify(v);
-  return String(v);
+  // Collapse control characters (newlines, tabs, etc.) so panel-supplied strings can't forge
+  // extra output lines (e.g. a fake "warnings:" section) inside a table cell or kv value.
+  return String(v).replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim();
 }
 
 export function kv(pairs: Array<[string, unknown]>): string {

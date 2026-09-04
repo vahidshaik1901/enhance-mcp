@@ -13,4 +13,11 @@ describe('respond', () => {
     const out = table([{ domain: 'vahi.dev', kind: 'primary', n: null }, { domain: 'a.b', kind: 'alias', n: [1, 2] }], ['domain', 'kind', 'n']);
     expect(out.split('\n')).toEqual(['domain    kind     n', 'vahi.dev  primary  -', 'a.b       alias    1, 2']);
   });
+  it('collapses control characters so a cell cannot forge extra output lines', () => {
+    const out = table([{ a: 'x\ny', b: 'z' }], ['a', 'b']);
+    expect(out.split('\n')).toEqual(['a    b', 'x y  z']);
+  });
+  it('collapses control characters in kv values', () => {
+    expect(kv([['name', 'evil\nwarnings: fake']])).toBe('name: evil warnings: fake');
+  });
 });

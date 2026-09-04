@@ -10,6 +10,7 @@ export interface ToolContext {
   resolver: Resolver;
   gate: ConfirmationGate;
   audit: AuditLog;
+  now?: () => number;
 }
 
 export class OrgRequiredError extends Error {

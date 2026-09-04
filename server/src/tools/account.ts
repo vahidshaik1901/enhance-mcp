@@ -18,24 +18,36 @@ export const authStatus = defineTool({
     const version = await client.call('GET', '/version', () => client.api.GET('/version'));
     const login = await client.call('GET', '/login', () => client.api.GET('/login'));
     const warnings: string[] = [];
-    let credential = 'panel session credential (browser session; ends on logout or timeout; create an access token under Settings > Access Tokens for anything long-lived)';
+    let credential: string;
     let token: Record<string, unknown> | undefined;
-    if (client.authMode === 'bearer' && client.orgId) {
+    if (client.authMode === 'cookie') {
+      credential = 'panel session credential (browser session; ends on logout or timeout; create an access token under Settings > Access Tokens for anything long-lived)';
+      warnings.push('Using a panel session credential. It can stop working at any time; prefer an access token.');
+    } else if (client.orgId) {
       const org = client.orgId;
       const tokens = await client.call('GET', '/orgs/{org_id}/access_tokens', () => client.api.GET('/orgs/{org_id}/access_tokens', { params: { path: { org_id: org } } }));
-      const mine = tokens.find((t) => config.token.startsWith(t.firstFive));
-      if (mine) {
+      const matches = tokens.filter((t) => config.token.startsWith(t.firstFive));
+      if (matches.length === 1) {
+        const mine = matches[0]!;
         token = { id: mine.id, friendlyName: mine.friendlyName, roles: mine.roles, tokenExpires: mine.tokenExpires ?? null, ipRestricted: mine.ipRestricted ?? false };
         credential = `Bearer access token "${mine.friendlyName ?? '(unnamed)'}" · roles: ${mine.roles.join(', ')} · expires: ${mine.tokenExpires ?? 'never'}`;
         if (mine.tokenExpires) {
-          const left = new Date(mine.tokenExpires).getTime() - Date.now();
-          if (left < 7 * DAY_MS) warnings.push(left < 0 ? 'The access token has expired.' : `The access token expires in ${Math.ceil(left / DAY_MS)} day(s). Create a new one soon.`);
+          const now = ctx.now?.() ?? Date.now();
+          const expMs = new Date(mine.tokenExpires).getTime();
+          if (!Number.isFinite(expMs)) {
+            warnings.push(`Could not parse the access token expiry "${mine.tokenExpires}".`);
+          } else {
+            const left = expMs - now;
+            if (left < 7 * DAY_MS) warnings.push(left < 0 ? 'The access token has expired.' : `The access token expires in ${Math.ceil(left / DAY_MS)} day(s). Create a new one soon.`);
+          }
         }
+      } else if (matches.length > 1) {
+        credential = `Bearer access token (${matches.length} tokens in this org share this prefix; cannot tell which is in use)`;
       } else {
         credential = 'Bearer access token (not listed in this org; it may belong to a parent org)';
       }
-    } else if (client.authMode === 'cookie') {
-      warnings.push('Using a panel session credential. It can stop working at any time; prefer an access token.');
+    } else {
+      credential = 'Bearer access token (org not selected; token details unavailable until ENHANCE_ORG_ID is set)';
     }
     const orgLine = client.orgId ? identityBlock({ name: client.orgName, id: client.orgId }) : `org: none selected (${client.memberships.length} memberships; set ENHANCE_ORG_ID)`;
     const text = [
@@ -58,7 +70,8 @@ export const authStatus = defineTool({
 });
 
 function quota(total: number | null | undefined, usage: number | undefined): string {
-  return `${usage ?? 0}/${total === null || total === undefined ? 'unlimited' : total}`;
+  if (total === undefined) return 'not included';
+  return `${usage ?? 0}/${total === null ? 'unlimited' : total}`;
 }
 
 export const subscriptionsList = defineTool({
@@ -100,11 +113,18 @@ export const subscriptionsList = defineTool({
   },
 });
 
+type ActivityEntity = { type?: string; content?: { id?: string; detail?: { ok?: { domain?: string; name?: string; email?: string } } } };
+
+function entitySummary(entity: ActivityEntity | undefined): string {
+  if (!entity?.type) return '-';
+  const detail = entity.content?.detail?.ok;
+  return `${entity.type} ${detail?.domain ?? detail?.name ?? detail?.email ?? entity.content?.id ?? ''}`.trim();
+}
+
 function describeActivity(a: { kind: string; createdAt: string; activityObject?: unknown; context?: unknown; message?: string | null }): Record<string, unknown> {
-  const obj = a.activityObject as { type?: string; content?: { id?: string; detail?: { ok?: { domain?: string; name?: string; email?: string } } } } | undefined;
+  const obj = a.activityObject as (ActivityEntity & { type?: string; from?: ActivityEntity; to?: ActivityEntity }) | undefined;
   const actor = (a.context as { actor?: { type?: string; content?: { detail?: { ok?: { name?: string; email?: string; friendlyName?: string } } } } } | undefined)?.actor;
-  const detail = obj?.content?.detail?.ok;
-  const object = obj?.type ? `${obj.type} ${detail?.domain ?? detail?.name ?? detail?.email ?? obj.content?.id ?? ''}`.trim() : '-';
+  const object = obj?.type === 'fromTo' ? `${entitySummary(obj.from)} -> ${entitySummary(obj.to)}` : entitySummary(obj);
   const who = actor?.content?.detail?.ok;
   return { at: a.createdAt, kind: a.kind, object, actor: who ? `${who.name ?? who.friendlyName ?? ''}${who.email ? ` <${who.email}>` : ''}`.trim() : actor?.type ?? '-', message: a.message ?? '' };
 }
@@ -123,14 +143,12 @@ export const activityLog = defineTool({
   async handler(args, ctx) {
     const { client } = ctx;
     const org = requireOrg(client);
-    // `??` fallbacks here (not just the zod `.default()`) because this handler can be invoked
-    // directly with a partial args object that bypassed schema parsing (see the test helper).
     const res = await client.call('GET', '/v2/orgs/{org_id}/activities', () =>
-      client.api.GET('/v2/orgs/{org_id}/activities', { params: { path: { org_id: org }, query: { limit: args.limit ?? 20, offset: args.offset ?? 0, entityKind: args.entity_kind, search: args.search } } }),
+      client.api.GET('/v2/orgs/{org_id}/activities', { params: { path: { org_id: org }, query: { limit: args.limit, offset: args.offset, entityKind: args.entity_kind, search: args.search } } }),
     );
     const rows = res.items.map(describeActivity);
-    const offset = args.offset ?? 0;
-    return ok([identityBlock({ name: client.orgName, id: org }), `activities ${offset + 1}-${offset + rows.length} of ${res.total}:`, table(rows, ['at', 'kind', 'object', 'actor', 'message'])].join('\n'), { total: res.total, items: rows });
+    const header = rows.length === 0 ? `no activities (total ${res.total})` : `activities ${args.offset + 1}-${args.offset + rows.length} of ${res.total}:`;
+    return ok([identityBlock({ name: client.orgName, id: org }), header, table(rows, ['at', 'kind', 'object', 'actor', 'message'])].join('\n'), { total: res.total, items: rows });
   },
 });
 
@@ -144,24 +162,28 @@ export const platformInfo = defineTool({
     const { client } = ctx;
     const b = await client.call('GET', '/branding', () => client.api.GET('/branding', { params: { query: { orgId: client.orgId } } }));
     const stagingDomain = b.stagingDomain ?? null;
-    const text = kv([
-      ['platform nameservers', b.nameServers ?? []],
-      ['preview domains', stagingDomain ? `available (*.${stagingDomain})` : 'not configured by the provider; verify deploys with curl --resolve against the app server IP'],
-      ['control panel', b.controlPanelDomain],
-      ['phpMyAdmin', b.phpMyAdminDomain],
-      ['webmail', b.roundcubeDomain],
-    ]);
+    const orgLine = client.orgId ? identityBlock({ name: client.orgName, id: client.orgId }) : 'org: none selected';
+    const text = [
+      orgLine,
+      kv([
+        ['platform nameservers', b.nameServers ?? []],
+        ['preview domains', stagingDomain ? `available (*.${stagingDomain})` : 'not configured by the provider; verify deploys with curl --resolve against the app server IP'],
+        ['control panel', b.controlPanelDomain],
+        ['phpMyAdmin', b.phpMyAdminDomain],
+        ['webmail', b.roundcubeDomain],
+      ]),
+    ].join('\n');
     return ok(text, { nameServers: b.nameServers ?? [], stagingDomain, previewDomainsAvailable: Boolean(stagingDomain), controlPanelDomain: b.controlPanelDomain ?? null, phpMyAdminDomain: b.phpMyAdminDomain ?? null, roundcubeDomain: b.roundcubeDomain ?? null });
   },
 });
 
-const CHECK_TEXT: Record<string, string> = {
-  notInUse: 'The domain is free on this platform and can be created here with website_create.',
-  inUseCurrentOrg: 'There is already a website in this org for this domain. Use it instead of creating a new one.',
-  inUseAnotherOrg: 'The domain is in use by another org on this platform. It cannot be created here; contact the hosting provider if you own it.',
-  inUseDeletedSite: 'A deleted website still holds this domain. The provider can restore that site; a new one cannot be created until it is purged.',
-  prohibited: 'The platform prohibits this domain (reserved or blocked). Choose another.',
-};
+const CHECK_TEXT = new Map<string, string>([
+  ['notInUse', 'The domain is free on this platform and can be created here with website_create.'],
+  ['inUseCurrentOrg', 'There is already a website in this org for this domain. Use it instead of creating a new one.'],
+  ['inUseAnotherOrg', 'The domain is in use by another org on this platform. It cannot be created here; contact the hosting provider if you own it.'],
+  ['inUseDeletedSite', 'A deleted website still holds this domain. The provider can restore that site; a new one cannot be created until it is purged.'],
+  ['prohibited', 'The platform prohibits this domain (reserved or blocked). Choose another.'],
+]);
 
 export const domainCheck = defineTool({
   name: 'domain_check',
@@ -173,7 +195,7 @@ export const domainCheck = defineTool({
     const { client } = ctx;
     const org = requireOrg(client);
     const res = await client.call('POST', '/orgs/{org_id}/domains/check', () => client.api.POST('/orgs/{org_id}/domains/check', { params: { path: { org_id: org } }, body: { domain } }));
-    const text = [identityBlock({ name: client.orgName, id: org }), `domain: ${domain}`, `status: ${res.status}`, CHECK_TEXT[res.status] ?? 'Unknown status.', res.websiteId ? `website id: ${res.websiteId}` : undefined].filter(Boolean).join('\n');
+    const text = [identityBlock({ name: client.orgName, id: org }), `domain: ${domain}`, `status: ${res.status}`, CHECK_TEXT.get(res.status) ?? 'Unknown status.', res.websiteId ? `website id: ${res.websiteId}` : undefined].filter(Boolean).join('\n');
     return ok(text, { domain, status: res.status, websiteId: res.websiteId ?? null });
   },
 });
