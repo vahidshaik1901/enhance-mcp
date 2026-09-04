@@ -59,12 +59,13 @@ export class Resolver {
     const org = requireOrg(this.client);
     const limit = 100;
     const items: Website[] = [];
-    for (let offset = 0; ; offset += limit) {
+    for (let offset = 0; ; ) {
       const page = await this.client.call('GET', '/orgs/{org_id}/websites', () =>
         this.client.api.GET('/orgs/{org_id}/websites', { params: { path: { org_id: org }, query: { showAliases: true, limit, offset } } }),
       );
       items.push(...page.items);
-      if (page.items.length < limit || items.length >= page.total) break;
+      if (page.items.length === 0 || items.length >= page.total) break;
+      offset += page.items.length;
     }
     this.cache = { at: this.now(), items };
     return items;
