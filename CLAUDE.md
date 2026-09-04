@@ -8,9 +8,16 @@ delete a site by accident.
 
 ## Current status (2026-09-04)
 
-**Phase: design approved, spec written, awaiting the user's final spec review.**
-Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`. After approval, invoke
-`superpowers:writing-plans` for milestone A, then implement. No code exists yet.
+**Phase: spec approved; milestone A implementation plan written; implementation next.**
+Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
+Plan: `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD).
+Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
+No code exists yet. Key library facts: MCP TypeScript SDK is v2 (`@modelcontextprotocol/server`
+2.0.0, `serveStdio`, `registerTool`, form elicitation via `ctx.mcpReq.elicitInput`), zod 4
+(`zod/v4`), openapi-fetch 0.17, openapi-typescript 7.13, npm name `enhance-mcp` is free.
+Claude Code supports MCP elicitation (>= 2.1.76); `outputSchema` has known issues so tools
+return `structuredContent` without declaring one; the Bash sandbox can never carry SSH
+(use `sandbox.excludedCommands` or run unsandboxed).
 
 ### Decisions made
 
