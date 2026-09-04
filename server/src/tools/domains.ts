@@ -1,7 +1,6 @@
 import * as z from 'zod/v4';
 import type { components } from '../client/generated/types.js';
-import type { ToolContext } from '../core/context.js';
-import { requireOrg } from '../core/context.js';
+import { requireOrg, type ToolContext } from '../core/context.js';
 import { identityBlock, previewDomain } from '../core/identity.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
@@ -120,9 +119,9 @@ export const domainSetPrimary = defineTool({
       ctx.client.api.PUT('/orgs/{org_id}/websites/{website_id}/domains/primary', { params: { path: { org_id: org, website_id: w.id } }, body: { domainId: d.domainId } }),
     );
     ctx.resolver.invalidate();
-    // Render the domain as it now stands (primary), per convention 13, rather than the pre-write mapping.
-    const updated: DomainMapping = { ...d, mappingKind: 'primary' };
-    return ok(`${identityBlock({ name: ctx.client.orgName, id: org }, w, updated)}\n${safe(d.domain)} is now the primary domain.`, { website: w.id, primaryDomainId: d.domainId, domain: d.domain });
+    // Render the identity with the updated website (new primary) and mapping (now primary), per convention 13.
+    const updatedMapping: DomainMapping = { ...d, mappingKind: 'primary' };
+    return ok(`${identityBlock({ name: ctx.client.orgName, id: org }, { ...w, domain: { ...w.domain, domain: d.domain, id: d.domainId } }, updatedMapping)}\n${safe(d.domain)} is now the primary domain.`, { website: w.id, primaryDomainId: d.domainId, domain: d.domain });
   },
 });
 
@@ -144,7 +143,8 @@ export const domainRemove = defineTool({
     return `This will remove the ${safe(d.mappingKind)} domain ${safe(target.name)} (${target.id}) from website ${safe(w.domain.domain)}. Its DNS zone on the platform is deleted and any certificate for it is dropped. Files in ${safe(d.documentRoot)} are not deleted.`;
   },
   async handler(args, ctx, target) {
-    const { org, w } = await site(ctx, args.website, target!.id);
+    const org = requireOrg(ctx.client);
+    const w = await ctx.resolver.resolveWebsite(args.website);
     await ctx.client.call('DELETE', '/orgs/{org_id}/websites/{website_id}/domains/{domain_id}', () =>
       ctx.client.api.DELETE('/orgs/{org_id}/websites/{website_id}/domains/{domain_id}', { params: { path: { org_id: org, website_id: w.id, domain_id: target!.id } } }),
     );
@@ -162,9 +162,10 @@ export const domainDnsStatus = defineTool({
   async handler(args, ctx) {
     const { client } = ctx;
     const { org, w, d } = await site(ctx, args.website, args.domain);
+    let authNsLookupFailed = false;
     const [status, authNs, b] = await Promise.all([
       client.call('GET', '/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-status', () => client.api.GET('/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-status', { params: { path: { org_id: org, website_id: w.id, domain_id: d.domainId } } })),
-      client.call('GET', '/orgs/{org_id}/domains/{domain_id}/auth-ns', () => client.api.GET('/orgs/{org_id}/domains/{domain_id}/auth-ns', { params: { path: { org_id: org, domain_id: d.domainId } } })).catch(() => ({ matchesPlatform: false, authNs: [] as Array<{ name: string; ips: string[] }> })),
+      client.call('GET', '/orgs/{org_id}/domains/{domain_id}/auth-ns', () => client.api.GET('/orgs/{org_id}/domains/{domain_id}/auth-ns', { params: { path: { org_id: org, domain_id: d.domainId } } })).catch(() => { authNsLookupFailed = true; return { matchesPlatform: false, authNs: [] as Array<{ name: string; ips: string[] }> }; }),
       client.call('GET', '/branding', () => client.api.GET('/branding', { params: { query: { orgId: org } } })),
     ]);
     const platformNs = b.nameServers ?? [];
@@ -187,12 +188,13 @@ export const domainDnsStatus = defineTool({
       advice.push(`or keep the current DNS host and add an A record for @ -> ${ip} plus CNAME www -> ${domainName} (run domain_dns_records for the full list).`);
     }
     advice.push(preview ? `Meanwhile the site is reachable on the preview domain: https://${safe(preview)}/` : `Meanwhile verify with: curl -k --resolve ${domainName}:443:${ip} https://${domainName}/`);
+    const currentNsDisplay = authNsLookupFailed ? 'lookup failed' : (current.length ? current : 'none found');
     const text = [
       identityBlock({ name: client.orgName, id: org }, w, d),
-      kv([['dns status', status], ['current nameservers', current.length ? current : 'none found'], ['provider', provider], ['platform nameservers', platformNs], ['app server ip', ip], ['preview domain', preview]]),
+      kv([['dns status', status], ['current nameservers', currentNsDisplay], ['provider', provider], ['platform nameservers', platformNs], ['app server ip', ip], ['preview domain', preview]]),
       ...advice,
     ].join('\n');
-    return ok(text, { website: w.id, domainId: d.domainId, domain: d.domain, status, provider, currentNameservers: current, platformNameservers: platformNs, serverIp: ip, previewDomain: preview ?? null, matchesPlatform: authNs.matchesPlatform });
+    return ok(text, { website: w.id, domainId: d.domainId, domain: d.domain, status, provider, currentNameservers: current, platformNameservers: platformNs, serverIp: ip, previewDomain: preview ?? null, matchesPlatform: authNs.matchesPlatform, authNsLookupFailed });
   },
 });
 
@@ -226,14 +228,22 @@ export const domainDnsRecords = defineTool({
     const path = { org_id: org, website_id: w.id, domain_id: d.domainId };
     const zone = await client.call('GET', '/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-zone', () => client.api.GET('/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-zone', { params: { path } }));
     let mail = args.include_mail === 'yes';
+    let localRemote: 'local' | 'remote' | 'unknown' = 'local';
     if (args.include_mail === 'auto') {
-      const lr = await client.call('GET', '/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/local_remote', () => client.api.GET('/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/local_remote', { params: { path } })).catch(() => ({ localRemote: 'local' as const }));
-      mail = lr.localRemote === 'local';
+      const lr = await client.call('GET', '/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/local_remote', () => client.api.GET('/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/local_remote', { params: { path } })).catch(() => ({ localRemote: undefined }));
+      if (lr.localRemote === undefined) {
+        localRemote = 'unknown';
+        mail = true;
+      } else {
+        localRemote = lr.localRemote;
+        mail = lr.localRemote === 'local';
+      }
     }
     const records = filterZoneForThirdParty(zone.records, { mail, extras: args.include_extras });
     const rows = records.map((r) => ({ host: r.name, type: r.kind, value: r.value, ttl: r.ttl ?? zone.soa.ttl, proxy: r.proxy ? 'ok to proxy' : '' }));
-    const text = [identityBlock({ name: client.orgName, id: org }, w, d), `records to create at your DNS provider (mail records ${mail ? 'included' : 'omitted'}):`, table(rows, ['host', 'type', 'value', 'ttl', 'proxy'])].join('\n');
-    return ok(text, { website: w.id, domain: d.domain, includeMail: mail, records: records.map((r) => ({ kind: r.kind, name: r.name, value: r.value, ttl: r.ttl ?? zone.soa.ttl })) });
+    const mailRoutingLine = localRemote === 'unknown' ? 'mail routing: unknown (lookup failed); treating as local' : '';
+    const text = [identityBlock({ name: client.orgName, id: org }, w, d), `records to create at your DNS provider (mail records ${mail ? 'included' : 'omitted'}):`, mailRoutingLine, table(rows, ['host', 'type', 'value', 'ttl', 'proxy'])].filter(Boolean).join('\n');
+    return ok(text, { website: w.id, domain: d.domain, includeMail: mail, localRemote, records: records.map((r) => ({ kind: r.kind, name: r.name, value: r.value, ttl: r.ttl ?? zone.soa.ttl })) });
   },
 });
 
@@ -279,7 +289,7 @@ export const domainSslIssue = defineTool({
     const { cert: _pem, key: _key, ...rest } = cert;
     ctx.resolver.invalidate();
     // `rest` has its own `issued` (date) field; spread it first so our own `issued: true` flag wins.
-    return ok(`certificate issued.\n${certText(w, d, rest, ctx.client.orgName)}`, { website: w.id, domainId: d.domainId, ...rest, issued: true, placeholder: isPlaceholderCert(rest) });
+    return ok(`${certText(w, d, rest, ctx.client.orgName)}\ncertificate issued.`, { website: w.id, domainId: d.domainId, ...rest, issued: true, placeholder: isPlaceholderCert(rest) });
   },
 });
 

@@ -55,7 +55,8 @@ describe('domain_add / domain_set_primary / domain_remove', () => {
     expect(a.text).toContain('www2.vahi.dev');
     const b = await callTool(byName(tools, 'domain_set_primary'), { website: 'vahi.dev', domain: 'vahi-dev-ccyq.sgp1.mystaging.site' }, ctx);
     expect(f.calls.find((c) => c.method === 'PUT')?.body).toBe(`{"domainId":"${PREVIEW_DOMAIN_ID}"}`);
-    expect(b.text).toContain('primary');
+    expect(b.text).toContain('website: vahi-dev-ccyq.sgp1.mystaging.site (');
+    expect(b.text).toContain('· primary');
   });
   it('refuses to remove the primary domain and removes an alias through the gate contract', async () => {
     const { ctx, f } = await makeContext([...base(), { method: 'DELETE', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${PREVIEW_DOMAIN_ID}`, status: 204 }]);
@@ -64,9 +65,11 @@ describe('domain_add / domain_set_primary / domain_remove', () => {
     const target = await t.target!({ website: 'vahi.dev', domain: 'vahi-dev-ccyq.sgp1.mystaging.site' }, ctx);
     expect(target).toEqual({ kind: 'domain', id: PREVIEW_DOMAIN_ID, name: 'vahi-dev-ccyq.sgp1.mystaging.site' });
     expect(await t.preview!({ website: 'vahi.dev', domain: target.name }, ctx, target)).toContain('preview');
+    const callsBeforeHandler = f.calls.length;
     const r = await t.handler({ website: 'vahi.dev', domain: target.name }, ctx, target);
     expect(r.text).toContain('removed');
     expect(f.calls.find((c) => c.method === 'DELETE')?.path).toBe(`/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${PREVIEW_DOMAIN_ID}`);
+    expect(f.calls.length - callsBeforeHandler).toBe(2);
   });
 });
 
@@ -95,6 +98,17 @@ describe('domain_dns_status', () => {
     expect(r.text).toContain('ns1.stableserver.net');
     expect(r.text).toContain('A record');
   });
+  it('reports lookup failure when auth-ns returns 500', async () => {
+    const { ctx } = await makeContext([
+      ...base(),
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${DOMAIN_ID}/dns-status`, body: 'Failed' },
+      { method: 'GET', path: `/orgs/${ORG_ID}/domains/${DOMAIN_ID}/auth-ns`, status: 500, body: { code: 'internal' } },
+    ]);
+    const r = await callTool(byName(tools, 'domain_dns_status'), { website: 'vahi.dev' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain('current nameservers: lookup failed');
+    expect(r.structured).toMatchObject({ provider: 'unknown', authNsLookupFailed: true });
+  });
 });
 
 describe('domain_dns_records', () => {
@@ -109,6 +123,18 @@ describe('domain_dns_records', () => {
     expect(recs.map((x) => `${x.kind} ${x.name}`)).toEqual(['A @', 'CNAME www']);
     expect(r.text).toContain('65.98.32.45');
   });
+  it('reports lookup failure when local_remote returns 500', async () => {
+    const { ctx } = await makeContext([
+      ...base(),
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${DOMAIN_ID}/dns-zone`, body: dnsZone },
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${DOMAIN_ID}/local_remote`, status: 500, body: { code: 'internal' } },
+    ]);
+    const r = await callTool(byName(tools, 'domain_dns_records'), { website: 'vahi.dev', include_mail: 'auto', include_extras: false }, ctx);
+    const recs = (r.structured as { records: Array<{ kind: string; name: string }> }).records;
+    expect(recs.some((x) => x.kind === 'MX')).toBe(true);
+    expect(r.text).toContain('mail routing: unknown (lookup failed)');
+    expect(r.structured).toMatchObject({ localRemote: 'unknown' });
+  });
 });
 
 describe('ssl tools', () => {
@@ -116,6 +142,8 @@ describe('ssl tools', () => {
     const { ctx } = await makeContext([...base(), { method: 'GET', path: `/v2/domains/${DOMAIN_ID}/ssl`, body: sslPlaceholder }]);
     const r = await callTool(byName(tools, 'domain_ssl_get'), { website: 'vahi.dev' }, ctx);
     expect(r.structured).toMatchObject({ placeholder: true, issuer: 'vahi.dev' });
+    expect(r.structured).not.toHaveProperty('cert');
+    expect(r.structured).not.toHaveProperty('key');
     expect(r.text).not.toContain('BEGIN CERTIFICATE');
     expect(r.text).toContain('domain_ssl_issue');
   });
@@ -130,7 +158,10 @@ describe('ssl tools', () => {
     const r = await callTool(byName(tools, 'domain_ssl_issue'), { website: 'vahi.dev' }, ctx);
     expect(r.isError).toBeFalsy();
     expect(r.structured).toMatchObject({ issued: true, placeholder: false });
-    expect(r.text).toContain("Let's Encrypt");
+    expect(r.structured).not.toHaveProperty('cert');
+    expect(r.structured).not.toHaveProperty('key');
+    expect(r.text.split('\n')[0]).toMatch(/^org: /);
+    expect(r.text).toContain('certificate issued.');
   });
   it('stops on a failed preflight with the panel\'s reason', async () => {
     const { ctx, f } = await makeContext([...base(), { method: 'POST', path: `/v2/domains/${DOMAIN_ID}/letsencrypt_preflight`, body: { canIssue: false, error: 'DNS does not resolve to this server' } }]);
@@ -157,7 +188,7 @@ describe('cloudflare tools', () => {
     ]);
     const a = await callTool(byName(tools, 'cloudflare_keys_list'), {}, ctx);
     expect(a.text).toContain('my cf');
-    expect(a.text).not.toContain('abcd****abcd');
+    expect(a.text).toContain('abcd****');
     const b = await callTool(byName(tools, 'domain_cloudflare_connect'), { website: 'vahi.dev', key_id: key.id }, ctx);
     expect(f.calls.find((c) => c.method === 'PUT')?.body).toBe(`"${key.id}"`);
     expect(b.text).toContain('Enhance will now sync');
