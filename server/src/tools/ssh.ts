@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import * as z from 'zod/v4';
+import { isEnhanceApiError } from '../client/errors.js';
 import { requireOrg, type ToolContext } from '../core/context.js';
 import { identityBlock, websiteHome } from '../core/identity.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
@@ -7,7 +8,7 @@ import { kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
 
 const websiteArg = z.string().min(1).describe('Website domain name (primary or alias) or website UUID');
-const KEY_RE = /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)\s+([A-Za-z0-9+/]+=*)(?:\s+(.*))?$/;
+const KEY_RE = /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)[ \t]+([A-Za-z0-9+/]+=*)(?:[ \t]+([^\r\n]*))?$/;
 
 export interface ParsedKey {
   type: string;
@@ -26,9 +27,9 @@ export function fingerprint(blob: string): string {
   return `SHA256:${createHash('sha256').update(Buffer.from(blob, 'base64')).digest('base64').replace(/=+$/, '')}`;
 }
 
-function conn(w: Website): { user: string; host: string; port: number; home: string; documentRoot: string } {
-  const host = (w.serverIps?.find((s) => s.isPrimary) ?? w.serverIps?.[0])?.ip ?? '';
-  return { user: w.unixUser ?? '', host, port: 22, home: websiteHome(w), documentRoot: w.domain.documentRoot };
+function conn(w: Website): { user: string | undefined; host: string | undefined; port: number; home: string; documentRoot: string } {
+  const host = (w.serverIps?.find((s) => s.isPrimary) ?? w.serverIps?.[0])?.ip ?? undefined;
+  return { user: w.unixUser ?? undefined, host, port: 22, home: websiteHome(w), documentRoot: w.domain.documentRoot };
 }
 
 interface ListedKey {
@@ -83,24 +84,37 @@ export const sshConnectionInfo = defineTool({
     const org = requireOrg(ctx.client);
     const w = await ctx.resolver.resolveWebsite(website);
     const c = conn(w);
-    const keys = await listKeys(ctx, org, w.id);
+    let keys: ListedKey[] = [];
+    let keysUnavailable = false;
+    let keyErrorCode: string | undefined;
+    try {
+      keys = await listKeys(ctx, org, w.id);
+    } catch (e) {
+      if (isEnhanceApiError(e)) {
+        keysUnavailable = true;
+        keyErrorCode = e.code;
+      } else {
+        throw e;
+      }
+    }
     const missing = [!c.user ? 'unix user' : undefined, !c.host ? 'server IP' : undefined].filter((x): x is string => x !== undefined);
     const ready = missing.length === 0;
     const sshCommand = ready ? `ssh -p ${c.port} ${c.user}@${c.host}` : undefined;
     const rsyncExample = ready ? `rsync -avz --dry-run ./dist/ ${c.user}@${c.host}:${c.documentRoot}/` : undefined;
+    const authorizedKeysValue = keysUnavailable ? `unavailable (${keyErrorCode})` : keys.length;
     const text = [
       identityBlock({ name: ctx.client.orgName, id: org }, w),
       kv([
         ['login', ready ? sshCommand : `unavailable — this website is missing its ${missing.join(' and ')}`],
         ['home', c.home],
         ['document root', `${c.home}/${c.documentRoot}`],
-        ['authorized keys', keys.length],
+        ['authorized keys', authorizedKeysValue],
       ]),
       'deploy example (dry run first, then without --dry-run):',
       `  ${ready ? safe(rsyncExample) : 'unavailable — see login above'}`,
       "sandbox: Claude Code's Bash sandbox cannot open SSH connections. Run ssh and rsync with the sandbox disabled for that command, or add \"ssh\" and \"rsync\" to sandbox.excludedCommands in settings.",
     ].join('\n');
-    return ok(text, { website: w.id, ...c, keysAuthorized: keys.length, sshCommand, rsyncExample });
+    return ok(text, { website: w.id, ...c, keysAuthorized: keysUnavailable ? null : keys.length, keysUnavailable, sshCommand, rsyncExample });
   },
 });
 
