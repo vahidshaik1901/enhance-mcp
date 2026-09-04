@@ -25,7 +25,7 @@ export type GateMechanism = 'elicitation' | 'token' | 'none';
 
 export class ConfirmationGate {
   private readonly pending = new Map<string, PendingAction>();
-  private readonly used = new Set<string>();
+  private readonly used = new Map<string, number>();
   private readonly secret: Buffer;
   private readonly now: () => number;
   readonly ttlMs: number;
@@ -43,6 +43,7 @@ export class ConfirmationGate {
   }
 
   issue(tool: string, target: Target, args: Record<string, unknown>): string {
+    this.sweep();
     const nonce = randomBytes(12).toString('base64url');
     const exp = this.now() + this.ttlMs;
     this.pending.set(nonce, { tool, target, args, exp });
@@ -55,10 +56,16 @@ export class ConfirmationGate {
     const [nonce, expStr, sig] = parts as [string, string, string];
     if (this.used.has(nonce)) throw new GateError('used', 'This confirmation token was already used. Start the action again to get a new one.');
     const p = this.pending.get(nonce);
+    // Sweep after capturing `p` locally so a token that is legitimately expired
+    // right now still gets its specific 'expired' error below, rather than
+    // being pruned out from under us and reported as merely 'invalid'.
+    this.sweep();
     if (!p) throw new GateError('invalid', 'Unknown confirmation token. It may belong to a previous server session; start the action again.');
     const exp = Number(expStr);
     const expected = this.sign(nonce, exp, p.tool, p.target.id);
-    if (exp !== p.exp || sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+    const sigBuf = Buffer.from(sig);
+    const expectedBuf = Buffer.from(expected);
+    if (exp !== p.exp || sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) {
       throw new GateError('invalid', 'Confirmation token failed verification.');
     }
     if (this.now() > exp) {
@@ -70,8 +77,19 @@ export class ConfirmationGate {
       throw new GateError('mismatch', `"${typedName.trim()}" does not match the target name "${p.target.name}". The token is still valid; ask the user to type it exactly.`);
     }
     this.pending.delete(nonce);
-    this.used.add(nonce);
+    this.used.set(nonce, exp);
     return p;
+  }
+
+  /** Bounds the growth of `pending` and `used` by dropping stale entries. */
+  private sweep(): void {
+    const t = this.now();
+    for (const [nonce, p] of this.pending) {
+      if (p.exp < t) this.pending.delete(nonce);
+    }
+    for (const [nonce, exp] of this.used) {
+      if (exp < t - this.ttlMs) this.used.delete(nonce);
+    }
   }
 
   private sign(nonce: string, exp: number, tool: string, targetId: string): string {

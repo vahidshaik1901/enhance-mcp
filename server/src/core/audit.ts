@@ -41,8 +41,9 @@ export class AuditLog {
   ) {}
 
   append(entry: Omit<AuditEntry, 'ts'>): void {
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...entry, args: redact(entry.args, this.secrets) });
     try {
+      const redacted = redact(entry, this.secrets) as Record<string, unknown>;
+      const line = JSON.stringify({ ts: new Date().toISOString(), ...redacted });
       this.write(this.path, `${line}\n`);
     } catch (e) {
       console.error(`audit: could not write ${this.path}: ${(e as Error).message}`);
