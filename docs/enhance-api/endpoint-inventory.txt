@@ -1,0 +1,554 @@
+Total paths: 302
+Total operations: 482
+
+## ? (1)
+  POST   /websites/{website_id}/backup/upload                                        uploadWebsiteBackup                        Upload and restore a .tar.gz archive
+
+## apps (23)
+  GET    /orgs/{org_id}/subscriptions/{subscription_id}/installable-apps             getInstallableApps                         Get installable website applications
+  GET    /orgs/{org_id}/websites/{website_id}/apps                                   getWebsiteApps                             Get website applications
+  POST   /orgs/{org_id}/websites/{website_id}/apps                                   createWebsiteApp                           Create website applications
+  DELETE /orgs/{org_id}/websites/{website_id}/apps/{app_id}                          deleteWebsiteApp                           Delete website app
+  GET    /utils/installable-apps                                                     getGlobalInstallableApps                   Get all installable applications
+  POST   /websites/{website_id}/apps/node                                            installNvm                                 Install nvm and default stable node to this website
+  GET    /websites/{website_id}/apps/node/possible_versions                          getPossibleNodeVersions                    Get possible versions of node to install from nvm
+  GET    /websites/{website_id}/apps/node/versions                                   listInstalledNodeVersions                  List installed Node versions with NVM
+  POST   /websites/{website_id}/apps/node/versions                                   installNodeVersion                         Install a specific version of Node with NVM
+  PUT    /websites/{website_id}/apps/node/versions/default                           setDefaultNodeVersion                      Set default node version
+  GET    /websites/{website_id}/apps/persistent                                      getWebsitePersistentApps                   Get website persistent applications
+  POST   /websites/{website_id}/apps/persistent                                      createWebsitePersistentApp                 Create a persistent application
+  DELETE /websites/{website_id}/apps/persistent/{app_id}                             deleteWebsitePersistentApp                 Delete a persistent app
+  GET    /websites/{website_id}/apps/persistent/{app_id}                             getWebsitePersistentAppLog                 Get the log for a persistent app
+  PATCH  /websites/{website_id}/apps/persistent/{app_id}                             updateWebsitePersistentApp                 Update a persistent application
+  PUT    /websites/{website_id}/openclaw/approve                                     approveOpenclawDevice                      Approve a device request
+  PUT    /websites/{website_id}/openclaw/device_auth_enabled                         setOpenclawDeviceAuth                      Set device auth for Openclaw installation
+  GET    /websites/{website_id}/openclaw/devices                                     openclawDeviceList                         List Openclaw devices
+  GET    /websites/{website_id}/openclaw/info                                        getWebsiteOpenclawInfo                     Get Openclaw info (if installed)
+  GET    /websites/{website_id}/openclaw/provider_keys                               getOpenclawProviderKeys                    List configured provider keys
+  PUT    /websites/{website_id}/openclaw/provider_keys                               setOpenclawProviderKeys                    Set configured provider keys
+  POST   /websites/{website_id}/openclaw/rotate_token                                rotateOpenclawAuthToken                    Rotate the auth token for Openclaw to a new random token
+  GET    /websites/{website_id}/openclaw/sso                                         openclawSso                                Generate SSO URL for Openclaw and 302 redirect
+
+## backups (12)
+  GET    /backups                                                                    listGlobalBackups                          List global website backups across all backup servers, by backup server ID
+  DELETE /backups/{server_id}/{website_id}                                           deleteAllWebsiteBackups                    Delete all backups for a website
+  PUT    /backups/{server_id}/{website_id}                                           restoreHardDeletedBackup                   Restore a backup of a hard deleted website
+  GET    /backups/{website_id}/restore/log                                           getWebsiteRestoreLog                       Get the log for an ongoing restore, will return 404 if the restore is already complete
+  GET    /orgs/{org_id}/websites/{website_id}/backups                                getWebsiteBackups                          Get all website backups metadata
+  POST   /orgs/{org_id}/websites/{website_id}/backups                                backupWebsite                              Create a website backup
+  DELETE /orgs/{org_id}/websites/{website_id}/backups/{backup_id}                    deleteWebsiteBackup                        Delete a backup
+  GET    /orgs/{org_id}/websites/{website_id}/backups/{backup_id}                    getWebsiteBackup                           Get detailed metadata of the website backup
+  PUT    /orgs/{org_id}/websites/{website_id}/backups/{backup_id}                    restoreWebsite                             Restore website from a backup
+  GET    /orgs/{org_id}/websites/{website_id}/backups/{backup_id}/directory_tree     getWebsiteBackupDirectoryTree              Get the directory tree for the home dir
+  GET    /orgs/{org_id}/websites/{website_id}/backups/{backup_id}/restore_status     getWebsiteRestoreStatus                    Get the last detailed metadata of the restored website backup.
+  GET    /websites/{website_id}/backup/download                                      downloadWebsiteBackup                      Download website backup
+
+## branding (21)
+  GET    /branding                                                                   getBranding                                Get default branding
+  DELETE /orgs/{org_id}/branding/favicon                                             deleteBrandFavicon                         Delete brand favicon
+  PUT    /orgs/{org_id}/branding/favicon                                             setBrandFavicon                            Set brand favicon
+  DELETE /orgs/{org_id}/branding/inverse-icon                                        deleteBrandInverseIcon                     Delete brand inverse icon
+  PUT    /orgs/{org_id}/branding/inverse-icon                                        setBrandInverseIcon                        Set brand inverse icon
+  DELETE /orgs/{org_id}/branding/inverse-logo                                        deleteInverseBrandLogo                     Delete brand inverse logo
+  PUT    /orgs/{org_id}/branding/inverse-logo                                        setBrandInverseLogo                        Set brand inverse logo
+  DELETE /orgs/{org_id}/branding/login-image                                         deleteBrandLoginImage                      Delete brand login image
+  PUT    /orgs/{org_id}/branding/login-image                                         setBrandLoginImage                         Set brand login image
+  DELETE /orgs/{org_id}/branding/logo                                                deleteBrandLogo                            Delete brand logo
+  PUT    /orgs/{org_id}/branding/logo                                                setBrandLogo                               Set brand logo
+  GET    /orgs/{org_id}/branding/settings                                            getBrandingSettings                        Get all current settings
+  POST   /orgs/{org_id}/branding/settings                                            createBrandingSettings                     Create branding settings
+  DELETE /orgs/{org_id}/branding/settings/{name}                                     deleteBrandingSetting                      Remove the specified setting
+  GET    /orgs/{org_id}/branding/settings/{name}                                     getBrandingSetting                         Get the specified setting
+  PUT    /orgs/{org_id}/branding/settings/{name}                                     updateBrandingSetting                      Create or update the specified setting
+  POST   /orgs/{org_id}/name-servers                                                 createNameServerDomain                     Create reseller name server domain
+  DELETE /orgs/{org_id}/name-servers/{domain}                                        deleteNameServerDomain                     Delete reseller name server domain name
+  PATCH  /orgs/{org_id}/name-servers/{domain}                                        updateNameServerDomain                     Update reseller name server domain name
+  GET    /orgs/{org_id}/staging-domain                                               getStagingDomain                           Fetches the staging domain which is currently set
+  POST   /orgs/{org_id}/staging-domain                                               setStagingDomain                           Set or update domain suffix for staging websites created by customers
+
+## customers (3)
+  GET    /orgs/{org_id}/customers                                                    getOrgCustomers                            Get organization customers
+  GET    /orgs/{org_id}/customers/{customer_org_id}/subscriptions                    getCustomerSubscriptions                   Get customer subscriptions
+  POST   /orgs/{org_id}/customers/{customer_org_id}/subscriptions                    createCustomerSubscription                 Create a subscriptions for a customer
+
+## dns (15)
+  GET    /dns/third-party-providers                                                  getDnsThirdPartyProviders                  Lists all third party providers.
+  POST   /dns/third-party-providers                                                  createDnsThirdPartyProvider                Create new third party provider.
+  DELETE /dns/third-party-providers/{provider_id}                                    deleteDnsThirdPartyProvider                Deletes a third party dns provider.
+  PATCH  /dns/third-party-providers/{provider_id}                                    updateDnsThirdPartyProvider                Update a third party dns provider.
+  GET    /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-zone           getWebsiteDomainDnsZone                    Get a dns zone for given domain
+  PATCH  /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-zone           updateWebsiteDomainDnsZone                 Updates a dns zone SOA for website domain
+  DELETE /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-zone/dnssec    disableDomainDnsSec                        Disable DNSSEC on this domain
+  POST   /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-zone/dnssec    enableDomainDnsSec                         Enable DNSSEC on this domain
+  POST   /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-zone/records   createWebsiteDomainDnsZoneRecord           Create a new dns record for website domain
+  DELETE /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-zone/records/{record_id} deleteWebsiteDomainDnsZoneRecord           Delete dns zone record
+  PATCH  /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-zone/records/{record_id} updateWebsiteDomainDnsZoneRecord           Updates a dns record for given domain
+  GET    /v2/settings/dns/default-records                                            listDefaultDnsRecords                      List default DNS records
+  POST   /v2/settings/dns/default-records                                            createDefaultDnsRecord                     Create a default DNS record
+  DELETE /v2/settings/dns/default-records/{record_id}                                deleteDefaultDnsRecord                     Delete a default DNS record
+  PATCH  /v2/settings/dns/default-records/{record_id}                                updateDefaultDnsRecord                     Update a default DNS record
+
+## domains (16)
+  GET    /orgs/{org_id}/domains                                                      getDomains                                 Get domains
+  POST   /orgs/{org_id}/domains/check                                                checkDomain                                Check if a domain can be created
+  DELETE /orgs/{org_id}/domains/{domain_id}                                          deleteDomain                               Delete domain
+  GET    /orgs/{org_id}/domains/{domain_id}/auth-ns                                  getDomainAuthNs                            Get authoritative nameservers for domain.
+  DELETE /orgs/{org_id}/domains/{domain_id}/cloudflare                               deleteCloudflareApiKeyId                   Delete CloudFlare API key, domain level
+  GET    /orgs/{org_id}/domains/{domain_id}/cloudflare                               getCloudflareApiKeyDomain                  Get CloudFlare API key, domain level
+  PUT    /orgs/{org_id}/domains/{domain_id}/cloudflare                               setCloudflareApiKeyId                      Set CloudFlare API key, domain level
+  GET    /orgs/{org_id}/domains/{domain_id}/cloudflare/nameservers                   getCloudflareNameServers                   Get CloudFlare name servers
+  GET    /orgs/{org_id}/websites/{website_id}/domains                                getWebsiteDomainMappings                   Get website's mapped domains
+  POST   /orgs/{org_id}/websites/{website_id}/domains                                createWebsiteMappedDomain                  Create website mapped domain
+  PUT    /orgs/{org_id}/websites/{website_id}/domains/primary                        updateWebsitePrimaryDomain                 Update primary domain mapping
+  DELETE /orgs/{org_id}/websites/{website_id}/domains/{domain_id}                    deleteWebsiteDomainMapping                 Delete website domain mapping
+  GET    /orgs/{org_id}/websites/{website_id}/domains/{domain_id}                    getWebsiteDomainMapping                    Returns website domain mapping
+  PATCH  /orgs/{org_id}/websites/{website_id}/domains/{domain_id}                    updateWebsiteDomainMapping                 Update website domain mapping
+  GET    /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-query          getWebsiteDomainDnsQuery                   Recursively query Dns servers for given domain
+  GET    /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-status         getWebsiteDomainMappingDnsStatus           Returns website domain mapping DNS status
+
+## email-client (8)
+  GET    /email-client/autoresponders                                                getEmailAutoresponders                     Get email account autoresponder
+  POST   /email-client/autoresponders                                                createEmailAutoresponder                   Create new email autoresponder
+  DELETE /email-client/autoresponders/{autoresponder_id}                             deleteEmailAutoresponder                   Delete email autoresponder
+  PUT    /email-client/autoresponders/{autoresponder_id}                             updateEmailAutoresponder                   Update email autoresponder
+  GET    /email-client/forwarders                                                    GetEmailForwarders                         Returns email account's forwarders
+  PUT    /email-client/forwarders                                                    UpdateEmailForwarders                      Updates email account's forwarders
+  PUT    /email-client/password                                                      UpdateEmailPassword                        Updates email account's password
+  GET    /email-client/public-ip                                                     GetEmailPublicIp                           Returns public Ip Address of the email server
+
+## emails (17)
+  POST   /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/emails             createWebsiteEmail                         Create an email under website's domain
+  GET    /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/local_remote       getDomainLocalRemote                       Get the current local/remote status
+  PUT    /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/local_remote       setDomainLocalRemote                       Update email local/remote status
+  GET    /orgs/{org_id}/websites/{website_id}/emails                                 getWebsiteEmails                           Get website emails
+  DELETE /orgs/{org_id}/websites/{website_id}/emails/{email_address}                 deleteWebsiteEmail                         Delete website email
+  GET    /orgs/{org_id}/websites/{website_id}/emails/{email_address}                 getWebsiteEmail                            Get website email
+  PATCH  /orgs/{org_id}/websites/{website_id}/emails/{email_address}                 updateWebsiteEmail                         Update website email
+  DELETE /orgs/{org_id}/websites/{website_id}/emails/{email_address}/autoresponder   deleteWebsiteEmailAutoresponder            Delete website email autoresponder
+  GET    /orgs/{org_id}/websites/{website_id}/emails/{email_address}/autoresponder   getWebsiteEmailAutoresponder               Get website email autoresponder
+  POST   /orgs/{org_id}/websites/{website_id}/emails/{email_address}/autoresponder   createWebsiteEmailAutoresponder            Create new website email autoresponder
+  GET    /orgs/{org_id}/websites/{website_id}/emails/{email_address}/client-conf     getWebsiteEmailClientConf                  Get website email client configuration
+  GET    /orgs/{org_id}/websites/{website_id}/emails/{email_address}/sso             ssoToRoundcube                             SSO to Roundcube
+  GET    /websites/{website_id}/domains/{domain_name}/email-auth                     getDomainEmailAuth                         Get email authentication preferences
+  PUT    /websites/{website_id}/domains/{domain_name}/email-auth                     updateDomainEmailAuth                      Update email authentication preferences
+  GET    /websites/{website_id}/domains/{domain_name}/email-auth/validate            validateDomainEmailAuth                    Validate email authentication DNS records
+  GET    /websites/{website_id}/emails/{email_address}/spam_thresholds               getEmailSpamThresholds                     Get spam thresholds for an email address
+  PUT    /websites/{website_id}/emails/{email_address}/spam_thresholds               setEmailSpamThresholds                     Set spam thresholds for an email address
+
+## importers (19)
+  POST   /orgs/{org_id}/import/plesk-server/{server_id}/domain                       transferPleskDomain                        Transfer user account from remote cPanel server
+  GET    /orgs/{org_id}/import/server/settings                                       listImportServerSettings                   List all server import settings
+  POST   /orgs/{org_id}/import/server/settings                                       createImportServerSettings                 Create settings for the server import
+  POST   /orgs/{org_id}/import/server/{server_id}/account/{user_id}                  transferCPanelUserAccount                  Transfer user account from remote cPanel server
+  GET    /orgs/{org_id}/import/server/{server_id}/cached-domains                     getImportServerDomainsCached               Returns cached domains
+  GET    /orgs/{org_id}/import/server/{server_id}/pull-domains                       getImportServerPullDomains                 Pull domains form the remote server.
+  DELETE /orgs/{org_id}/import/server/{server_id}/settings                           deleteImportServerSettings                 Delete settings for the server import
+  GET    /orgs/{org_id}/import/server/{server_id}/settings                           getImportServerSettings                    Get settings for the server import
+  PATCH  /orgs/{org_id}/import/server/{server_id}/settings                           updateImportServerSettings                 Update settings for the server import
+  GET    /v2/import/scan                                                             scanImportMigrations                       Scan for manually uploaded cPanel backups.
+  GET    /v2/orgs/{org_id}/import                                                    getImportMigrations                        List all import migrations
+  POST   /v2/orgs/{org_id}/import/upload/{import_migration_kind}                     uploadImportMigration                      Upload file for analyzing and processing.
+  DELETE /v2/orgs/{org_id}/import/{import_migration_id}                              deleteImportMigration                      Delete single migration
+  GET    /v2/orgs/{org_id}/import/{import_migration_id}                              getImportMigration                         Fetches single migration details
+  POST   /v2/orgs/{org_id}/import/{import_migration_id}                              createImportMigration                      Create a new import migration.
+  GET    /v2/orgs/{org_id}/import/{import_migration_id}/analyze                      getImportMigrationData                     Get import migration information
+  POST   /v2/orgs/{org_id}/import/{import_migration_id}/analyze                      analyzeImportMigration                     Analyze imported migration
+  GET    /v2/orgs/{org_id}/import/{import_migration_id}/log                          getImportMigrationLog                      Get the log for an import migration
+  POST   /v2/orgs/{org_id}/import/{import_migration_id}/resource                     checkImportMigrationResources              Check if all resources from the imported migration could be created.
+
+## install (2)
+  GET    /status                                                                     orchdStatus                                Get the readiness status of the orchd service
+  GET    /version                                                                    orchdVersion                               Get the SemVer of the API service
+
+## invites (3)
+  POST   /invites/{invite_id}                                                        acceptInvite                               Accept invite
+  POST   /invites/{invite_id}/validate                                               validateInvite                             Validate invite
+  POST   /orgs/{org_id}/invites                                                      createInvite                               Create invite
+
+## joomla (7)
+  GET    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/joomla/info              getJoomlaInfo                              
+  GET    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/joomla/users             getJoomlaUsers                             
+  POST   /orgs/{org_id}/websites/{website_id}/apps/{app_id}/joomla/users             createJoomlaUser                           Create website Joomla user
+  DELETE /orgs/{org_id}/websites/{website_id}/apps/{app_id}/joomla/users/{username}  deleteJoomlaUser                           Delete a joomla user
+  PUT    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/joomla/users/{username}/email updateJoomlaEmailAddress                   Update the email address for a given username
+  PUT    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/joomla/users/{username}/password resetJoomlaUserPassword                    Set the password for a given username
+  PUT    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/joomla/users/{username}/username updateJoomlaUsername                       Update the username for a given username
+
+## licence (2)
+  GET    /licence                                                                    getLicenceInfo                             Get current licence status
+  PUT    /licence                                                                    refreshLicence                             Updates licence key if provided, and refresh licence status by calling home servers. NOTE: calling without any licence_key body, only refreshes the current licence status
+
+## logins (24)
+  GET    /login                                                                      getLogin                                   Get login info
+  PATCH  /login                                                                      updateLoginInfo                            Update login info
+  POST   /login/2fa                                                                  verify2FA                                  Verifies 2FA sign-in code.
+  POST   /login/2fa/resend-pin                                                       resendPin                                  Resends 2FA sign-in code.
+  DELETE /login/avatar                                                               deleteLoginAvatar                          Remove login avatar
+  PUT    /login/avatar                                                               setLoginAvatar                             Set login avatar
+  GET    /login/memberships                                                          getLoginMemberships                        Get login memberships
+  POST   /login/password-recovery                                                    finishPasswordRecovery                     Finish a password recovery
+  PUT    /login/password-recovery                                                    startPasswordRecovery                      Start a new password recovery for login
+  POST   /login/password-recovery/validate                                           validatePasswordRecovery                   Validate a password recovery secret
+  DELETE /login/sessions                                                             deleteSessions                             Delete sessions
+  GET    /login/sessions                                                             getSessions                                Get all login sessions
+  POST   /login/sessions                                                             createSession                              Create a new session for login
+  DELETE /login/sessions/current                                                     deleteCurrentSession                       Delete current session
+  GET    /login/sessions/sso                                                         createOtpSession                           Create a new session for login with a one-time-password
+  DELETE /login/sessions/{session_id}                                                deleteSession                              Delete current session
+  GET    /logins                                                                     getLogins                                  Query all logins
+  POST   /logins                                                                     createLogin                                Create a new login
+  GET    /logins/ui-preferences                                                      getUiPreferences                           Get UI prefereces for login
+  PATCH  /logins/ui-preferences                                                      updateUiPreferences                        Update UI prefereces for login
+  POST   /logins/ui-preferences                                                      setUiPreferences                           Set new UI prefereces for login
+  GET    /orgs/{org_id}/logins                                                       getOrgLogins                               Query logins belonging to organization
+  PUT    /v2/logins/{login_id}/password                                              setCustomerLoginPassword                   Set password for login
+  GET    /v2/orgs/{org_id}/customers/logins                                          getCustomerLogins                          List customer logins for org
+
+## members (3)
+  GET    /orgs/{org_id}/access_tokens                                                getAccessTokens                            Get access token members
+  DELETE /orgs/{org_id}/access_tokens/{token_id}                                     deleteAccessToken                          Delete access token member
+  PATCH  /orgs/{org_id}/access_tokens/{token_id}                                     updateAccessToken                          Update access token
+
+## migrations (6)
+  GET    /migrations                                                                 getMigrations                              Get website role migrations
+  POST   /migrations                                                                 createMigration                            Create website role migration
+  GET    /migrations/sessions                                                        getMigrationSessions                       Get website role migration sessions
+  POST   /migrations/sessions                                                        createMigrationSession                     Create bulk website role migrations
+  GET    /migrations/{migrationId}                                                   getMigration                               Get a single migration
+  GET    /migrations/{migrationId}/log                                               getMigrationLog                            Get the log for a migration
+
+## mysql (11)
+  DELETE /orgs/{org_id}/websites/{website_id}/mysql-dbs/{db_name}                    deleteWebsiteMySQLDB                       Delete website MySQL database
+  GET    /orgs/{org_id}/websites/{website_id}/mysql-dbs/{db_name}/sql                downloadSql                                Takes a backup of given database and returns it gziped
+  GET    /orgs/{org_id}/websites/{website_id}/mysql-dbs/{db_name}/sso                getPhpMyAdminSSOUrl                        Get phpMyAdmin SSO URL
+  GET    /orgs/{org_id}/websites/{website_id}/mysql-users                            getWebsiteMySQLUsers                       Get website MySQL database users
+  POST   /orgs/{org_id}/websites/{website_id}/mysql-users                            createWebsiteMySQLUser                     Create website MySQL database user
+  DELETE /orgs/{org_id}/websites/{website_id}/mysql-users/{username}                 deleteWebsiteMySQLUser                     Delete website MySQL database user
+  PUT    /orgs/{org_id}/websites/{website_id}/mysql-users/{username}                 updateWebsiteMySQLUser                     Update website MySQL database user
+  POST   /orgs/{org_id}/websites/{website_id}/mysql-users/{username}/access-hosts    createWebsiteMySQLUserAccessHosts          Create website MySQL database user access hosts
+  PUT    /orgs/{org_id}/websites/{website_id}/mysql-users/{username}/privileges      setWebsiteMySQLUserPrivileges              Create website MySQL database user privileges
+  GET    /orgs/{org_id}/websites/{website_id}/phpmyadmin                             getPhpMyAdminWebsiteSSOUrl                 Get phpMyAdmin SSO URL (per website)
+  POST   /v2/websites/{websiteId}/mysql/{db_id}/sql                                  uploadSql                                  Uploads sql file and executes it against db
+
+## orgs (44)
+  DELETE /orgs/{org_id}                                                              deleteOrg                                  Delete organization
+  GET    /orgs/{org_id}                                                              getOrg                                     Get organization info
+  PATCH  /orgs/{org_id}                                                              updateOrg                                  Update organization
+  POST   /orgs/{org_id}/access_tokens                                                createAccessToken                          Create organisation access token
+  DELETE /orgs/{org_id}/avatar                                                       deleteOrgAvatar                            Remove org avatar
+  PUT    /orgs/{org_id}/avatar                                                       setOrgAvatar                               Set org avatar
+  GET    /orgs/{org_id}/cloudflare                                                   getCloudflareApiKeys                       Get CloudFlare API keys, org level
+  POST   /orgs/{org_id}/cloudflare                                                   createCloudflareApiKey                     Set CloudFlare API key, org level
+  DELETE /orgs/{org_id}/cloudflare/{cloudflare_key}                                  deleteCloudflareApiKey                     Delete CloudFlare API key, org level
+  GET    /orgs/{org_id}/cloudflare/{cloudflare_key}                                  getCloudFlareKeyAffectedDomains            Get affected domains for a CloudFlare key
+  PUT    /orgs/{org_id}/cloudflare/{cloudflare_key}                                  updateCloudflareApiKey                     Update CloudFlare API key
+  POST   /orgs/{org_id}/customers                                                    createCustomer                             Create a customer organization
+  GET    /orgs/{org_id}/emails                                                       getEmails                                  Get org emails
+  GET    /orgs/{org_id}/members                                                      getMembers                                 Get organization members
+  POST   /orgs/{org_id}/members                                                      createMember                               Create organization member
+  DELETE /orgs/{org_id}/members/{member_id}                                          deleteMember                               Delete organization member
+  GET    /orgs/{org_id}/members/{member_id}                                          getMember                                  Get organization member
+  PUT    /orgs/{org_id}/members/{member_id}                                          updateMember                               Overwrite organization member settings
+  GET    /orgs/{org_id}/members/{member_id}/sso                                      getOrgMemberLogin                          Get a One-Time-Password link for the member
+  DELETE /orgs/{org_id}/owner                                                        deleteOwner                                Delete organization owner
+  PUT    /orgs/{org_id}/owner                                                        updateOwner                                Update organization owner
+  GET    /orgs/{org_id}/plans                                                        getPlans                                   Get plans
+  POST   /orgs/{org_id}/plans                                                        createPlan                                 Create plan
+  DELETE /orgs/{org_id}/plans/{plan_id}                                              deletePlan                                 Delete plan
+  GET    /orgs/{org_id}/plans/{plan_id}                                              getPlan                                    Get plan
+  PATCH  /orgs/{org_id}/plans/{plan_id}                                              updatePlan                                 Update plan name
+  POST   /orgs/{org_id}/plans/{plan_id}/allowances                                   createPlanAllowances                       Create plan allowances
+  DELETE /orgs/{org_id}/plans/{plan_id}/allowances/{name}                            deletePlanAllowance                        Delete plan allowance
+  PUT    /orgs/{org_id}/plans/{plan_id}/allowances/{name}                            updatePlanAllowance                        Update plan allowance
+  POST   /orgs/{org_id}/plans/{plan_id}/resources                                    createPlanResources                        Create plan resources
+  PUT    /orgs/{org_id}/plans/{plan_id}/resources/{name}                             updatePlanResource                         Update plan resource
+  POST   /orgs/{org_id}/plans/{plan_id}/selections                                   createPlanSelections                       Create plan selections
+  PUT    /orgs/{org_id}/plans/{plan_id}/selections/{name}                            updatePlanSelection                        Update plan selection
+  GET    /orgs/{org_id}/stats/customers/added                                        getCustomersAdded                          Get customers added over a given time period
+  GET    /orgs/{org_id}/stats/websites/added                                         getWebsitesAdded                           Get websites added over a given time period
+  GET    /orgs/{org_id}/tags                                                         getTags                                    Get tags
+  POST   /orgs/{org_id}/tags                                                         createTag                                  Create tag
+  DELETE /orgs/{org_id}/websites/{website_id}/mysql-users/{username}/access-hosts    deleteWebsiteMySQLUserAccessHosts          Delete website MySQL database user access hosts
+  GET    /v2/domains/{domain_id}/mail_ssl                                            getWebsiteMailDomainSslCert                Returns the SSL for this website domain with the mail.prefix
+  POST   /v2/domains/{domain_id}/mail_ssl                                            uploadWebsiteMailDomainSslCert             Upload SSL for mail.customerdomain.
+  GET    /v2/domains/{domain_id}/ssl                                                 getWebsiteDomainSslCert                    Returns the SSL for this website domain
+  POST   /v2/domains/{domain_id}/ssl                                                 uploadWebsiteDomainSslCert                 Upload custom ssl certificate, key and optional fullchain for a given website
+  PUT    /v2/domains/{domain_id}/ssl/force_ssl                                       setWebsiteDomainForceSsl                   Set "force ssl" status for domain mapping
+  GET    /v2/orgs/{org_id}/activities                                                getOrgActivities                           Get organization's activity log.
+
+## postgresql (9)
+  GET    /orgs/{org_id}/websites/{website_id}/postgresql-dbs                         getWebsitePostgresqlDbs                    Get website PostgreSQL databases
+  POST   /orgs/{org_id}/websites/{website_id}/postgresql-dbs                         createWebsitePostgresqlDb                  Create a PostgreSQL database for website
+  DELETE /orgs/{org_id}/websites/{website_id}/postgresql-dbs/{db_name}               deleteWebsitePostgresqlDb                  Delete website PostgreSQL database
+  GET    /orgs/{org_id}/websites/{website_id}/postgresql-users                       getWebsitePostgresqlUsers                  Get website PostgreSQL database users
+  POST   /orgs/{org_id}/websites/{website_id}/postgresql-users                       createWebsitePostgresqlUser                Create website PostgreSQL database user
+  DELETE /orgs/{org_id}/websites/{website_id}/postgresql-users/{username}            deleteWebsitePostgresqlUser                Delete website PostgreSQL database user
+  PATCH  /orgs/{org_id}/websites/{website_id}/postgresql-users/{username}            updateWebsitePostgresqlUser                Update website PostgreSQL database user
+  POST   /orgs/{org_id}/websites/{website_id}/postgresql-users/{username}/privileges grantPostgresqlUserDbPrivileges            Grant privileges on a specific database
+  DELETE /orgs/{org_id}/websites/{website_id}/postgresql-users/{username}/privileges/{db_name} revokePostgresqlUserDbPrivileges           Remove privileges on this database
+
+## reports (2)
+  GET    /reports/orchd/login-policy/blocked-ips                                     getLoginPolicyBlockedIps                   Get blocked ips
+  GET    /reports/orchd/login-policy/blocked-logins                                  getLoginPolicyBlockedLogins                Get blocked logins
+
+## servers (82)
+  GET    /client_ip                                                                  getClientIp                                Reflect back the IP of the API consumer
+  GET    /servers                                                                    getServers                                 Get installed servers
+  GET    /servers/groups                                                             getServerGroups                            Returns all server groups
+  POST   /servers/groups                                                             createServerGroup                          Creates a new server group
+  DELETE /servers/groups/{group_id}                                                  deleteServerGroup                          Deletes an existing server group
+  PUT    /servers/groups/{group_id}                                                  updateServerGroup                          Updates an existing server group's name
+  GET    /servers/install-cmd                                                        getInstallCmd                              Get slave installation command
+  GET    /servers/registration-key                                                   getRegistrationKey                         Get slave registration key
+  POST   /servers/registration-key/validate                                          validateRegistrationKey                    Validate slave registration key
+  POST   /servers/slaves                                                             createSlave                                Create a slave node
+  DELETE /servers/{server_id}                                                        deleteSlave                                Delete a (slave) server
+  GET    /servers/{server_id}                                                        getServerInfo                              Get server info
+  PATCH  /servers/{server_id}                                                        configureServer                            Configure a server
+  GET    /servers/{server_id}/appcd/screenshot/config                                getAppcdScreenshotConfig                   Get the screenshot config of the running appcd
+  PATCH  /servers/{server_id}/appcd/screenshot/config                                updateAppcdScreenshotConfig                Update the screenshot config of the running appcd
+  GET    /servers/{server_id}/appcd/version                                          getAppcdVersion                            Get the version of the running appcd
+  PUT    /servers/{server_id}/decommissioned                                         setServerDecommissioned                    Set server to decommissioned
+  GET    /servers/{server_id}/disk-usage                                             getServerDiskUsage                         Get server disk usage
+  GET    /servers/{server_id}/domains                                                getServerHostnameWebsite                   Get domains which are mapped to a server
+  POST   /servers/{server_id}/domains                                                createServerDomain                         Create a domain which is mapped to a server
+  DELETE /servers/{server_id}/domains/{domain_id}                                    deleteServerDomain                         Delete a mapped server domain
+  GET    /servers/{server_id}/email/hostname_override                                getEmailServerHostnameOverride             Get the hostname override for the email server (postfix) if set
+  PUT    /servers/{server_id}/email/hostname_override                                setEmailServerHostnameOverride             Set the hostname override for the email server (postfix)
+  GET    /servers/{server_id}/email/spam/outbound_scanning                           getOutboundSpamScanningSettings            Get the status of outbound spam scanning
+  PUT    /servers/{server_id}/email/spam/outbound_scanning                           setOutboundSpamScanningSettings            Set the settings for outbound spam scanning
+  GET    /servers/{server_id}/fs-quota-limits                                        getFsQuotaStatus                           Get whether FS quota was enabled on the server
+  POST   /servers/{server_id}/fs-quota-limits                                        enableFsQuotaLimits                        Enable FS quota limits on the server
+  DELETE /servers/{server_id}/group                                                  deleteServerFromGroup                      Delete server from group
+  GET    /servers/{server_id}/historic-stats                                         getServerStats                             Get Server stats
+  GET    /servers/{server_id}/interfaces                                             getServerNetworkInterfaces                 Get server network interfaces
+  POST   /servers/{server_id}/interfaces/{interface}/ips                             createServerNetworkInterfaceIp             Create server network interface secondary IP
+  DELETE /servers/{server_id}/interfaces/{interface}/ips/{ip}                        deleteServerNetworkInterfaceIp             Delete server network interface secondary IP
+  GET    /servers/{server_id}/iowait                                                 getServerIowait                            Get server iowait
+  GET    /servers/{server_id}/load                                                   getServerLoad                              Get server system load
+  GET    /servers/{server_id}/memory-usage                                           getServerMemoryUsage                       Get server memory usage
+  GET    /servers/{server_id}/network-stats                                          getServerNetworkStats                      Get server network stats
+  GET    /servers/{server_id}/packages/update                                        getSystemPackageUpdateInfo                 Returns a map of upgradable packages.
+  PUT    /servers/{server_id}/packages/update                                        updateSystemPackage                        Updates a system package to its latest version.
+  GET    /servers/{server_id}/php/fpm                                                getServerFpmSettings                       Get php-fpm config for all the websites on a server
+  GET    /servers/{server_id}/php/fpm/{website_id}                                   getWebsiteFpmSettings                      Get php-fpm config for the specified website
+  PUT    /servers/{server_id}/primary-ip                                             updateServerPrimaryIp                      Updates the primary IP of the server in the database and in-memory metadata. This operation will not affect the IP used for service communication until the next restart of orchd. The new IP will be used for creation of new resources such as websites on this server but existing websites will not have their IP changed.
+  GET    /servers/{server_id}/roles                                                  getServerRoles                             Get server roles info
+  DELETE /servers/{server_id}/roles/{role}                                           uninstallServerRole                        Uninstall a server role
+  GET    /servers/{server_id}/roles/{role}                                           getServerRole                              Get server role info
+  PATCH  /servers/{server_id}/roles/{role}                                           updateServerRole                           Update server role
+  PUT    /servers/{server_id}/roles/{role}                                           installServerRole                          Install server role
+  GET    /servers/{server_id}/roles/{role}/httpd_status                              getHttpdStatus                             Get status of a running httpd server.
+  GET    /servers/{server_id}/roundcube_sso_enabled                                  getRoundcubeSsoEnabled                     Check if Roundcube SSO is enabled on this server
+  PUT    /servers/{server_id}/roundcube_sso_enabled                                  setRoundcubeSsoEnabled                     Set Roundcube SSO enabled state
+  GET    /servers/{server_id}/settings/{setting_kind}                                getServiceSetting                          Get the value for a particular setting
+  DELETE /servers/{server_id}/settings/{setting_kind}/{setting_key}                  deleteServiceSetting                       Delete a single override setting
+  PUT    /servers/{server_id}/settings/{setting_kind}/{setting_key}                  setServiceSetting                          Set a single service setting
+  DELETE /servers/{server_id}/spam/ip_whitelist                                      deleteFromSpamIpWhitelist                  Delete from the IP whitelist
+  GET    /servers/{server_id}/spam/ip_whitelist                                      getSpamIpWhitelist                         Get the IP whitelist
+  POST   /servers/{server_id}/spam/ip_whitelist                                      addSpamIpWhitelist                         Add to the IP whitelist
+  GET    /servers/{server_id}/spam/smtp_rate_limit_hourly                            getSmtpRateLimitHourly                     Get the hourly SMTP rate limit
+  PUT    /servers/{server_id}/spam/smtp_rate_limit_hourly                            setSmtpRateLimitHourly                     Set the hourly SMTP rate limit
+  GET    /servers/{server_id}/spam/website_generated_rate_limit_hourly               getWebsiteGeneratedRateLimitHourly         Get the hourly website generated email rate limit
+  PUT    /servers/{server_id}/spam/website_generated_rate_limit_hourly               setWebsiteGeneratedRateLimitHourly         Set the hourly SMTP rate limit
+  GET    /servers/{server_id}/specs                                                  getServerSpecs                             Get server specs
+  GET    /servers/{server_id}/status                                                 getServerStatus                            Get server status
+  POST   /servers/{server_id}/status                                                 setServerStatus                            Set the status of one server.
+  GET    /servers/{server_id}/uptime                                                 getServerUptime                            Get server uptime in seconds
+  GET    /servers/{server_id}/webserver                                              getWebserverKind                           Get web server
+  PUT    /servers/{server_id}/webserver                                              setWebserverKind                           Set the web server kind for one server.
+  POST   /servers/{server_id}/webserver/config/reset                                 resetWebServerConfig                       Reset the config for the web server to default.
+  POST   /servers/{server_id}/webserver/litespeed/password                           setLiteSpeedAdminPassword                  Set a new LiteSpeed admin password.
+  GET    /v2/servers/dns_pool                                                        getDnsPoolIps                              Get DNS pool IPs
+  GET    /v2/servers/{server_id}/database-role                                       getDatabaseRoleMysqlKind                   Gets the MySQL kind for a given server.
+  PUT    /v2/servers/{server_id}/database-role                                       installDatabaseRole                        Enables the database role on a given ServerUuid
+  POST   /v2/servers/{server_id}/database-role/restart                               restartMysql                               Restart MySQL gracefully
+  DELETE /v2/servers/{server_id}/modsec_conf                                         resetServerModSecurityConfig               Delete custom mod_security config and reset to default
+  GET    /v2/servers/{server_id}/modsec_conf                                         getServerModSecurityConfig                 Get mod security config
+  PUT    /v2/servers/{server_id}/modsec_conf                                         setServerModSecurityConfig                 Set mod security config
+  GET    /v2/servers/{server_id}/modsec_status                                       getServerModSecurityStatus                 Get mod security status for a server
+  PUT    /v2/servers/{server_id}/modsec_status                                       setServerModSecurityStatus                 Set mod security status for a server
+  GET    /v2/servers/{server_id}/my-cnf                                              getMysqlMyCnf                              Download my.cnf for a given server
+  PUT    /v2/servers/{server_id}/my-cnf                                              saveMysqlMyCnf                             Save a new my.cnf
+  GET    /v2/servers/{server_id}/owasp                                               getOwaspRulesVersion                       Get the current and available version of the OWASP rules
+  POST   /v2/servers/{server_id}/owasp                                               updateOwaspRules                           Upgrade OWASP rules
+  DELETE /v2/servers/{server_id}/primary-ipv6                                        deleteServerPrimaryIpv6                    Deletes/unsets the primary IPv6 address for a server.
+  PUT    /v2/servers/{server_id}/primary-ipv6                                        updateServerPrimaryIpv6                    Updates or sets the primary ipv6 address of the server.  This endpoint will not change existing websites' DNS but the new record will be applied to all future zones.
+
+## settings (35)
+  GET    /settings                                                                   getSettings                                Get all current settings
+  POST   /settings                                                                   createSettings                             Create settings
+  GET    /settings/orchd/admin-lockdown/list                                         getAdminLockdownList                       Get the list of allowed IPs for master organisation login, line separated
+  PUT    /settings/orchd/admin-lockdown/list                                         setAdminLockdownList                       Set admin lockdown list as a whole
+  GET    /settings/orchd/admin-lockdown/status                                       getAdminLockdownStatus                     Check if master organisation IP lockdown is enabled
+  PUT    /settings/orchd/admin-lockdown/status                                       setAdminLockdownStatus                     Set admin lockdown status
+  DELETE /settings/orchd/login-policy/email-blacklist                                deleteOrchdLoginPolicyEmailBlacklist       Delete an orchd login policy email blacklist
+  GET    /settings/orchd/login-policy/email-blacklist                                getOrchdLoginPolicyEmailBlacklist          Get the orchd login policy email blacklist
+  PUT    /settings/orchd/login-policy/email-blacklist                                addOrchdLoginPolicyEmailBlacklist          Set the orchd login policy email blacklist as a whole
+  DELETE /settings/orchd/login-policy/email-whitelist                                deleteOrchdLoginPolicyEmailWhitelist       Delete an orchd login policy email whitelist
+  GET    /settings/orchd/login-policy/email-whitelist                                getOrchdLoginPolicyEmailWhitelist          Get the orchd login policy email whitelist
+  PUT    /settings/orchd/login-policy/email-whitelist                                addOrchdLoginPolicyEmailWhitelist          Set the orchd login policy email whitelist as a whole
+  DELETE /settings/orchd/login-policy/ip-blacklist                                   deleteOrchdLoginPolicyIpBlacklist          Delete an orchd login policy ip blacklist
+  GET    /settings/orchd/login-policy/ip-blacklist                                   getOrchdLoginPolicyIpBlacklist             Get the orchd login policy ip blacklist
+  PUT    /settings/orchd/login-policy/ip-blacklist                                   addOrchdLoginPolicyIpBlacklist             Set the orchd login policy ip blacklist as a whole
+  DELETE /settings/orchd/login-policy/ip-whitelist                                   deleteOrchdLoginPolicyIpWhitelist          Delete an orchd login policy ip whitelist
+  GET    /settings/orchd/login-policy/ip-whitelist                                   getOrchdLoginPolicyIpWhitelist             Get the orchd login policy ip whitelist
+  PUT    /settings/orchd/login-policy/ip-whitelist                                   addOrchdLoginPolicyIpWhitelist             Set the orchd login policy ip whitelist as a whole
+  GET    /settings/orchd/login-policy/settings                                       getOrchdLoginPolicySettings                Get the orchd login policy settings
+  PUT    /settings/orchd/login-policy/settings                                       addOrchdLoginPolicySettings                Set a single orchd login policy setting
+  GET    /settings/orchd/logs                                                        getOrchdLogSettings                        Get the orchd log settings
+  PUT    /settings/orchd/logs                                                        setOrchdLogSettings                        Set the orchd log settings
+  GET    /settings/orchd/prohibited_domains                                          getProhibitedDomains                       Get the platform level prohibited domains as a newline separated list
+  PUT    /settings/orchd/prohibited_domains                                          setProhibitedDomains                       Set the platform level prohibited domains
+  GET    /settings/service/{setting_kind}                                            getGlobalServiceSetting                    Get the value for a particular global service setting
+  DELETE /settings/service/{setting_kind}/{setting_key}                              deleteGlobalServiceSetting                 Delete a single global service setting
+  PUT    /settings/service/{setting_kind}/{setting_key}                              setGlobalServiceSetting                    Set a single global service setting
+  DELETE /settings/{name}                                                            deleteSetting                              Remove the specified setting
+  GET    /settings/{name}                                                            getSetting                                 Get the specified setting
+  PUT    /settings/{name}                                                            updateSetting                              Create or update the specified setting
+  DELETE /v2/settings/backup/remote_storage/s3                                       deleteBackupRemoteStorageS3                Delete S3 object storage settings at platform level.
+  GET    /v2/settings/backup/remote_storage/s3                                       getBackupRemoteStorageS3                   Get S3 object storage settings at platform level.
+  PATCH  /v2/settings/backup/remote_storage/s3                                       updateBackupRemoteStorageS3                Update S3 object storage settings at platform level.
+  POST   /v2/settings/backup/remote_storage/s3                                       createBackupRemoteStorageS3                Create S3 object storage settings at platform level.
+  GET    /v2/settings/demo_mode                                                      getDemoMode                                Get the demo mode status of the orchd service
+
+## subscriptions (6)
+  GET    /orgs/{org_id}/subscriptions                                                getSubscriptionsToParent                   Get subscriptions to parent
+  DELETE /orgs/{org_id}/subscriptions/{subscription_id}                              deleteSubscription                         Delete subscription
+  GET    /orgs/{org_id}/subscriptions/{subscription_id}                              getSubscription                            Get subscription
+  PATCH  /orgs/{org_id}/subscriptions/{subscription_id}                              updateSubscription                         Update subscription
+  GET    /orgs/{org_id}/subscriptions/{subscription_id}/bandwidth                    getSubscriptionBandwidthUsage              Get subscription bandwidth
+  PUT    /orgs/{org_id}/subscriptions/{subscription_id}/calculate-resource-usage     calculateResourceUsage                     Re-Calculates all subscription resources
+
+## websites (80)
+  DELETE /orgs/{org_id}/websites                                                     deleteWebsites                             Delete websites
+  GET    /orgs/{org_id}/websites                                                     getWebsites                                Get websites
+  POST   /orgs/{org_id}/websites                                                     createWebsite                              Create a new website or clone an existing one.
+  GET    /orgs/{org_id}/websites/clone                                               getWebsiteClones                           List website clones for given OrgId
+  POST   /orgs/{org_id}/websites/clone                                               cloneWebsite                               Clone website or push live
+  GET    /orgs/{org_id}/websites/clone/{clone_id}                                    getWebsiteClone                            Get's detail about a single push live
+  GET    /orgs/{org_id}/websites/clone/{clone_id}/log                                getWebsiteCloneLog                         Get the log for a given clone id..
+  DELETE /orgs/{org_id}/websites/{website_id}                                        deleteWebsite                              Delete website
+  GET    /orgs/{org_id}/websites/{website_id}                                        getWebsite                                 Get website
+  PATCH  /orgs/{org_id}/websites/{website_id}                                        updateWebsite                              Update website
+  POST   /orgs/{org_id}/websites/{website_id}/access-tokens                          getSiteAccessToken                         Get an access token for the given website
+  GET    /orgs/{org_id}/websites/{website_id}/cgroup_limits                          getWebsiteCgroupLimits                     Get the active cgroup limits for a website
+  PUT    /orgs/{org_id}/websites/{website_id}/cgroup_limits                          setWebsiteCgroupLimits                     Set the active cgroup limits for a website (Master org only)
+  DELETE /orgs/{org_id}/websites/{website_id}/crontab                                deleteUserCrontab                          Delete user's crontab
+  GET    /orgs/{org_id}/websites/{website_id}/crontab                                getUserCrontab                             Get user's crontab
+  PATCH  /orgs/{org_id}/websites/{website_id}/crontab                                updateUserCrontab                          Update user's crontab
+  POST   /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/screenshot/take    takeScreenshot                             Take website screenshot immediately
+  GET    /orgs/{org_id}/websites/{website_id}/domains/{domain_id}/screenshot/timestamp getScreenshotTimestamp                     Get last screeshot file's Timestamp
+  GET    /orgs/{org_id}/websites/{website_id}/fs_quota_limits                        getWebsiteFsQuotaLimits                    Get the active FS quoa limits for a website
+  PUT    /orgs/{org_id}/websites/{website_id}/fs_quota_limits                        setWebsiteFsQuotaLimits                    Set the active FS quota limits for a website (Master org only)
+  GET    /orgs/{org_id}/websites/{website_id}/ftp/users                              getFtpUsers                                Returns all ftp users data for a given website
+  POST   /orgs/{org_id}/websites/{website_id}/ftp/users                              createFtpUser                              Creates a new FTP user for a given website
+  DELETE /orgs/{org_id}/websites/{website_id}/ftp/users/{username}                   deleteFtpUser                              Deletes given FTP user
+  PATCH  /orgs/{org_id}/websites/{website_id}/ftp/users/{username}                   updateFtpUser                              Update given FTP user
+  GET    /orgs/{org_id}/websites/{website_id}/htaccess                               getWebsiteHtaccessRewrites                 Reads chains of rewrite rules
+  PATCH  /orgs/{org_id}/websites/{website_id}/htaccess                               updateWebsiteHtaccessRewrites              Updates rewrite rules
+  GET    /orgs/{org_id}/websites/{website_id}/htaccess/ips                           getWebsiteHtaccessIpsRule                  Returns current rules of blocked/whitelisted IPs
+  PUT    /orgs/{org_id}/websites/{website_id}/htaccess/ips                           updateWebsiteHtaccessIpsRule               Sets a rule over provided ips - either block or allow
+  GET    /orgs/{org_id}/websites/{website_id}/metrics                                getWebsiteMetrics                          Get website metrics
+  GET    /orgs/{org_id}/websites/{website_id}/mysql-dbs                              getWebsiteMySQLDBs                         Get website MySQL databases
+  POST   /orgs/{org_id}/websites/{website_id}/mysql-dbs                              createWebsiteMySQLDB                       Create a MySQL database for website
+  POST   /orgs/{org_id}/websites/{website_id}/preview                                createPreviewDomain                        Create a preview domain
+  POST   /orgs/{org_id}/websites/{website_id}/push-live                              pushWebsiteLive                            Making a staging website live
+  GET    /orgs/{org_id}/websites/{website_id}/server_domains                         getWebsiteServerDomains                    Fetch website server domains
+  GET    /orgs/{org_id}/websites/{website_id}/settings/{setting_kind}                getWebsiteSetting                          Get the value for a particular setting
+  DELETE /orgs/{org_id}/websites/{website_id}/settings/{setting_kind}/{setting_key}  deleteWebsiteSetting                       Delete a single override setting
+  PUT    /orgs/{org_id}/websites/{website_id}/settings/{setting_kind}/{setting_key}  setWebsiteSetting                          Set a single override setting
+  GET    /orgs/{org_id}/websites/{website_id}/ssh/keys                               getWebsiteSshKeys                          Get website's authorized SSH keys
+  POST   /orgs/{org_id}/websites/{website_id}/ssh/keys                               authorizeWebsiteSshKey                     Authorize a new SSH key.
+  DELETE /orgs/{org_id}/websites/{website_id}/ssh/keys/{key_id}                      unauthorizeWebsiteSshKey                   Unauthorize the public SSH key with the given ID.
+  PATCH  /orgs/{org_id}/websites/{website_id}/ssh/keys/{key_id}                      updateWebsiteSshKey                        Update an existing website public SSH key.
+  POST   /orgs/{org_id}/websites/{website_id}/ssh/password                           authorizeWebsiteSshPassword                Authorize a new SSH password for website.
+  GET    /orgs/{org_id}/websites/{website_id}/status/backup                          getWebsiteBackupStatus                     Get the status of an ongoing website backup operation
+  POST   /orgs/{org_id}/websites/{website_id}/validate-operation                     validateWebsiteOperation                   Validate whether a website operation is allowed
+  POST   /v2/domains/{domain_id}/letsencrypt                                         createWebsiteDomainLetsencryptCerts        Generate and setup letsencrypt ssl certificates for website's domain
+  POST   /v2/domains/{domain_id}/letsencrypt_mail                                    createWebsiteMailDomainLetsencryptCerts    Generate and setup letsencrypt ssl certificates for website's domain with mail. prefix.
+  POST   /v2/domains/{domain_id}/letsencrypt_preflight                               performLetsEncryptPreflightCheck           Perform the LetsEncrypt preflight check
+  GET    /v2/domains/{domain_id}/modsec_status                                       getWebsiteDomainModSecStatus               Get mod security status for a single domain
+  PUT    /v2/domains/{domain_id}/modsec_status                                       setWebsiteDomainModSecStatus               Set mod security status on a single domain
+  DELETE /v2/domains/{domain_id}/nginx_fastcgi                                       clearDomainNginxFastCgi                    Clear FastCGI cache for domain
+  GET    /v2/domains/{domain_id}/nginx_fastcgi                                       getDomainNginxFastCgi                      Get status of Nginx FastCGI enablement
+  PUT    /v2/domains/{domain_id}/nginx_fastcgi                                       setDomainNginxFastCgi                      Set Nginx FastCGI enablement
+  DELETE /v2/domains/{domain_id}/nginx_fastcgi_excluded_paths                        deleteDomainNginxFastCgiExcludedPath       Delete Nginx FastCGI excluded path
+  GET    /v2/domains/{domain_id}/nginx_fastcgi_excluded_paths                        getDomainNginxFastCgiExcludedPaths         Get Nginx FastCGI excluded paths
+  POST   /v2/domains/{domain_id}/nginx_fastcgi_excluded_paths                        addDomainNginxFastCgiExcludedPath          Add Nginx FastCGI excluded path
+  DELETE /v2/domains/{domain_id}/vhost                                               deleteWebsiteDomainVhost                   Deletes domain's custom vhost file if any
+  GET    /v2/domains/{domain_id}/vhost                                               getWebsiteDomainVhost                      Get domain's custom vhost file, if the file does not exist return empty string
+
+  PUT    /v2/domains/{domain_id}/vhost                                               setWebsiteDomainVhost                      Set a custom vhost file
+  DELETE /v2/domains/{domain_id}/webserver_rewrites                                  deleteDomainWebserverRewrite               Delete web server rewrite
+  GET    /v2/domains/{domain_id}/webserver_rewrites                                  getDomainWebserverRewrites                 Get web server rewrites for specified domain
+  PUT    /v2/domains/{domain_id}/webserver_rewrites                                  setDomainWebserverRewrite                  Set web server rewrite to file
+  GET    /v2/websites/{website_id}/ioncube                                           getWebsiteIoncubeStatus                    Get ioncube status for an existing website
+  PUT    /v2/websites/{website_id}/ioncube                                           setWebsiteIoncubeStatus                    Set ioncube status for an existing website
+  GET    /v2/websites/{website_id}/redis                                             getWebsiteRedisState                       Get redis state for a website
+  PUT    /v2/websites/{website_id}/redis                                             setWebsiteRedisState                       Set Redis state for an existing website
+  POST   /v2/websites/{website_id}/restart_php                                       restartWebsitePhp                          Restart PHP container for a website
+  GET    /v2/websites/{website_id}/webserver_kind                                    getWebsiteWebserverKind                    Get web server kind for a given website
+  GET    /websites/{website_id}/available_php_extensions                             getWebsiteAvailablePhpExtensions           Get available PHP extensions for a website
+  GET    /websites/{website_id}/backups_disabled                                     getWebsiteBackupsDisabledStatus            Get backups disabled status on a website
+  PUT    /websites/{website_id}/backups_disabled                                     setWebsiteBackupsDisabledStatus            Set backups disabled status on a website
+  GET    /websites/{website_id}/built_in_php_extensions                              getBuiltInPhpExtensions                    Get a list of the PHP extensions compiled in to the currently selected version of PHP for this website
+  GET    /websites/{website_id}/container_cron_enabled                               getContainerCronEnabledStatus              Get container cron status for a website
+  PUT    /websites/{website_id}/container_cron_enabled                               setContainerCronEnabledStatus              Set backups disabled status on a website
+  GET    /websites/{website_id}/container_ip                                         getWebsiteContainerIp                      Get the container IP and host IP for this website
+  GET    /websites/{website_id}/lsphp_settings                                       getWebsiteLsphpSettings                    Get the LSPHP settings for this website
+  PUT    /websites/{website_id}/lsphp_settings                                       setWebsiteLsphpSettings                    Set the LSPHP settings for this website
+  GET    /websites/{website_id}/php_error_log                                        getWebsitePhpErrorLog                      Get last 256KB of PHP error log
+  DELETE /websites/{website_id}/php_extensions                                       disableWebsitePhpExtension                 Disable a PHP extension
+  GET    /websites/{website_id}/php_extensions                                       getWebsiteEnabledPhpExtensions             Get enabled PHP extensions
+  POST   /websites/{website_id}/php_extensions                                       enableWebsitePhpExtension                  Enable a PHP extension
+
+## wordpress (31)
+  GET    /orgs/{org_id}/websites/{website_id}/apps/wordpress                         getWordpressInstallations                  Trigger discovery of WP installations
+  GET    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress                getWordpressSettings                       Get Wordpress application settings
+  PATCH  /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress                updateWordpressSettings                    Update Wordpress app settings
+  GET    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/info           getWordpressInfo                           
+  GET    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/plugins        getWordpressPlugins                        Get website WordPress plugins
+  POST   /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/plugins        installWordpressPlugin                     Install a plugin
+  DELETE /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/plugins/{plugin} deleteWordpressPlugin                      Delete website WordPress plugin
+  PATCH  /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/plugins/{plugin} updateWordpressPluginSettings              Updates website WordPress plugin settings
+  PATCH  /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/plugins/{plugin}/version updateWordpressPluginToLatest              Updates website WordPress plugin to latest version
+  GET    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/themes         getWordpressThemes                         Get website WordPress themes
+  POST   /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/themes         installWordpressTheme                      Install a WordPress theme
+  DELETE /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/themes/{theme} deleteWordpressTheme                       Delete a WordPress theme
+  POST   /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/themes/{theme}/activate activateWordpressTheme                     Activate a WordPress theme
+  PATCH  /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/themes/{theme}/auto_update setWordpressThemeAutoUpdateStatus          Set WordPress theme auto-update status
+  POST   /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/themes/{theme}/update updateWordpressTheme                       Update a WordPress theme
+  GET    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/users          getWordpressUsers                          
+  POST   /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/users          createWordpressUser                        Create website WordPress user
+  GET    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/users/default  getDefaultWpSsoUser                        
+  PUT    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/users/default  setDefaultWpSsoUser                        Set WP user as the default SSO user for that website.
+  DELETE /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/users/{user_id} deleteWordpressUser                        Delete WordPress user
+  PATCH  /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/users/{user_id} updateWordpressUser                        Update WordPress user
+  GET    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/users/{user_id}/sso getWordpressUserSsoUrl                     Get SSO URL for a WP user
+  GET    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/version        getWordpressAppVersion                     Get WordPress version
+  PATCH  /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/version        updateWordpressAppVersion                  Update website WP app to specific version or latest
+  PUT    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/wp-config      setWordpressConfig                         Set a single value of a wp-config.php entry.
+  GET    /orgs/{org_id}/websites/{website_id}/apps/{app_id}/wordpress/wp-config/{wp_option} getWordpressConfig                         Get the WP config value for a given option
+  GET    /utils/wordpress/latest                                                     getWordpressLatestVersion                  Get WordPress latest available version
+  GET    /v2/apps/{app_id}/wordpress/maintenance-mode                                getWordPressMaintenanceMode                Gets the MaintenanceMode for a WordPress installation
+  PUT    /v2/apps/{app_id}/wordpress/maintenance-mode                                setWordPressMaintenanceMode                Sets the MaintenanceMode for a WordPress installation
+  GET    /v2/apps/{app_id}/wordpress/url                                             getWordPressSiteurl                        Fetches the site URL for a WordPress installation
+  PUT    /v2/apps/{app_id}/wordpress/url                                             setWordPressSiteurl                        Sets the site URL for a WordPress installation
+
+=== SECURITY SCHEMES ===
+{
+  "sessionCookie": {
+    "type": "apiKey",
+    "in": "cookie",
+    "name": "id0"
+  },
+  "bearerAuth": {
+    "type": "http",
+    "scheme": "bearer"
+  }
+}
+=== GLOBAL SECURITY ===
+None
+=== SERVERS ===
+None
