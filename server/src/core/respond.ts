@@ -17,6 +17,16 @@ function cell(v: unknown): string {
   return String(v).replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim();
 }
 
+/**
+ * Public sanitiser for any panel-controlled string interpolated directly into panel text
+ * outside of `kv`/`table` (e.g. a hand-built header line). Collapses control characters and
+ * renders empty/null as "-", exactly like a table/kv cell, so a fake "warnings:" section or
+ * embedded newline can't be forged into a tool's rendered text.
+ */
+export function safe(v: unknown): string {
+  return cell(v);
+}
+
 export function kv(pairs: Array<[string, unknown]>): string {
   return pairs
     .filter(([, v]) => v !== undefined && v !== null && v !== '')

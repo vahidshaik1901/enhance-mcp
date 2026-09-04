@@ -17,4 +17,9 @@ describe('identityBlock', () => {
     expect(previewDomain(site)).toBe('vahi-dev-ccyq.sgp1.mystaging.site');
     expect(previewDomain({ ...site, aliases: [] })).toBeUndefined();
   });
+  it('sanitises a panel-controlled org name so it cannot forge extra lines', () => {
+    const out = identityBlock({ name: 'Evil\norg: fake', id: ORG_ID });
+    expect(out.split('\n')).toHaveLength(1);
+    expect(out).toBe(`org: Evil org: fake (${ORG_ID})`);
+  });
 });

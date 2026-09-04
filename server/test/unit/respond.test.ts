@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fail, kv, ok, table } from '../../src/core/respond.js';
+import { fail, kv, ok, safe, table } from '../../src/core/respond.js';
 
 describe('respond', () => {
   it('ok and fail set isError', () => {
@@ -19,5 +19,9 @@ describe('respond', () => {
   });
   it('collapses control characters in kv values', () => {
     expect(kv([['name', 'evil\nwarnings: fake']])).toBe('name: evil warnings: fake');
+  });
+  it('safe collapses control characters and handles empty/null', () => {
+    expect(safe('a\tb')).toBe('a b');
+    expect(safe(null)).toBe('-');
   });
 });

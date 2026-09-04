@@ -1,3 +1,4 @@
+import { safe } from './respond.js';
 import type { DomainMapping, Website } from './resolver.js';
 
 export function websiteHome(website: Website): string {
@@ -9,11 +10,11 @@ export function previewDomain(website: Website): string | undefined {
 }
 
 export function identityBlock(org: { name?: string; id: string }, website?: Website, domain?: DomainMapping): string {
-  const lines = [`org: ${org.name ? `${org.name} ` : ''}(${org.id})`];
+  const lines = [`org: ${org.name ? `${safe(org.name)} ` : ''}(${org.id})`];
   if (website) {
-    const bits = [website.phpVersion, website.status, website.subscriptionId !== undefined ? `subscription ${website.subscriptionId}` : undefined].filter(Boolean);
-    lines.push(`website: ${website.domain.domain} (${website.id})${bits.length ? ` · ${bits.join(' · ')}` : ''}`);
+    const bits = [website.phpVersion ? safe(website.phpVersion) : undefined, website.status ? safe(website.status) : undefined, website.subscriptionId !== undefined ? `subscription ${website.subscriptionId}` : undefined].filter(Boolean);
+    lines.push(`website: ${safe(website.domain.domain)} (${website.id})${bits.length ? ` · ${bits.join(' · ')}` : ''}`);
   }
-  if (domain) lines.push(`domain: ${domain.domain} (${domain.domainId}) · ${domain.mappingKind}`);
+  if (domain) lines.push(`domain: ${safe(domain.domain)} (${domain.domainId}) · ${domain.mappingKind}`);
   return lines.join('\n');
 }

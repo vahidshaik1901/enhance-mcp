@@ -1,9 +1,10 @@
 import * as z from 'zod/v4';
+import { isEnhanceApiError } from '../client/errors.js';
 import { redactSecret } from '../config.js';
 import { requireOrg } from '../core/context.js';
 import { identityBlock } from '../core/identity.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
-import { kv, ok, table } from '../core/respond.js';
+import { kv, ok, safe, table } from '../core/respond.js';
 
 const DAY_MS = 86_400_000;
 
@@ -25,26 +26,31 @@ export const authStatus = defineTool({
       warnings.push('Using a panel session credential. It can stop working at any time; prefer an access token.');
     } else if (client.orgId) {
       const org = client.orgId;
-      const tokens = await client.call('GET', '/orgs/{org_id}/access_tokens', () => client.api.GET('/orgs/{org_id}/access_tokens', { params: { path: { org_id: org } } }));
-      const matches = tokens.filter((t) => config.token.startsWith(t.firstFive));
-      if (matches.length === 1) {
-        const mine = matches[0]!;
-        token = { id: mine.id, friendlyName: mine.friendlyName, roles: mine.roles, tokenExpires: mine.tokenExpires ?? null, ipRestricted: mine.ipRestricted ?? false };
-        credential = `Bearer access token "${mine.friendlyName ?? '(unnamed)'}" · roles: ${mine.roles.join(', ')} · expires: ${mine.tokenExpires ?? 'never'}`;
-        if (mine.tokenExpires) {
-          const now = ctx.now?.() ?? Date.now();
-          const expMs = new Date(mine.tokenExpires).getTime();
-          if (!Number.isFinite(expMs)) {
-            warnings.push(`Could not parse the access token expiry "${mine.tokenExpires}".`);
-          } else {
-            const left = expMs - now;
-            if (left < 7 * DAY_MS) warnings.push(left < 0 ? 'The access token has expired.' : `The access token expires in ${Math.ceil(left / DAY_MS)} day(s). Create a new one soon.`);
+      try {
+        const tokens = await client.call('GET', '/orgs/{org_id}/access_tokens', () => client.api.GET('/orgs/{org_id}/access_tokens', { params: { path: { org_id: org } } }));
+        const matches = tokens.filter((t) => config.token.startsWith(t.firstFive));
+        if (matches.length === 1) {
+          const mine = matches[0]!;
+          token = { id: mine.id, friendlyName: mine.friendlyName, roles: mine.roles, tokenExpires: mine.tokenExpires ?? null, ipRestricted: mine.ipRestricted ?? false };
+          credential = `Bearer access token "${mine.friendlyName ? safe(mine.friendlyName) : '(unnamed)'}" · roles: ${mine.roles.join(', ')} · expires: ${mine.tokenExpires ? safe(mine.tokenExpires) : 'never'}`;
+          if (mine.tokenExpires) {
+            const now = ctx.now?.() ?? Date.now();
+            const expMs = new Date(mine.tokenExpires).getTime();
+            if (!Number.isFinite(expMs)) {
+              warnings.push(`Could not parse the access token expiry "${safe(mine.tokenExpires)}".`);
+            } else {
+              const left = expMs - now;
+              if (left < 7 * DAY_MS) warnings.push(left < 0 ? 'The access token has expired.' : `The access token expires in ${Math.ceil(left / DAY_MS)} day(s). Create a new one soon.`);
+            }
           }
+        } else if (matches.length > 1) {
+          credential = `Bearer access token (${matches.length} tokens in this org share this prefix; cannot tell which is in use)`;
+        } else {
+          credential = 'Bearer access token (not listed in this org; it may belong to a parent org)';
         }
-      } else if (matches.length > 1) {
-        credential = `Bearer access token (${matches.length} tokens in this org share this prefix; cannot tell which is in use)`;
-      } else {
-        credential = 'Bearer access token (not listed in this org; it may belong to a parent org)';
+      } catch (e) {
+        if (!isEnhanceApiError(e)) throw e;
+        credential = `Bearer access token (could not list this org's tokens: ${e.code})`;
       }
     } else {
       credential = 'Bearer access token (org not selected; token details unavailable until ENHANCE_ORG_ID is set)';
@@ -63,7 +69,7 @@ export const authStatus = defineTool({
       ]),
       'memberships:',
       table(client.memberships.map((m) => ({ org: m.orgName, id: m.orgId, roles: m.roles, master: m.isMasterOrg ? 'yes' : 'no' })), ['org', 'id', 'roles', 'master']),
-      warnings.length ? `warnings:\n- ${warnings.join('\n- ')}` : undefined,
+      warnings.length ? ['warnings:', ...warnings.map((w) => `- ${safe(w)}`)].join('\n') : undefined,
     ].filter(Boolean).join('\n');
     return ok(text, { version, authMode: client.authMode, login: { id: login.id, name: login.name, email: login.email }, org: client.orgId ? { id: client.orgId, name: client.orgName } : null, memberships: client.memberships, token: token ?? null, readOnly: config.readOnly, tiers: config.tiers, warnings });
   },
@@ -94,7 +100,7 @@ export const subscriptionsList = defineTool({
     });
     const blocks = items.map((s) =>
       [
-        `subscription ${s.id} · ${s.planName} (plan ${s.planId}, ${s.planType}, ${s.status})`,
+        `subscription ${s.id} · ${safe(s.planName)} (plan ${s.planId}, ${safe(s.planType)}, ${safe(s.status)})`,
         kv([
           ['websites', quota(s.resources['websites']?.total, s.resources['websites']?.usage)],
           ['staging websites', quota(s.resources['stagingWebsites']?.total, s.resources['stagingWebsites']?.usage)],
@@ -190,12 +196,17 @@ export const domainCheck = defineTool({
   tier: 'customer',
   risk: 'read',
   description: 'Read-only preflight: can this domain be added as a website here? Returns notInUse, inUseCurrentOrg (with the website id), inUseAnotherOrg, inUseDeletedSite, or prohibited. Always call it before website_create.',
-  input: z.object({ domain: z.string().min(3).transform((d) => d.trim().toLowerCase()) }),
+  input: z.object({
+    domain: z
+      .string()
+      .transform((d) => d.trim().toLowerCase())
+      .refine((d) => d.length >= 3 && /^[a-z0-9.-]+$/.test(d), { error: 'domain must be a hostname (letters, digits, dots, hyphens)' }),
+  }),
   async handler({ domain }, ctx) {
     const { client } = ctx;
     const org = requireOrg(client);
     const res = await client.call('POST', '/orgs/{org_id}/domains/check', () => client.api.POST('/orgs/{org_id}/domains/check', { params: { path: { org_id: org } }, body: { domain } }));
-    const text = [identityBlock({ name: client.orgName, id: org }), `domain: ${domain}`, `status: ${res.status}`, CHECK_TEXT.get(res.status) ?? 'Unknown status.', res.websiteId ? `website id: ${res.websiteId}` : undefined].filter(Boolean).join('\n');
+    const text = [identityBlock({ name: client.orgName, id: org }), `domain: ${safe(domain)}`, `status: ${safe(res.status)}`, CHECK_TEXT.get(res.status) ?? 'Unknown status.', res.websiteId ? `website id: ${res.websiteId}` : undefined].filter(Boolean).join('\n');
     return ok(text, { domain, status: res.status, websiteId: res.websiteId ?? null });
   },
 });
