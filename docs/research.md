@@ -265,3 +265,18 @@ reports the Cloudflare nameservers and `active`/`pending`.
 
 Provider detection: nameserver names ending in `.ns.cloudflare.com` mean Cloudflare;
 names matching `platform_info.nameServers` mean the platform; anything else is `other`.
+
+## Preview domain availability (2026-09-04)
+
+- `GET /branding?orgId=` -> `stagingDomain: "sgp1.mystaging.site"` on this panel. This
+  value is set by the provider (`POST /orgs/{org}/staging-domain`, reseller/MO only;
+  customers get 403 on `GET /orgs/{org}/staging-domain`). Absent or null means the
+  provider has not configured preview domains and `POST …/preview` will fail.
+- Existing preview domain is visible as `website.aliases[].kind == "preview"`.
+- `POST /orgs/{org}/websites/{id}/preview` -> 200 with the existing name
+  (`"vahi-dev-ccyq.sgp1.mystaging.site"`), 201 when created, 400 when it cannot.
+- Fallback verification without a preview domain works:
+  `curl -k --resolve vahi.dev:443:65.98.32.45 https://vahi.dev/` reaches the container
+  (404 because `public_html` is empty; `ssl_verify_result=18` = self-signed placeholder).
+- An empty docroot returns 404 on every hostname, so verification must request a file
+  that was deployed.

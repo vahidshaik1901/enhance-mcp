@@ -309,14 +309,14 @@ this spec before the next milestone starts.
 | `auth_status` | R | `/login`, `/login/memberships`, `/orgs/{org}/access_tokens`, `/version` |
 | `subscriptions_list` | R | `/orgs/{org}/subscriptions` (quotas, allowances, allowed apps) |
 | `activity_log` | R | `/v2/orgs/{org}/activities` |
-| `platform_info` | R | `/branding?orgId=` (platform nameservers, staging domain, phpMyAdmin host) |
+| `platform_info` | R | `/branding?orgId=` (platform nameservers, phpMyAdmin host, and `previewDomainsAvailable` derived from whether the provider configured `stagingDomain`) |
 | `domain_check` | R | `POST /orgs/{org}/domains/check` (`notInUse`, `inUseCurrentOrg`+websiteId, `inUseAnotherOrg`, `inUseDeletedSite`, `prohibited`) |
 | `websites_list` | R | `/orgs/{org}/websites` |
 | `website_get` | R | `/orgs/{org}/websites/{id}` (`canUse`, `unixUser`, IPs, php, status) |
 | `website_create` | W | `POST /orgs/{org}/websites` |
 | `website_set_php_version` | W | `PATCH /orgs/{org}/websites/{id}` |
 | `website_restart_php` | W | `POST /v2/websites/{id}/restart_php` |
-| `website_preview_domain` | W | `POST …/preview` (returns existing if present) |
+| `website_preview_domain` | W | reads `aliases[kind=preview]` first; else `POST …/preview` (200 existing, 201 created). When the provider has no `stagingDomain`, returns `available: false` with the verify-by-IP fallback instead of failing |
 | `website_delete` | D | `DELETE /orgs/{org}/websites/{id}` (soft only) |
 | `domains_list` | R | `…/domains?withSsl=true` |
 | `domain_add` | W | `POST …/domains` (addon, alias, subdomain) |
@@ -456,8 +456,14 @@ A; B and C are documented as "coming" until milestone D.
 2. **Site.** `website_get`. Read `canUse`, `phpVersion`, `documentRoot`, `serverIps`,
    preview domain.
 3. **DNS.** Verified live on the test panel; this is a decision tree, not one message.
-   The preview domain (`*.<stagingDomain>`, for example
-   `vahi-dev-ccyq.sgp1.mystaging.site`) always works, so deploying never waits on DNS.
+   Deploying never waits on DNS. Call `website_preview_domain` first: when the provider
+   has configured a staging domain, a preview URL such as
+   `vahi-dev-ccyq.sgp1.mystaging.site` exists or is created, and every later
+   verification uses it. When the provider has not (the tool reports
+   `available: false`), verification uses the app server directly:
+   `curl --resolve <domain>:443:<serverIp> https://<domain>/` (with `-k` until a real
+   certificate exists), and the customer is told how to do the same in a browser with a
+   hosts-file entry. Never assume a preview domain exists.
    - Read `domain_dns_status`. It returns the panel's status (`Resolved`,
      `ForeignServer`, `Failed`, `Mixed`), the current authoritative nameservers, the
      platform nameservers, the app server IP, and a `provider` guess derived from the
@@ -496,8 +502,10 @@ A; B and C are documented as "coming" until milestone D.
    request.
 8. **Post-deploy.** Over SSH: `composer install --no-dev`, migrations, `wp cache flush`
    as applicable. `website_restart_php` and `cache_clear` when relevant.
-9. **Verify.** HTTP request to the preview domain, then the primary domain when DNS
-   resolves. Report the URLs.
+9. **Verify.** HTTP request for a file that was just deployed (an empty docroot
+   returns 404, so a bare `/` check is not enough): on the preview domain when
+   available, otherwise via `curl --resolve` to the app server IP, then on the primary
+   domain once DNS resolves. Report the URLs and which method was used.
 10. **Sandbox rule.** rsync and ssh must run with the Claude Code sandbox disabled for
     that command or with the app server host allowlisted. State this before running.
 
