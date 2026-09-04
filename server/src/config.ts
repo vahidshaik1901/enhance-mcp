@@ -56,10 +56,10 @@ function loadProfile(env: ConfigSource['env'], readFile: NonNullable<ConfigSourc
     parsed = JSON.parse(text) as { profiles?: Record<string, Profile> };
   } catch (e) {
     if (envComplete) {
-      console.error(`enhance-mcp: ignoring malformed ~/.enhance-mcp/config.json: ${(e as Error).message}`);
+      console.error('enhance-mcp: ignoring malformed ~/.enhance-mcp/config.json (invalid JSON); using environment configuration');
       return {};
     }
-    throw new ConfigError(`~/.enhance-mcp/config.json is not valid JSON: ${(e as Error).message}`);
+    throw new ConfigError('~/.enhance-mcp/config.json is not valid JSON. Fix the file or remove it.');
   }
   const name = env['ENHANCE_PROFILE'] ?? 'default';
   const profile = parsed.profiles?.[name];

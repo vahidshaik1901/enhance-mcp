@@ -64,32 +64,51 @@ describe('loadConfig', () => {
   });
 
   it('ignores a malformed profile file when env is complete, with a warning', () => {
+    const leaky = `{"profiles":{"default":{"panelUrl":"https://f.example.com","token":${TOKEN}}}}`;
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const c = loadConfig({
       env: { ENHANCE_PANEL_URL: 'https://p.example.com', ENHANCE_TOKEN: TOKEN },
-      readFile: () => '{ not json',
+      readFile: () => leaky,
       home: '/home/u',
     });
     expect(c.panelUrl).toBe('https://p.example.com');
     expect(spy).toHaveBeenCalledOnce();
-    const callArg = spy.mock.calls[0]![0] as string;
-    expect(callArg).toContain('malformed');
-    expect(callArg).not.toContain(TOKEN);
+    const msg = spy.mock.calls[0]![0] as string;
+    expect(msg).toContain('malformed');
+    expect(msg).not.toContain(TOKEN.slice(0, 10));
     spy.mockRestore();
   });
 
   it('still fails on a malformed profile file when env is incomplete', () => {
-    expect(() =>
+    const leaky = `{"profiles":{"default":{"panelUrl":"https://f.example.com","token":${TOKEN}}}}`;
+    let caught: unknown;
+    try {
       loadConfig({
         env: {},
-        readFile: () => '{ not json',
+        readFile: () => leaky,
+        home: '/home/u',
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    expect((caught as Error).message).toMatch(/not valid JSON/);
+    expect((caught as Error).message).not.toContain(TOKEN.slice(0, 10));
+  });
+
+  it('still fails on a malformed profile when only one required env value is set', () => {
+    const leaky = `{"profiles":{"default":{"panelUrl":"https://f.example.com","token":${TOKEN}}}}`;
+    expect(() =>
+      loadConfig({
+        env: { ENHANCE_PANEL_URL: 'https://p.example.com' },
+        readFile: () => leaky,
         home: '/home/u',
       }),
     ).toThrow(ConfigError);
     expect(() =>
       loadConfig({
-        env: {},
-        readFile: () => '{ not json',
+        env: { ENHANCE_PANEL_URL: 'https://p.example.com' },
+        readFile: () => leaky,
         home: '/home/u',
       }),
     ).toThrow(/not valid JSON/);
