@@ -1,3 +1,7 @@
+import type { components } from '../../src/client/generated/types.js';
+
+type DnsZone = components['schemas']['DnsZone'];
+
 export const PANEL_URL = 'https://panel.test';
 export const TOKEN = 'testtoken.payload.signature';
 export const ORG_ID = '98071de9-291f-4bc4-82e8-b3d1da46d19e';
@@ -108,7 +112,11 @@ export const dnsZone = {
     { id: 'r12', kind: 'NS', name: '@', value: 'ns1.stableserver.net.', proxy: false },
     { id: 'r13', kind: 'NS', name: '@', value: 'ns2.stableserver.net.', proxy: false },
   ],
-};
+  // `satisfies` (rather than a type annotation) checks this against the generated DnsZone shape
+  // while keeping each record's `kind` narrowed to its literal ("A", "CNAME", ...) instead of
+  // widening to `string`, which callers that take a typed `DnsRecord[]` (e.g.
+  // filterZoneForThirdParty) need.
+} satisfies DnsZone;
 
 export const activities = {
   total: 1,
