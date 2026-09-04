@@ -322,8 +322,12 @@ this spec before the next milestone starts.
 | `domain_add` | W | `POST …/domains` (addon, alias, subdomain) |
 | `domain_set_primary` | W | `PUT …/domains/primary` |
 | `domain_remove` | D | `DELETE …/domains/{domain_id}` |
-| `domain_dns_status` | R | `…/dns-status` (`Resolved`, `ForeignServer`, `Failed`, `Mixed`) plus `/orgs/{org}/domains/{id}/auth-ns` (current nameservers, `matchesPlatform`) plus the A-record target from `serverIps` |
+| `domain_dns_status` | R | `…/dns-status` plus `/orgs/{org}/domains/{id}/auth-ns` plus `platform_info`; returns status, current nameservers, platform nameservers, app server IP, and a `provider` guess (`platform`, `cloudflare`, `other`) |
 | `domain_dns_query` | R | `…/dns-query` (full delegation walk, for debugging) |
+| `domain_dns_records` | R | `…/dns-zone` filtered to what a third-party DNS provider needs, ready to paste |
+| `cloudflare_keys_list` | R | `/orgs/{org}/cloudflare` (obfuscated tokens, friendly names, synced domains) |
+| `domain_cloudflare_connect` | W | `PUT /orgs/{org}/domains/{id}/cloudflare` with a key id; Enhance syncs the zone |
+| `domain_cloudflare_nameservers` | R | `…/cloudflare/nameservers` (Cloudflare nameservers and `active`/`pending`) |
 | `domain_ssl_get` | R | `/v2/domains/{id}/ssl`; flags the self-signed placeholder (issuer equals cn, or issued 1975) as "no real certificate" |
 | `domain_ssl_issue` | W | `/v2/domains/{id}/letsencrypt_preflight` then `/letsencrypt`; returns the preflight error verbatim if `canIssue` is false |
 | `domain_set_force_ssl` | W | `PUT /v2/domains/{id}/ssl/force_ssl` |
@@ -337,8 +341,10 @@ Also in A: `enhance-mcp doctor`, the `enhance-connect` and `enhance-deploy` skil
 mode A only), unit, MCP, and e2e harnesses, plugin manifest, CI.
 
 **Live test A:** on the test panel, with a plain HTML/CSS/JS site: preflight a new
-domain, create the site, read the DNS instructions, issue SSL on the preview domain,
-prepare SSH, deploy, verify over HTTP, then delete through the gate.
+domain, create the site, walk the DNS decision tree against vahi.dev (Cloudflare,
+`ForeignServer`) and against a platform-nameserver domain, issue SSL on the preview
+domain, prepare SSH, deploy, verify over HTTP on the preview URL, then delete through
+the gate.
 
 ### Milestone B: PHP and databases
 
@@ -449,11 +455,35 @@ A; B and C are documented as "coming" until milestone D.
    deleted site holds the domain and the panel can restore it.
 2. **Site.** `website_get`. Read `canUse`, `phpVersion`, `documentRoot`, `serverIps`,
    preview domain.
-3. **DNS.** `domain_dns_status`. Present one of two instructions, taken from
-   `platform_info` and `website_get`: point the registrar at the platform nameservers,
-   or keep existing DNS and set an A record to the app server IP. `ForeignServer`
-   with a CDN in front is a valid state; say so and continue. Never modify the
-   customer's registrar.
+3. **DNS.** Verified live on the test panel; this is a decision tree, not one message.
+   The preview domain (`*.<stagingDomain>`, for example
+   `vahi-dev-ccyq.sgp1.mystaging.site`) always works, so deploying never waits on DNS.
+   - Read `domain_dns_status`. It returns the panel's status (`Resolved`,
+     `ForeignServer`, `Failed`, `Mixed`), the current authoritative nameservers, the
+     platform nameservers, the app server IP, and a `provider` guess derived from the
+     nameserver names: `platform`, `cloudflare`, or `other`.
+   - **`Resolved`:** nothing to do.
+   - **Provider is `platform`** (registrar already points at the platform nameservers):
+     wait for propagation; nothing else to do.
+   - **Provider is `cloudflare`:** offer two paths and let the customer choose.
+     (a) *Integration:* the customer adds a Cloudflare API token in the panel under
+     Settings, Cloudflare; the skill then calls `domain_cloudflare_connect` with the
+     key id and Enhance syncs the zone itself; `cloudflareStatus` becomes `Connected`.
+     The token never passes through Claude Code. (b) *Manual:* `domain_dns_records`
+     returns the records to create at Cloudflare, taken from the panel's own zone.
+   - **Provider is `other`:** manual path only, same `domain_dns_records` output, or
+     switch the registrar to the platform nameservers from `platform_info`.
+   - **`Failed`:** the domain has no working DNS at all; give the nameserver
+     instruction and the manual records, and continue on the preview domain.
+   - Never modify the registrar or a third-party DNS provider from the skill. The only
+     DNS write in milestone A is `domain_cloudflare_connect`, which hands the job to
+     Enhance.
+
+   `domain_dns_records` filters the zone for a third-party provider: A `@` and CNAME
+   `www` always; `mail`, `imap`, `pop`, `smtp`, MX, SPF, and DMARC only when the
+   domain's mail routing is `local`; `mysql` and `ftp` only on request; never NS or SOA.
+   Each record is printed as host, type, value, TTL, ready to paste.
+
 4. **SSL.** `domain_ssl_get`. If placeholder or expiring, `domain_ssl_issue`. If the
    preflight says the domain is not yet reachable, defer SSL until DNS propagates and
    continue on the preview domain.
@@ -506,6 +536,8 @@ Written with milestones B and D. Each follows the same shape: triggers, precondi
 - Session credential mode warns on every startup and in `auth_status`.
 - The confirmation secret is per process; tokens cannot be replayed across restarts.
 - No tool accepts a raw path to the API; every call is a named operation.
+- Third-party secrets, such as a Cloudflare API token, are never accepted as tool
+  arguments either. The customer enters them in the panel; tools reference them by id.
 
 ## 11. Extensibility (v2 and v3)
 

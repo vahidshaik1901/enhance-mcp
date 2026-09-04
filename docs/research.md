@@ -238,3 +238,30 @@ at a pinned version. Add a CI job that diffs the upstream spec and fails on drif
 | `GET …/dns-status` | vahi.dev: `ForeignServer` (behind Cloudflare). Valid state, not an error |
 | `GET /v2/domains/{id}/ssl` | vahi.dev: self-signed placeholder, issuer `vahi.dev`, issued 1975-01-01, expires 4096-01-01, sans include www. Must be detected as "no real certificate" |
 | `GET …/server_domains` | all arrays empty on this panel |
+
+## DNS and Cloudflare, verified live (2026-09-04)
+
+Panel pages `/websites/{id}/domains` and `/websites/{id}/domains/{domain_id}` were
+captured with Claude in Chrome. The domains page calls `…/domains/{id}/dns-status` per
+domain and shows a warning for vahi.dev (`ForeignServer`) and a green check for the
+preview domain. The domain detail page calls `…/domains/{id}/dns-zone`,
+`…/local_remote`, `/websites/{id}/domains/{name}/email-auth`, and `/orgs/{org}/cloudflare`.
+
+`dns-zone` for vahi.dev returns `origin`, `soa` (ns1.stableserver.net, refresh 1400,
+retry 7200, expire 86400, ttl 1400), and 15 records: A `@`, `mail`, `mysql` ->
+65.98.32.45; CNAME `www`, `ftp` -> `vahi.dev.`; CNAME `imap`, `pop`, `smtp` ->
+`mail.vahi.dev.`; MX `@` -> `0 mail.vahi.dev.`; TXT `@` SPF
+(`v=spf1 +a +mx include:spf.mysecurecloudhost.com ~all`, ttl 86400); TXT `_dmarc`
+(`v=DMARC1; p=none;`); NS `@` x4 (ns1..ns4.stableserver.net). Records carry `id`,
+`kind`, `name`, `value`, optional `ttl`, and `proxy` (Cloudflare proxy flag).
+
+Cloudflare integration: `GET /orgs/{org}/cloudflare` -> `[]` (no keys yet);
+`GET /orgs/{org}/domains/{id}/cloudflare` -> 404 `not_found` "Domain does not have
+CloudFlare configured". Flow: `POST /orgs/{org}/cloudflare {token, friendlyName}` (done
+by the customer in the panel, not through the MCP), then
+`PUT /orgs/{org}/domains/{id}/cloudflare <keyId>`; Enhance then syncs the zone and
+`cloudflareStatus` on the domain becomes `Connected`. `…/cloudflare/nameservers`
+reports the Cloudflare nameservers and `active`/`pending`.
+
+Provider detection: nameserver names ending in `.ns.cloudflare.com` mean Cloudflare;
+names matching `platform_info.nameServers` mean the platform; anything else is `other`.
