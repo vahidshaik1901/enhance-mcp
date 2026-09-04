@@ -2365,7 +2365,7 @@ export function byName<T extends { name: string }>(tools: T[], name: string): T 
 `server/test/unit/tools-account.test.ts`:
 ```ts
 import { describe, expect, it } from 'vitest';
-import { tools } from '../../src/tools/account.ts';
+import { tools } from '../../src/tools/account.js';
 import { byName, makeContext } from '../helpers/context.js';
 import { accessTokens, activities, branding, brandingNoStaging, login, ORG_ID, subscriptions, WEBSITE_ID } from '../fixtures/panel.js';
 
@@ -4044,7 +4044,7 @@ export function createServer(ctx: ToolContext, tools: ToolDef[]): McpServer {
             message: `${preview}\n\nType the name "${target.name}" to confirm.`,
             requestedSchema: { type: 'object', properties: { confirm_name: { type: 'string', title: `Type ${target.name} to confirm` } }, required: ['confirm_name'] },
           });
-          if (res.action !== 'accept') return cancelled(tool, target, args, `Confirmation ${res.action === 'decline' ? 'declined' : 'cancelled'} by the user.`);
+          if (res.action !== 'accept') return cancelled(tool, target, args, `Action cancelled: confirmation ${res.action === 'decline' ? 'declined' : 'dismissed'} by the user.`);
           const typed = String(res.content?.['confirm_name'] ?? '');
           if (!ConfirmationGate.matches(target, typed)) return cancelled(tool, target, args, `Confirmation text "${typed}" did not match "${target.name}".`);
           return run(tool, args, target, 'elicitation');
