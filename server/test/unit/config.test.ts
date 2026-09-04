@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ConfigError, loadConfig, redactSecret } from '../../src/config.js';
 
 const TOKEN = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.payload.sig';
@@ -61,5 +61,91 @@ describe('loadConfig', () => {
   it('redacts secrets to five characters', () => {
     expect(redactSecret(TOKEN)).toBe('eyJ0e…');
     expect(redactSecret('abc')).toBe('…');
+  });
+
+  it('ignores a malformed profile file when env is complete, with a warning', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const c = loadConfig({
+      env: { ENHANCE_PANEL_URL: 'https://p.example.com', ENHANCE_TOKEN: TOKEN },
+      readFile: () => '{ not json',
+      home: '/home/u',
+    });
+    expect(c.panelUrl).toBe('https://p.example.com');
+    expect(spy).toHaveBeenCalledOnce();
+    const callArg = spy.mock.calls[0]![0] as string;
+    expect(callArg).toContain('malformed');
+    expect(callArg).not.toContain(TOKEN);
+    spy.mockRestore();
+  });
+
+  it('still fails on a malformed profile file when env is incomplete', () => {
+    expect(() =>
+      loadConfig({
+        env: {},
+        readFile: () => '{ not json',
+        home: '/home/u',
+      }),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig({
+        env: {},
+        readFile: () => '{ not json',
+        home: '/home/u',
+      }),
+    ).toThrow(/not valid JSON/);
+  });
+
+  it('fails on an unknown ENHANCE_PROFILE even when env is complete', () => {
+    const file = JSON.stringify({
+      profiles: {
+        default: { panelUrl: 'https://p.example.com', token: TOKEN },
+      },
+    });
+    const readFile = (p: string) => (p === '/home/u/.enhance-mcp/config.json' ? file : undefined);
+    expect(() =>
+      loadConfig({
+        env: {
+          ENHANCE_PANEL_URL: 'https://p.example.com',
+          ENHANCE_TOKEN: TOKEN,
+          ENHANCE_PROFILE: 'prod',
+        },
+        readFile,
+        home: '/home/u',
+      }),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig({
+        env: {
+          ENHANCE_PANEL_URL: 'https://p.example.com',
+          ENHANCE_TOKEN: TOKEN,
+          ENHANCE_PROFILE: 'prod',
+        },
+        readFile,
+        home: '/home/u',
+      }),
+    ).toThrow(/profile "prod" not found/);
+  });
+
+  it('rejects a non-numeric ENHANCE_TIMEOUT_MS', () => {
+    expect(() =>
+      loadConfig({
+        env: {
+          ENHANCE_PANEL_URL: 'https://p.example.com',
+          ENHANCE_TOKEN: TOKEN,
+          ENHANCE_TIMEOUT_MS: 'soon',
+        },
+        home: '/home/u',
+      }),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig({
+        env: {
+          ENHANCE_PANEL_URL: 'https://p.example.com',
+          ENHANCE_TOKEN: TOKEN,
+          ENHANCE_TIMEOUT_MS: 'soon',
+        },
+        home: '/home/u',
+      }),
+    ).toThrow(/timeoutMs/);
   });
 });

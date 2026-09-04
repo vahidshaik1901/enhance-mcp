@@ -48,13 +48,17 @@ function defaultReadFile(path: string): string | undefined {
   }
 }
 
-function loadProfile(env: ConfigSource['env'], readFile: NonNullable<ConfigSource['readFile']>, home: string): Profile {
+function loadProfile(env: ConfigSource['env'], readFile: NonNullable<ConfigSource['readFile']>, home: string, envComplete: boolean): Profile {
   const text = readFile(join(home, '.enhance-mcp', 'config.json'));
   if (!text) return {};
   let parsed: { profiles?: Record<string, Profile> };
   try {
     parsed = JSON.parse(text) as { profiles?: Record<string, Profile> };
   } catch (e) {
+    if (envComplete) {
+      console.error(`enhance-mcp: ignoring malformed ~/.enhance-mcp/config.json: ${(e as Error).message}`);
+      return {};
+    }
     throw new ConfigError(`~/.enhance-mcp/config.json is not valid JSON: ${(e as Error).message}`);
   }
   const name = env['ENHANCE_PROFILE'] ?? 'default';
@@ -73,7 +77,8 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
 }
 
 export function loadConfig({ env, readFile = defaultReadFile, home = homedir() }: ConfigSource): Config {
-  const profile = loadProfile(env, readFile, home);
+  const envComplete = !!(env['ENHANCE_PANEL_URL'] && env['ENHANCE_TOKEN']);
+  const profile = loadProfile(env, readFile, home, envComplete);
   const raw = stripUndefined({
     panelUrl: env['ENHANCE_PANEL_URL'] ?? profile.panelUrl,
     token: env['ENHANCE_TOKEN'] ?? profile.token,
