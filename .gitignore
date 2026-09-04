@@ -8,3 +8,6 @@ dist/
 # os
 .DS_Store
 .superpowers/
+server/node_modules/
+server/dist/
+server/spec/oas3-api.patched.yaml
