@@ -8,6 +8,22 @@ import { kv, ok, safe, table } from '../core/respond.js';
 
 const DAY_MS = 86_400_000;
 
+/** Normalise version strings from /version endpoint. The panel returns text/plain (e.g. "12.25.5"),
+ * but may also return JSON (e.g. '"12.25.5"'). This helper handles both formats. */
+function parseVersion(raw: unknown): string {
+  if (typeof raw !== 'string') return 'unknown';
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('"')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed === 'string') return parsed;
+    } catch {
+      // Fall through to return trimmed
+    }
+  }
+  return trimmed;
+}
+
 export const authStatus = defineTool({
   name: 'auth_status',
   tier: 'customer',
@@ -16,7 +32,8 @@ export const authStatus = defineTool({
   input: z.object({}),
   async handler(_args, ctx) {
     const { client, config } = ctx;
-    const version = await client.call('GET', '/version', () => client.api.GET('/version'));
+    const rawVersion = await client.call<string>('GET', '/version', () => client.api.GET('/version', { parseAs: 'text' }));
+    const version = parseVersion(rawVersion);
     const login = await client.call('GET', '/login', () => client.api.GET('/login'));
     const warnings: string[] = [];
     let credential: string;

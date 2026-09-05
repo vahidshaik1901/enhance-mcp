@@ -4,9 +4,9 @@ import { byName, callTool, makeContext } from '../helpers/context.js';
 import { accessTokens, activities, branding, brandingNoStaging, login, ORG_ID, subscriptions, twoMemberships, WEBSITE_ID } from '../fixtures/panel.js';
 
 describe('auth_status', () => {
-  it('reports version, login, org, bearer token expiry', async () => {
+  it('reports version (text/plain), login, org, bearer token expiry', async () => {
     const { ctx } = await makeContext([
-      { method: 'GET', path: '/version', body: '12.25.5' },
+      { method: 'GET', path: '/version', handler: async () => new Response('12.25.5', { status: 200, headers: { 'content-type': 'text/plain' } }) },
       { method: 'GET', path: '/login', body: login },
       { method: 'GET', path: `/orgs/${ORG_ID}/access_tokens`, body: accessTokens },
     ]);
@@ -19,10 +19,21 @@ describe('auth_status', () => {
     expect(r.structured).toMatchObject({ authMode: 'bearer', org: { id: ORG_ID }, token: { friendlyName: 'claude-mcp-test' } });
   });
 
+  it('reports version (application/json), login, org, bearer token expiry', async () => {
+    const { ctx } = await makeContext([
+      { method: 'GET', path: '/version', handler: async () => new Response('"12.25.5"', { status: 200, headers: { 'content-type': 'application/json' } }) },
+      { method: 'GET', path: '/login', body: login },
+      { method: 'GET', path: `/orgs/${ORG_ID}/access_tokens`, body: accessTokens },
+    ]);
+    const r = await callTool(byName(tools, 'auth_status'), {}, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain('panel version: 12.25.5');
+  });
+
   it('labels a bearer credential correctly when no org is selected', async () => {
     const { ctx } = await makeContext(
       [
-        { method: 'GET', path: '/version', body: '12.25.5' },
+        { method: 'GET', path: '/version', handler: async () => new Response('12.25.5', { status: 200, headers: { 'content-type': 'text/plain' } }) },
         { method: 'GET', path: '/login', body: login },
       ],
       {},
@@ -36,7 +47,7 @@ describe('auth_status', () => {
 
   it('warns when the token expires within 7 days', async () => {
     const { ctx } = await makeContext([
-      { method: 'GET', path: '/version', body: '12.25.5' },
+      { method: 'GET', path: '/version', handler: async () => new Response('12.25.5', { status: 200, headers: { 'content-type': 'text/plain' } }) },
       { method: 'GET', path: '/login', body: login },
       { method: 'GET', path: `/orgs/${ORG_ID}/access_tokens`, body: [{ ...accessTokens[0], tokenExpires: '2026-09-08T00:00:00Z' }] },
     ]);
@@ -49,7 +60,7 @@ describe('auth_status', () => {
 
   it('warns on an unparseable expiry and does not throw', async () => {
     const { ctx } = await makeContext([
-      { method: 'GET', path: '/version', body: '12.25.5' },
+      { method: 'GET', path: '/version', handler: async () => new Response('12.25.5', { status: 200, headers: { 'content-type': 'text/plain' } }) },
       { method: 'GET', path: '/login', body: login },
       { method: 'GET', path: `/orgs/${ORG_ID}/access_tokens`, body: [{ ...accessTokens[0], tokenExpires: 'never-ish' }] },
     ]);
@@ -60,7 +71,7 @@ describe('auth_status', () => {
 
   it('reports ambiguous token prefix when several tokens share it', async () => {
     const { ctx } = await makeContext([
-      { method: 'GET', path: '/version', body: '12.25.5' },
+      { method: 'GET', path: '/version', handler: async () => new Response('12.25.5', { status: 200, headers: { 'content-type': 'text/plain' } }) },
       { method: 'GET', path: '/login', body: login },
       { method: 'GET', path: `/orgs/${ORG_ID}/access_tokens`, body: [accessTokens[0], { ...accessTokens[0], id: 'other-id', friendlyName: 'other-token' }] },
     ]);
@@ -70,7 +81,7 @@ describe('auth_status', () => {
 
   it('does not fail when listing access tokens is forbidden', async () => {
     const { ctx } = await makeContext([
-      { method: 'GET', path: '/version', body: '12.25.5' },
+      { method: 'GET', path: '/version', handler: async () => new Response('12.25.5', { status: 200, headers: { 'content-type': 'text/plain' } }) },
       { method: 'GET', path: '/login', body: login },
       { method: 'GET', path: `/orgs/${ORG_ID}/access_tokens`, status: 403, body: { code: 'unauthorized' } },
     ]);
