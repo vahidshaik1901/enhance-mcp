@@ -1,14 +1,14 @@
 # Enhance MCP for Claude Code
 
-Manage and deploy to your Enhance-hosted websites from Claude Code. One plugin gives you an MCP server with typed, safety-gated tools for the Enhance control panel API plus skills that walk Claude through connecting, preflighting a domain, and deploying.
+Manage and deploy to your Enhance-hosted websites from Claude Code. One plugin gives you an MCP server with typed, safety-gated tools for the Enhance control panel API plus skills that walk Claude through connecting and deploying (the deploy skill includes the domain, DNS and SSL preflight).
 
-- **Safe by design.** Every tool carries a risk class. Destructive actions (delete a site, remove a domain or SSH key) require your confirmation: Claude Code shows a prompt where you type the domain name yourself, before anything happens; if a client cannot show prompts, the tool instead returns a preview and a single-use token, and the model must relay what you typed. Force deletes, org and subscription deletes, and server administration are not exposed at all.
+- **Safe by design.** Every tool carries a risk class. Destructive actions (delete a site (a soft delete the provider can restore), remove a domain or SSH key) require your confirmation: Claude Code shows a prompt where you type the domain name yourself, before anything happens; if a client cannot show prompts, the tool instead returns a preview and a single-use token, and the model must relay what you typed. Force deletes, org and subscription deletes, and server administration are not exposed at all.
 - **Fresh hosting to live site.** Domain check, site creation, DNS instructions built from your panel's own nameservers and zone, Let's Encrypt, SSH key setup, rsync deploy, verification on the preview URL.
-- **Verified against a real panel.** Every tool has unit tests, MCP-level tests, and an opt-in live suite.
+- **Tested at every layer.** Every tool has unit tests and MCP-level tests, the client was built against a live Enhance panel, and an opt-in live suite exercises the full flow on a throwaway site.
 
 ## Install
 
-1. Build the plugin server from a git checkout of this repo (once): `cd server && npm install && npm run build`.
+1. Build the plugin server from a git checkout of this repo (once): `cd server && npm install && npm run build` (`npm ci` also works; the lockfile is committed).
 2. Install the plugin in Claude Code: `claude plugin add /path/to/this/repo` (or, once a marketplace is set up for it, `/plugin marketplace add <this repo>` then `/plugin install enhance`).
 3. Create a credential: in your panel, Settings → Access Tokens → Create (name it, choose an expiry).
 4. Save it where the server reads it:
