@@ -8,10 +8,11 @@ delete a site by accident.
 
 ## Current status (2026-09-04)
 
-**Phase: milestone A implemented on branch `feat/milestone-a` (Tasks 1-18 done and
-reviewed; final whole-branch review in progress). Remaining: the live e2e run and Task 19
-(live walkthrough with the user), both blocked on a fresh panel credential (the stored
-session cookie expired 2026-09-05).**
+**Phase: milestone A code-complete on branch `feat/milestone-a` at 42ff001 (Tasks 1-18
+done; final whole-branch review passed: 0 Critical, 0 Important). NOT merged yet.
+Remaining: the live e2e run and Task 19 (live walkthrough with the user), both blocked on a
+fresh panel credential (the stored session cookie expired 2026-09-05). After they pass:
+`superpowers:finishing-a-development-branch`, then milestone B (PHP + databases).**
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
 Plan: `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
