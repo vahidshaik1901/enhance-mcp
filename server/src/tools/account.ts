@@ -1,4 +1,5 @@
 import * as z from 'zod/v4';
+import { parseScalarText } from '../client/client.js';
 import { isEnhanceApiError } from '../client/errors.js';
 import { redactSecret } from '../config.js';
 import { requireOrg } from '../core/context.js';
@@ -7,22 +8,6 @@ import { defineTool, type ToolDef } from '../core/registry.js';
 import { kv, ok, safe, table } from '../core/respond.js';
 
 const DAY_MS = 86_400_000;
-
-/** Normalise version strings from /version endpoint. The panel returns text/plain (e.g. "12.25.5"),
- * but may also return JSON (e.g. '"12.25.5"'). This helper handles both formats. */
-function parseVersion(raw: unknown): string {
-  if (typeof raw !== 'string') return 'unknown';
-  const trimmed = raw.trim();
-  if (trimmed.startsWith('"')) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (typeof parsed === 'string') return parsed;
-    } catch {
-      // Fall through to return trimmed
-    }
-  }
-  return trimmed;
-}
 
 export const authStatus = defineTool({
   name: 'auth_status',
@@ -33,7 +18,7 @@ export const authStatus = defineTool({
   async handler(_args, ctx) {
     const { client, config } = ctx;
     const rawVersion = await client.call<string>('GET', '/version', () => client.api.GET('/version', { parseAs: 'text' }));
-    const version = parseVersion(rawVersion);
+    const version = parseScalarText(rawVersion);
     const login = await client.call('GET', '/login', () => client.api.GET('/login'));
     const warnings: string[] = [];
     let credential: string;

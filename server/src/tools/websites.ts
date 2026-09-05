@@ -1,4 +1,5 @@
 import * as z from 'zod/v4';
+import { parseScalarText } from '../client/client.js';
 import type { ToolContext } from '../core/context.js';
 import { requireOrg } from '../core/context.js';
 import { identityBlock, previewDomain, websiteHome } from '../core/identity.js';
@@ -103,9 +104,11 @@ export const websiteCreate = defineTool({
       );
     }
     const subs = await client.call('GET', '/orgs/{org_id}/subscriptions', () => client.api.GET('/orgs/{org_id}/subscriptions', { params: { path: { org_id: org } } }));
+    // Convention 14: no `websites` resource entry means websites are not included in the plan, so
+    // the subscription is not eligible. Only `total === null` means unlimited.
     const eligible = subs.items.filter((s) => {
       const q = s.resources.find((r) => r.name === 'websites');
-      return s.status === 'active' && (!q || q.total === null || q.total === undefined || q.usage < q.total);
+      return s.status === 'active' && q !== undefined && (q.total === null || q.total === undefined || q.usage < q.total);
     });
     let subscriptionId = args.subscription_id;
     if (subscriptionId === undefined) {
@@ -141,7 +144,8 @@ export const websiteSetPhpVersion = defineTool({
     await client.call('PATCH', '/orgs/{org_id}/websites/{website_id}', () => client.api.PATCH('/orgs/{org_id}/websites/{website_id}', { params: { path: { org_id: org, website_id: w.id } }, body: { phpVersion: php_version } }));
     ctx.resolver.invalidate();
     const previous = w.phpVersion ? safe(w.phpVersion) : 'unknown';
-    return ok(`${identityBlock({ name: client.orgName, id: org }, w)}\nphp version set to ${php_version} (was ${previous}).`, { website: w.id, phpVersion: php_version, previous: w.phpVersion ?? null });
+    // Convention 13: render the state after the write, so the identity line shows the new version.
+    return ok(`${identityBlock({ name: client.orgName, id: org }, { ...w, phpVersion: php_version })}\nphp version set to ${php_version} (was ${previous}).`, { website: w.id, phpVersion: php_version, previous: w.phpVersion ?? null });
   },
 });
 
@@ -181,7 +185,10 @@ export const websitePreviewDomain = defineTool({
       const d = safe(w.domain.domain);
       return ok([id, 'preview domain: not available (the provider has not configured a staging domain).', 'verify deploys against the app server directly instead:', `  curl -k --resolve ${d}:443:${ip} https://${d}/`, `  browser: add "${ip} ${d}" to /etc/hosts temporarily`].join('\n'), { available: false, previewDomain: null, created: false, fallback: { serverIp: serverIp(w) ?? null, domain: w.domain.domain } });
     }
-    const name = await client.call('POST', '/orgs/{org_id}/websites/{website_id}/preview', () => client.api.POST('/orgs/{org_id}/websites/{website_id}/preview', { params: { path: { org_id: org, website_id: w.id } } }));
+    // The panel answers this with a bare hostname as text/plain, not a JSON object; read it as
+    // text and normalise so a JSON-quoted body works too.
+    const raw = await client.call<string>('POST', '/orgs/{org_id}/websites/{website_id}/preview', () => client.api.POST('/orgs/{org_id}/websites/{website_id}/preview', { params: { path: { org_id: org, website_id: w.id } }, parseAs: 'text' }));
+    const name = parseScalarText(raw);
     ctx.resolver.invalidate();
     const domain = safe(name);
     return ok(`${id}\npreview domain: ${domain} (created)\nverify with: curl -I https://${domain}/`, { available: true, previewDomain: name, created: true });

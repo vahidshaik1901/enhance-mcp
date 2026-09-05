@@ -24,4 +24,9 @@ describe('respond', () => {
     expect(safe('a\tb')).toBe('a b');
     expect(safe(null)).toBe('-');
   });
+  it('safe collapses invisible and bidi characters too', () => {
+    // 'a', NBSP, 'b', zero-width space, 'c' -> a single-spaced, all-visible string.
+    expect(safe('a\u00a0b\u200bc')).toBe('a b c');
+    expect(safe('left\u202eright')).toBe('left right');
+  });
 });

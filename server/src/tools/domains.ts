@@ -1,4 +1,5 @@
 import * as z from 'zod/v4';
+import { parseScalarText } from '../client/client.js';
 import type { components } from '../client/generated/types.js';
 import { requireOrg, type ToolContext } from '../core/context.js';
 import { identityBlock, previewDomain } from '../core/identity.js';
@@ -163,11 +164,14 @@ export const domainDnsStatus = defineTool({
     const { client } = ctx;
     const { org, w, d } = await site(ctx, args.website, args.domain);
     let authNsLookupFailed = false;
-    const [status, authNs, b] = await Promise.all([
-      client.call('GET', '/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-status', () => client.api.GET('/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-status', { params: { path: { org_id: org, website_id: w.id, domain_id: d.domainId } } })),
+    const [rawStatus, authNs, b] = await Promise.all([
+      // The panel answers this with a bare word as text/plain, not a JSON object; read it as text
+      // and normalise so a JSON-quoted body works too.
+      client.call<string>('GET', '/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-status', () => client.api.GET('/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-status', { params: { path: { org_id: org, website_id: w.id, domain_id: d.domainId } }, parseAs: 'text' })),
       client.call('GET', '/orgs/{org_id}/domains/{domain_id}/auth-ns', () => client.api.GET('/orgs/{org_id}/domains/{domain_id}/auth-ns', { params: { path: { org_id: org, domain_id: d.domainId } } })).catch(() => { authNsLookupFailed = true; return { matchesPlatform: false, authNs: [] as Array<{ name: string; ips: string[] }> }; }),
       client.call('GET', '/branding', () => client.api.GET('/branding', { params: { query: { orgId: org } } })),
     ]);
+    const status = parseScalarText(rawStatus);
     const platformNs = b.nameServers ?? [];
     const current = authNs.authNs.map((n) => normNs(n.name));
     const provider = detectProvider(current, platformNs);
@@ -288,8 +292,9 @@ export const domainSslIssue = defineTool({
     const cert = await ctx.client.call('GET', '/v2/domains/{domain_id}/ssl', () => ctx.client.api.GET('/v2/domains/{domain_id}/ssl', { params: { path } }));
     const { cert: _pem, key: _key, ...rest } = cert;
     ctx.resolver.invalidate();
-    // `rest` has its own `issued` (date) field; spread it first so our own `issued: true` flag wins.
-    return ok(`${certText(w, d, rest, ctx.client.orgName)}\ncertificate issued.`, { website: w.id, domainId: d.domainId, ...rest, issued: true, placeholder: isPlaceholderCert(rest) });
+    // `rest.issued` is the certificate's own issue date; our "we just issued it" flag is a
+    // separate key so neither shadows the other.
+    return ok(`${certText(w, d, rest, ctx.client.orgName)}\ncertificate issued.`, { website: w.id, domainId: d.domainId, ...rest, justIssued: true, placeholder: isPlaceholderCert(rest) });
   },
 });
 
@@ -306,6 +311,16 @@ export const domainSetForceSsl = defineTool({
   },
 });
 
+/**
+ * The panel returns whatever it stored for a Cloudflare API token, which on some deployments is
+ * the token itself rather than an obfuscated form. Never echo it: show only enough to tell two
+ * stored tokens apart.
+ */
+export function maskToken(token: unknown): string {
+  const s = typeof token === 'string' ? token : '';
+  return s.length > 12 ? `${s.slice(0, 4)}\u2026${s.slice(-4)}` : '****';
+}
+
 export const cloudflareKeysList = defineTool({
   name: 'cloudflare_keys_list',
   tier: 'customer',
@@ -315,7 +330,7 @@ export const cloudflareKeysList = defineTool({
   async handler(_args, ctx) {
     const org = requireOrg(ctx.client);
     const keys = await ctx.client.call('GET', '/orgs/{org_id}/cloudflare', () => ctx.client.api.GET('/orgs/{org_id}/cloudflare', { params: { path: { org_id: org } } }));
-    const rows = keys.map((k) => ({ id: k.id, name: k.friendlyName, token: k.token, lastSync: k.lastSync ?? '', lastMessage: k.lastMessage ?? '', domains: k.domains ?? [] }));
+    const rows = keys.map((k) => ({ id: k.id, name: k.friendlyName, token: maskToken(k.token), lastSync: k.lastSync ?? '', lastMessage: k.lastMessage ?? '', domains: k.domains ?? [] }));
     return ok([identityBlock({ name: ctx.client.orgName, id: org }), keys.length ? table(rows, ['id', 'name', 'token', 'lastSync', 'lastMessage', 'domains']) : 'no Cloudflare tokens stored. Add one in the panel under Settings > Cloudflare, then call this again.'].join('\n'), { items: rows });
   },
 });

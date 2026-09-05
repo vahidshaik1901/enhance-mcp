@@ -1,3 +1,12 @@
+import { safe } from '../core/respond.js';
+
+/**
+ * The panel's message is free text we do not control (it can echo a domain name straight back). Cap it
+ * so an oversized body can't flood a tool result or the audit log, and render it through `safe()`
+ * so it can't forge extra lines in either.
+ */
+export const MAX_API_MESSAGE = 300;
+
 export interface ErrorExplanation {
   code: string;
   explanation: string;
@@ -38,16 +47,20 @@ export function explainError(status: number, code: string, message?: string): Er
 
 export class EnhanceApiError extends Error {
   override name = 'EnhanceApiError';
+  /** Panel text, capped at construction; never longer than MAX_API_MESSAGE. */
+  readonly apiMessage: string | undefined;
 
   constructor(
     readonly status: number,
     readonly code: string,
-    readonly apiMessage: string | undefined,
+    apiMessage: string | undefined,
     readonly method: string,
     readonly path: string,
     readonly retryAfterMs?: number,
   ) {
-    super(`${method} ${path} -> HTTP ${status} ${code}${apiMessage ? `: ${apiMessage}` : ''}`);
+    const capped = apiMessage === undefined ? undefined : apiMessage.slice(0, MAX_API_MESSAGE);
+    super(`${method} ${path} -> HTTP ${status} ${code}${capped ? `: ${safe(capped)}` : ''}`);
+    this.apiMessage = capped;
   }
 
   get explanation(): ErrorExplanation {
@@ -58,7 +71,7 @@ export class EnhanceApiError extends Error {
     const e = this.explanation;
     return [
       `Enhance API error on ${this.method} ${this.path}: HTTP ${this.status} (${this.code})`,
-      this.apiMessage ? `Panel says: ${this.apiMessage}` : undefined,
+      this.apiMessage ? `Panel says: ${safe(this.apiMessage)}` : undefined,
       `Cause: ${e.explanation}`,
       `Next: ${e.nextStep}`,
     ]
@@ -76,9 +89,9 @@ export class EnhanceApiError extends Error {
       try {
         const body = JSON.parse(text) as { code?: string; message?: string; detail?: string };
         if (typeof body.code === 'string') code = body.code;
-        message = body.message ?? body.detail;
+        message = (body.message ?? body.detail)?.slice(0, MAX_API_MESSAGE);
       } catch {
-        message = text.slice(0, 300);
+        message = text.slice(0, MAX_API_MESSAGE);
       }
     }
     return new EnhanceApiError(response.status, code, message, method, path, retryAfterMs);

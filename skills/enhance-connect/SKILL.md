@@ -30,7 +30,7 @@ Never ask the user to paste the credential into the chat. Point them at the file
 
 ## Verify
 
-1. Run the plugin's built server first: `node <plugin dir>/server/dist/index.js doctor`, where `<plugin dir>` is wherever Claude Code installed this plugin. If you're working from a git checkout instead of an installed plugin, build it once first: `cd server && npm install && npm run build`. Confirm no line starts with `FAIL`, and the last line reads `doctor: all good`.
+1. Run the plugin's built server first: `node <plugin dir>/server/dist/index.js doctor`, where `<plugin dir>` is the repo checkout you ran `claude plugin add` on (or, for a marketplace install after publish, `~/.claude/plugins/…`). From the checkout itself that is `node server/dist/index.js doctor`, run in the repo root. If `server/dist` or `server/node_modules` is missing, build once first: `cd server && npm ci && npm run build` — the plugin needs both, since the build bundles the plugin's own code but not its runtime dependencies. Confirm no line starts with `FAIL`, and the last line reads `doctor: all good`.
    Note: after the package is published to npm, `npx enhance-mcp doctor` works too.
 2. Call the `auth_status` tool. Confirm the org name and, for access tokens, the expiry. Warn if it expires within a week.
 3. Call `subscriptions_list` and `websites_list` and summarise what the account can do: number of sites, free website quota, whether `featureSSH` and persistent apps are allowed.

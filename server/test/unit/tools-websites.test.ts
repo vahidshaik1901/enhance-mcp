@@ -72,6 +72,27 @@ describe('website_create', () => {
     expect(b.text).toContain('664');
     expect(b.text).toContain('686');
   });
+
+  it('treats a subscription with no websites resource entry as ineligible (convention 14)', async () => {
+    const first = subscriptions.items[0]!;
+    const noQuota = { ...first, resources: first.resources.filter((r) => r.name !== 'websites') };
+    const created = { ...websiteDetail, id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', domain: { ...websiteDetail.domain, domain: 'new.example' }, aliases: [] };
+    const { ctx, f } = await makeContext([
+      ...base(),
+      { method: 'POST', path: `/orgs/${ORG_ID}/domains/check`, body: { status: 'notInUse', websiteId: null } },
+      { method: 'GET', path: `/orgs/${ORG_ID}/subscriptions`, body: { items: [noQuota, subscriptions.items[1]], total: 2 } },
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, status: 201, body: { id: created.id } },
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${created.id}`, body: created },
+    ]);
+    // 686 is the only eligible subscription left, so it is picked without asking.
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(f.calls.find((c) => c.method === 'POST' && c.path === `/orgs/${ORG_ID}/websites`)?.body).toBe('{"domain":"new.example","subscriptionId":686}');
+    // ... and naming 664 explicitly is refused, listing only 686.
+    const bad = await callTool(byName(tools, 'website_create'), { domain: 'other.example', subscription_id: 664 }, ctx);
+    expect(bad.isError).toBe(true);
+    expect(bad.text).toContain('Eligible: 686.');
+  });
 });
 
 describe('website_set_php_version / website_restart_php', () => {
@@ -84,6 +105,8 @@ describe('website_set_php_version / website_restart_php', () => {
     const a = await callTool(byName(tools, 'website_set_php_version'), { website: 'vahi.dev', php_version: 'php83' }, ctx);
     expect(f.calls.find((c) => c.method === 'PATCH')?.body).toBe('{"phpVersion":"php83"}');
     expect(a.text).toContain('php83');
+    // Convention 13: the identity block shows the state after the write, not before.
+    expect(a.text.split('\n')[1]).toBe(`website: vahi.dev (${WEBSITE_ID}) \u00b7 php83 \u00b7 active \u00b7 subscription 686`);
     const b = await callTool(byName(tools, 'website_restart_php'), { website: 'vahi.dev' }, ctx);
     expect(b.text).toContain('restarted');
   });
@@ -96,17 +119,29 @@ describe('website_preview_domain', () => {
     expect(r.structured).toMatchObject({ available: true, previewDomain: 'vahi-dev-ccyq.sgp1.mystaging.site', created: false });
     expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
   });
-  it('creates one when missing and the provider has a staging domain', async () => {
-    const noAlias = { ...websiteDetail, aliases: [] };
-    const { ctx } = await makeContext([
-      { method: 'GET', path: `/orgs/${ORG_ID}/websites`, body: { items: [noAlias], total: 1 } },
-      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: noAlias },
-      { method: 'GET', path: '/branding', body: branding },
-      { method: 'POST', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/preview`, status: 201, body: 'vahi-dev-zzzz.sgp1.mystaging.site' },
-    ]);
-    const r = await callTool(byName(tools, 'website_preview_domain'), { website: 'vahi.dev' }, ctx);
-    expect(r.structured).toMatchObject({ available: true, previewDomain: 'vahi-dev-zzzz.sgp1.mystaging.site', created: true });
-  });
+  // The preview endpoint answers with a bare scalar: the live panel sends `text/plain` with an
+  // unquoted body, the spec a JSON string. Both must normalise to the same hostname.
+  for (const as of ['text', 'json'] as const) {
+    it(`creates one when missing and the provider has a staging domain (${as} body)`, async () => {
+      const noAlias = { ...websiteDetail, aliases: [] };
+      const { ctx } = await makeContext([
+        { method: 'GET', path: `/orgs/${ORG_ID}/websites`, body: { items: [noAlias], total: 1 } },
+        { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: noAlias },
+        { method: 'GET', path: '/branding', body: branding },
+        {
+          method: 'POST',
+          path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/preview`,
+          handler: async () =>
+            as === 'text'
+              ? new Response('vahi-dev-zzzz.sgp1.mystaging.site', { status: 201, headers: { 'content-type': 'text/plain' } })
+              : new Response(JSON.stringify('vahi-dev-zzzz.sgp1.mystaging.site'), { status: 201, headers: { 'content-type': 'application/json' } }),
+        },
+      ]);
+      const r = await callTool(byName(tools, 'website_preview_domain'), { website: 'vahi.dev' }, ctx);
+      expect(r.structured).toMatchObject({ available: true, previewDomain: 'vahi-dev-zzzz.sgp1.mystaging.site', created: true });
+      expect(r.text).toContain('preview domain: vahi-dev-zzzz.sgp1.mystaging.site (created)');
+    });
+  }
   it('reports unavailable with the curl --resolve fallback when the provider has none', async () => {
     const noAlias = { ...websiteDetail, aliases: [] };
     const { ctx } = await makeContext([

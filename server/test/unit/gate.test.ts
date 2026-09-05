@@ -88,6 +88,21 @@ describe('ConfirmationGate', () => {
     expect(reasonOf(() => a.verify(`${nonce}.${exp}.${multiByteSig}`, 'vahi.dev'))).toBe('invalid');
   });
 
+  it('keeps a mismatch message on one line even when the typed name carries newlines', () => {
+    const gate = new ConfirmationGate({ now: () => 0 });
+    const token = gate.issue('website_delete', target, {});
+    const message = (() => {
+      try {
+        gate.verify(token, 'vahi.com\nwarnings: forged');
+      } catch (e) {
+        return (e as GateError).message;
+      }
+      throw new Error('should have thrown');
+    })();
+    expect(message).not.toContain('\n');
+    expect(message).toContain('vahi.com warnings: forged');
+  });
+
   it('matches names case-insensitively and never a UUID', () => {
     expect(ConfirmationGate.matches(target, 'Vahi.Dev')).toBe(true);
     expect(ConfirmationGate.matches(target, '')).toBe(false);

@@ -6,7 +6,7 @@ import { createServer } from '../../src/server.js';
 import { allTools } from '../../src/tools/index.js';
 import { makeContext } from '../helpers/context.js';
 import type { Route } from '../helpers/fakeFetch.js';
-import { domainMappings, ORG_ID, WEBSITE_ID, websiteDetail, websitesList, websiteSummary } from '../fixtures/panel.js';
+import { domainMappings, ORG_ID, PREVIEW_DOMAIN_ID, sshKeys, WEBSITE_ID, websiteDetail, websitesList, websiteSummary } from '../fixtures/panel.js';
 
 /**
  * The SDK's `ElicitResult` (what an `elicitation/create` handler must return) types `content`
@@ -246,4 +246,53 @@ describe('createServer', () => {
     expect(malformed.text).toContain('malformed');
     expect(last()).toMatchObject({ tool: 'confirm_action', gate: 'token', outcome: 'error' });
   });
+
+  /**
+   * Never-exposed guard. Platform, org and credential administration is out of scope for the
+   * customer tier and must stay unregistered; matching on whole name segments rather than raw
+   * substrings so the legitimate `domain_cloudflare_nameservers` is not a false positive.
+   */
+  it('registers no platform, org or credential administration tool', () => {
+    const forbidden = /(^|_)(servers?|settings?|licences?|licenses?|members?|owners?)(_|$)|(token_create|org_delete|subscription_delete)/;
+    expect(allTools.filter((t) => forbidden.test(t.name)).map((t) => t.name)).toEqual([]);
+  });
+
+  /**
+   * Every destructive tool, driven end to end through the bare `{ elicitation: {} }` capability
+   * Claude Code declares: exactly one DELETE, on the path for the resolved target, never with a
+   * force flag, and one audit line recording that a human answered the prompt.
+   */
+  const destructiveRoutes = (): Route[] => [
+    ...base(),
+    { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys`, body: sshKeys },
+    { method: 'DELETE', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${PREVIEW_DOMAIN_ID}`, status: 204 },
+    { method: 'DELETE', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys/0`, status: 204 },
+  ];
+
+  const destructiveCases = [
+    { tool: 'website_delete', args: { website: 'vahi.dev' }, typed: 'vahi.dev', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}` },
+    { tool: 'domain_remove', args: { website: 'vahi.dev', domain: 'vahi-dev-ccyq.sgp1.mystaging.site' }, typed: 'vahi-dev-ccyq.sgp1.mystaging.site', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${PREVIEW_DOMAIN_ID}` },
+    { tool: 'ssh_key_remove', args: { website: 'vahi.dev', key: '0' }, typed: 'vahi.dev', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys/0` },
+  ];
+
+  for (const c of destructiveCases) {
+    it(`${c.tool} runs one DELETE on the resolved target through the bare elicitation prompt`, async () => {
+      const seen: string[] = [];
+      const { call, f, auditLines } = await connect({
+        caps: 'bare',
+        routes: destructiveRoutes(),
+        elicit: (msg) => { seen.push(msg); return { action: 'accept', content: { confirm_name: c.typed } }; },
+      });
+      const r = await call(c.tool, c.args);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toContain(`Type the name "${c.typed}"`);
+      expect(r.isError).toBe(false);
+      const deletes = f.calls.filter((x) => x.method === 'DELETE');
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0]?.path).toBe(c.path);
+      // No tool may ever reach for the panel's force/purge variants.
+      expect(f.calls.filter((x) => x.path.includes('force='))).toEqual([]);
+      expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ tool: c.tool, gate: 'elicitation', outcome: 'ok' });
+    });
+  }
 });

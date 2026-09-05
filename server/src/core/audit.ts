@@ -16,11 +16,17 @@ export interface AuditEntry {
   message?: string;
 }
 
-const SECRET_KEYS = new Set(['password', 'token', 'secret', 'key', 'apikey', 'api_key', 'mailboxpassword', 'adminpassword', 'cookie', 'authorization']);
+// `key` on its own is not a secret name here: ssh_key_remove's `key` argument is a key id, name
+// or fingerprint, and stays readable so the audit trail says which key went. The key material
+// itself travels under `public_key` / `private_key`.
+const SECRET_KEYS = new Set(['password', 'token', 'secret', 'public_key', 'private_key', 'apikey', 'api_key', 'mailboxpassword', 'adminpassword', 'cookie', 'authorization']);
+
+/** A PEM private key pasted into any argument, whatever the argument is called. */
+const PRIVATE_KEY_RE = /-----BEGIN [A-Z ]*PRIVATE KEY/;
 
 export function redact(value: unknown, secrets: string[]): unknown {
   const live = secrets.filter((s) => s.length >= 5);
-  if (typeof value === 'string') return live.some((s) => value.includes(s)) ? '[redacted]' : value;
+  if (typeof value === 'string') return PRIVATE_KEY_RE.test(value) || live.some((s) => value.includes(s)) ? '[redacted]' : value;
   if (Array.isArray(value)) return value.map((v) => redact(v, secrets));
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, SECRET_KEYS.has(k.toLowerCase()) ? '[redacted]' : redact(v, secrets)]));

@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Target } from './registry.js';
+import { safe } from './respond.js';
 import { UUID_RE } from './resolver.js';
 
 export type GateReason = 'invalid' | 'expired' | 'used' | 'mismatch' | 'uuid';
@@ -72,9 +73,11 @@ export class ConfirmationGate {
       this.pending.delete(nonce);
       throw new GateError('expired', 'Confirmation token expired (5 minutes). Start the action again to get a new one.');
     }
-    if (UUID_RE.test(typedName.trim())) throw new GateError('uuid', `A UUID is not accepted as confirmation. Type the name exactly: ${p.target.name}`);
+    // Both the target name (panel data) and the typed name (model-relayed) are sanitised: neither
+    // may forge extra lines in the error the client renders.
+    if (UUID_RE.test(typedName.trim())) throw new GateError('uuid', `A UUID is not accepted as confirmation. Type the name exactly: ${safe(p.target.name)}`);
     if (!ConfirmationGate.matches(p.target, typedName)) {
-      throw new GateError('mismatch', `"${typedName.trim()}" does not match the target name "${p.target.name}". The token is still valid; ask the user to type it exactly.`);
+      throw new GateError('mismatch', `"${safe(typedName.trim())}" does not match the target name "${safe(p.target.name)}". The token is still valid; ask the user to type it exactly.`);
     }
     this.pending.delete(nonce);
     this.used.set(nonce, exp);

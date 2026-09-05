@@ -8,3 +8,4 @@
 6. **Never handle secrets.** The panel credential and any Cloudflare token are entered by the user in the panel or in `~/.enhance-mcp/config.json`. Do not ask the user to paste them into the chat, and never echo them.
 7. **Sandbox rule for SSH.** Claude Code's Bash sandbox cannot open SSH connections. Run `ssh`, `rsync` and `scp` with the sandbox disabled for that command, or tell the user to add them to `sandbox.excludedCommands` in their settings. Say which one you are doing before you run it.
 8. **Unauthorized means check, not retry.** On `unauthorized` run `auth_status` once. If it also fails, the credential is expired or IP-restricted; tell the user how to create a new access token in the panel. Do not loop.
+9. **Never add `confirm_action`, `website_delete`, `domain_remove` or `ssh_key_remove` to an always-allow permission rule; they must prompt every time.**

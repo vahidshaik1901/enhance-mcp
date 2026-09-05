@@ -8,13 +8,21 @@ export function fail(text: string, structured?: Record<string, unknown>): ToolRe
   return { text, structured, isError: true };
 }
 
+/**
+ * Characters that must never survive into rendered panel text: C0 and C1 controls (newlines,
+ * tabs, escape), the non-ASCII spaces that read as a space but are not one, the zero-width
+ * characters that hide text outright, and the bidi embedding/override/isolate controls that can
+ * reorder a line so what is displayed differs from what is there.
+ */
+const COLLAPSE_RE = /[\x00-\x1f\x7f-\x9f\u00a0\u1680\u2000-\u200f\u2028\u2029\u202a-\u202e\u205f\u2060-\u2064\u2066-\u2069\u3000\ufeff]+/g;
+
 function cell(v: unknown): string {
   if (v === undefined || v === null || v === '') return '-';
   if (Array.isArray(v)) return v.map(cell).join(', ');
   if (typeof v === 'object') return JSON.stringify(v);
-  // Collapse control characters (newlines, tabs, etc.) so panel-supplied strings can't forge
-  // extra output lines (e.g. a fake "warnings:" section) inside a table cell or kv value.
-  return String(v).replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim();
+  // Collapse control and invisible characters so panel-supplied strings can't forge extra output
+  // lines (e.g. a fake "warnings:" section) or hide text inside a table cell or kv value.
+  return String(v).replace(COLLAPSE_RE, ' ').trim();
 }
 
 /**

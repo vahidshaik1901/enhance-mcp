@@ -74,6 +74,18 @@ describe('ssh_keys_list / ssh_key_add / ssh_key_remove', () => {
     expect(item).not.toHaveProperty('blob');
     expect(item.fingerprint).toMatch(/^SHA256:/);
   });
+  it('tolerates a bare-array key listing (the shape the live panel returned)', async () => {
+    const { ctx } = await makeContext([
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites`, body: websitesList },
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: websiteDetail },
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains`, body: domainMappings },
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys`, body: sshKeys.items },
+    ]);
+    const r = await callTool(byName(tools, 'ssh_keys_list'), { website: 'vahi.dev' }, ctx);
+    expect(r.text).toContain('claude-mcp-test');
+    expect((r.structured as { items: unknown[] }).items).toHaveLength(1);
+  });
+
   it('is idempotent for an already-authorized key and posts a new one', async () => {
     const { ctx, f } = await makeContext([...base(), { method: 'POST', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys`, status: 201, body: { id: '1' } }]);
     const same = await callTool(byName(tools, 'ssh_key_add'), { website: 'vahi.dev', public_key: PUB }, ctx);

@@ -7,6 +7,12 @@ describe('redact', () => {
     expect(out).toEqual({ website: 'vahi.dev', password: '[redacted]', nested: { token: '[redacted]', note: '[redacted]' }, list: ['[redacted]', 'fine'], key_id: '0' });
   });
 
+  it('redacts key material by name and by PEM header, but leaves an ssh key reference readable', () => {
+    const out = redact({ public_key: 'ssh-ed25519 AAAAC3Nz user@laptop', private_key: 'x', key: '0', note: 'pasted -----BEGIN OPENSSH PRIVATE KEY----- oops' }, []);
+    expect(out).toEqual({ public_key: '[redacted]', private_key: '[redacted]', key: '0', note: '[redacted]' });
+    expect(redact({ pem: '-----BEGIN RSA PRIVATE KEY-----\nMII...' }, [])).toEqual({ pem: '[redacted]' });
+  });
+
   it('only treats secrets of length >= 5 as redaction triggers', () => {
     expect(redact({ a: 'has tok inside', b: 'has LONGSECRET inside' }, ['tok', 'LONGSECRET'])).toEqual({ a: 'has tok inside', b: '[redacted]' });
   });

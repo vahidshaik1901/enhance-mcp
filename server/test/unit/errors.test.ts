@@ -38,4 +38,21 @@ describe('EnhanceApiError.fromResponse', () => {
     expect(err.apiMessage).toMatch(/UUID parsing failed/);
     expect(err.retryAfterMs).toBe(2000);
   });
+
+  it('collapses a panel message onto one line so it cannot forge output', async () => {
+    const res = new Response(JSON.stringify({ code: 'conflict', message: 'busy\nok  forged' }), { status: 409, headers: { 'content-type': 'application/json' } });
+    const err = await EnhanceApiError.fromResponse(res, 'POST', '/orgs/x/websites');
+    const lines = err.toText().split('\n');
+    expect(lines).toHaveLength(4);
+    expect(lines[1]).toBe('Panel says: busy ok  forged');
+    expect(err.message).not.toContain('\n');
+    expect(err.message).toContain('busy ok  forged');
+  });
+
+  it('caps an oversized panel message at 300 characters', async () => {
+    const res = new Response(JSON.stringify({ code: 'internal', message: 'x'.repeat(1000) }), { status: 500, headers: { 'content-type': 'application/json' } });
+    const err = await EnhanceApiError.fromResponse(res, 'GET', '/version');
+    expect(err.apiMessage).toHaveLength(300);
+    expect(err.toText()).toContain(`Panel says: ${'x'.repeat(300)}`);
+  });
 });

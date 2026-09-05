@@ -1,6 +1,7 @@
 import type { EnhanceClient } from '../client/client.js';
 import type { components } from '../client/generated/types.js';
 import { requireOrg } from './context.js';
+import { safe } from './respond.js';
 
 export type Website = components['schemas']['Website'];
 export type DomainMapping = components['schemas']['DomainMapping'];
@@ -13,7 +14,9 @@ export class ResolveError extends Error {
     message: string,
     readonly suggestions: string[] = [],
   ) {
-    super(suggestions.length ? `${message} Closest matches: ${suggestions.join(', ')}` : message);
+    // The rendered message is sanitised (suggestions are panel-supplied domain names); the
+    // `suggestions` array keeps the raw values for programmatic use.
+    super(suggestions.length ? `${message} Closest matches: ${suggestions.map(safe).join(', ')}` : message);
   }
 }
 
@@ -85,7 +88,7 @@ export class Resolver {
     const hit = all.find((w) => w.domain.domain.toLowerCase() === needle || w.aliases.some((a) => a.domain.toLowerCase() === needle));
     if (hit) return this.getWebsite(hit.id);
     const names = all.flatMap((w) => [w.domain.domain, ...w.aliases.map((a) => a.domain)]);
-    throw new ResolveError(`No website named "${ref}" in org ${this.client.orgName ?? this.client.orgId ?? ''}.`, closest(needle, names, 3));
+    throw new ResolveError(`No website named "${safe(ref)}" in org ${safe(this.client.orgName ?? this.client.orgId ?? '')}.`, closest(needle, names, 3));
   }
 
   async listDomains(websiteId: string): Promise<DomainMapping[]> {
@@ -101,11 +104,11 @@ export class Resolver {
     if (!ref) {
       const primary = items.find((d) => d.mappingKind === 'primary');
       if (primary) return primary;
-      throw new ResolveError(`Website ${website.domain.domain} has no primary domain mapping.`);
+      throw new ResolveError(`Website ${safe(website.domain.domain)} has no primary domain mapping.`);
     }
     const needle = ref.trim().toLowerCase();
     const hit = items.find((d) => d.domainId.toLowerCase() === needle || d.domain.toLowerCase() === needle);
     if (hit) return hit;
-    throw new ResolveError(`No domain "${ref}" on website ${website.domain.domain}.`, closest(needle, items.map((d) => d.domain), 3));
+    throw new ResolveError(`No domain "${safe(ref)}" on website ${safe(website.domain.domain)}.`, closest(needle, items.map((d) => d.domain), 3));
   }
 }

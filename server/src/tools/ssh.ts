@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
 import * as z from 'zod/v4';
 import { isEnhanceApiError } from '../client/errors.js';
+import type { components } from '../client/generated/types.js';
 import { requireOrg, type ToolContext } from '../core/context.js';
 import { identityBlock, websiteHome } from '../core/identity.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
 import { kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
+
+type SshKey = components['schemas']['SshKey'];
 
 const websiteArg = z.string().min(1).describe('Website domain name (primary or alias) or website UUID');
 const KEY_RE = /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)[ \t]+([A-Za-z0-9+/]+=*)(?:[ \t]+([^\r\n]*))?$/;
@@ -45,7 +48,11 @@ async function listKeys(ctx: ToolContext, org: string, websiteId: string): Promi
   const res = await ctx.client.call('GET', '/orgs/{org_id}/websites/{website_id}/ssh/keys', () =>
     ctx.client.api.GET('/orgs/{org_id}/websites/{website_id}/ssh/keys', { params: { path: { org_id: org, website_id: websiteId } } }),
   );
-  return res.items.map((k) => {
+  // The live panel answered this endpoint with a bare array (docs/research.md), while the spec —
+  // and so the generated type — describes an `{ items }` envelope. Cast noted per convention 6:
+  // the narrowing below is the only place that knows both shapes exist.
+  const items = Array.isArray(res) ? (res as SshKey[]) : res.items;
+  return items.map((k) => {
     let parsed: ParsedKey | undefined;
     try {
       parsed = parsePublicKey(k.value);

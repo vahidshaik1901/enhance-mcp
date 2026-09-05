@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { detectProvider, filterZoneForThirdParty, isPlaceholderCert, tools } from '../../src/tools/domains.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
+import type { Route } from '../helpers/fakeFetch.js';
 import { authNsCloudflare, authNsOther, authNsPlatform, branding, dnsZone, DOMAIN_ID, domainMappings, ORG_ID, PREVIEW_DOMAIN_ID, sslPlaceholder, sslReal, WEBSITE_ID, websiteDetail, websitesList } from '../fixtures/panel.js';
+
+/**
+ * `dns-status` answers with a bare scalar, not a JSON object: the live panel sends
+ * `text/plain` with an unquoted body, while the spec (and some deployments) send a JSON
+ * string. Both shapes must normalise to the same status.
+ */
+const dnsStatusRoute = (status: string, as: 'text' | 'json'): Route => ({
+  method: 'GET',
+  path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${DOMAIN_ID}/dns-status`,
+  handler: async () =>
+    as === 'text'
+      ? new Response(status, { status: 200, headers: { 'content-type': 'text/plain' } })
+      : new Response(JSON.stringify(status), { status: 200, headers: { 'content-type': 'application/json' } }),
+});
 
 const base = () => [
   { method: 'GET', path: `/orgs/${ORG_ID}/websites`, body: websitesList },
@@ -77,7 +92,7 @@ describe('domain_dns_status', () => {
   it('explains the Cloudflare case with both paths', async () => {
     const { ctx } = await makeContext([
       ...base(),
-      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${DOMAIN_ID}/dns-status`, body: 'ForeignServer' },
+      dnsStatusRoute('ForeignServer', 'text'),
       { method: 'GET', path: `/orgs/${ORG_ID}/domains/${DOMAIN_ID}/auth-ns`, body: authNsCloudflare },
     ]);
     const r = await callTool(byName(tools, 'domain_dns_status'), { website: 'vahi.dev' }, ctx);
@@ -90,7 +105,7 @@ describe('domain_dns_status', () => {
   it('explains the platform and failed cases', async () => {
     const { ctx } = await makeContext([
       ...base(),
-      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${DOMAIN_ID}/dns-status`, body: 'Failed' },
+      dnsStatusRoute('Failed', 'json'),
       { method: 'GET', path: `/orgs/${ORG_ID}/domains/${DOMAIN_ID}/auth-ns`, body: { matchesPlatform: false, authNs: [] } },
     ]);
     const r = await callTool(byName(tools, 'domain_dns_status'), { website: 'vahi.dev' }, ctx);
@@ -101,7 +116,7 @@ describe('domain_dns_status', () => {
   it('reports lookup failure when auth-ns returns 500', async () => {
     const { ctx } = await makeContext([
       ...base(),
-      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${DOMAIN_ID}/dns-status`, body: 'Failed' },
+      dnsStatusRoute('Failed', 'text'),
       { method: 'GET', path: `/orgs/${ORG_ID}/domains/${DOMAIN_ID}/auth-ns`, status: 500, body: { code: 'internal' } },
     ]);
     const r = await callTool(byName(tools, 'domain_dns_status'), { website: 'vahi.dev' }, ctx);
@@ -157,7 +172,8 @@ describe('ssl tools', () => {
     ]);
     const r = await callTool(byName(tools, 'domain_ssl_issue'), { website: 'vahi.dev' }, ctx);
     expect(r.isError).toBeFalsy();
-    expect(r.structured).toMatchObject({ issued: true, placeholder: false });
+    // `justIssued` is our own flag; `issued` stays the certificate's own issue date.
+    expect(r.structured).toMatchObject({ justIssued: true, placeholder: false, issued: sslReal.issued });
     expect(r.structured).not.toHaveProperty('cert');
     expect(r.structured).not.toHaveProperty('key');
     expect(r.text.split('\n')[0]).toMatch(/^org: /);
@@ -179,7 +195,7 @@ describe('ssl tools', () => {
 
 describe('cloudflare tools', () => {
   it('lists keys, connects a domain, reads nameservers', async () => {
-    const key = { id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', token: 'abcd****', updatedAt: '2026-09-04', friendlyName: 'my cf', lastSync: null, lastMessage: null, domains: [] };
+    const key = { id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', token: 'cf-abcdefghijklmnopqrstuvwxyz0123', updatedAt: '2026-09-04', friendlyName: 'my cf', lastSync: null, lastMessage: null, domains: [] };
     const { ctx, f } = await makeContext([
       ...base(),
       { method: 'GET', path: `/orgs/${ORG_ID}/cloudflare`, body: [key] },
@@ -188,7 +204,11 @@ describe('cloudflare tools', () => {
     ]);
     const a = await callTool(byName(tools, 'cloudflare_keys_list'), {}, ctx);
     expect(a.text).toContain('my cf');
-    expect(a.text).toContain('abcd****');
+    // The panel hands back whatever it stored; never echo it, in text or in structured output.
+    expect(a.text).not.toContain(key.token);
+    expect(JSON.stringify(a.structured)).not.toContain(key.token);
+    expect(a.text).toContain('cf-a\u20260123');
+    expect(JSON.stringify(a.structured)).toContain('cf-a\u20260123');
     const b = await callTool(byName(tools, 'domain_cloudflare_connect'), { website: 'vahi.dev', key_id: key.id }, ctx);
     expect(f.calls.find((c) => c.method === 'PUT')?.body).toBe(`"${key.id}"`);
     expect(b.text).toContain('Enhance will now sync');
