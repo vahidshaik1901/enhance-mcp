@@ -1,12 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { EXPECTED_INT_OCCURRENCES, patchSpec } from '../../scripts/patch-spec.js';
 
-const patched = new URL('../../spec/oas3-api.patched.yaml', import.meta.url);
+const vendored = new URL('../../spec/oas3-api.yaml', import.meta.url);
 const generated = new URL('../../src/client/generated/types.ts', import.meta.url);
 
 describe('vendored spec', () => {
+  // Applied in memory: the patched file is a git-ignored build artifact and does not exist in CI.
   it('has no non-standard `type: int` after patching', () => {
-    const text = readFileSync(patched, 'utf8');
+    const source = readFileSync(vendored, 'utf8');
+    expect(source).toMatch(/^\s+type: int$/m);
+    const { text, patched } = patchSpec(source);
+    expect(patched).toBe(EXPECTED_INT_OCCURRENCES);
     expect(text).not.toMatch(/^\s+type: int$/m);
   });
 
