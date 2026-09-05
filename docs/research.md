@@ -374,3 +374,109 @@ Findings and what changed because of them:
   email account (mailbox or forwarder) on that domain; `include_mail=yes` still forces them, and the text says which rule
   applied.
 - The demo site was soft-deleted through the elicitation gate at 12:44; only vahi.dev remains.
+
+## Live probe: milestone B and C endpoints (2026-09-05)
+
+All verified on vahi.dev (website 6106382b-143f-4d24-9bea-0e9368ad2a1f, unix user vahi_dev1,
+plan DMax, subscription 686, php84) with a panel session cookie. Every resource created was
+deleted again; the site is back to the static page plus an installed Node runtime.
+
+### PHP connects to MySQL over `localhost` only (critical)
+
+A PHP page deployed to the docroot connected to MySQL with `new mysqli('localhost', ...)`:
+created a table, inserted and read back a row on MariaDB 11.4.13. The same page against
+`127.0.0.1` got `Connection refused`. So generated app config (`.env`, `wp-config.php`,
+Laravel `DB_HOST`) must use `localhost` (the unix socket), never `127.0.0.1` or the
+`dbServerIps` value. The admin `~/.my.cnf` also uses `host=localhost`.
+
+### MySQL (all work)
+
+- List `GET /orgs/{org}/websites/{id}/mysql-dbs` -> `{items: MySQLDB[]}`,
+  `MySQLDB {name, size, createdAt, websiteId, serverId, userCount}` (no id; the name is the key).
+- Create `POST .../mysql-dbs {name}` -> 201. **Names are auto-prefixed with `<unixUser>_`.**
+  Sending `name: "demo"` created `vahi_dev1_demo`. Every later call (delete, grant, sql) uses
+  the FULL prefixed name. A tool must show the full name and accept either the short or full form.
+- Delete `DELETE .../mysql-dbs/{db_name}` -> 204 (uses the full name).
+- Users: `GET/POST .../mysql-users`, `DELETE/PUT .../mysql-users/{username}`.
+  `NewMySQLUser {username, password, authPlugin?}`; `authPlugin` is
+  `mysql_native_password` (default) or `caching_sha2_password`. Username is prefixed the same way.
+  `MySQLUser {username, accessHosts[], authPlugin, grants: {dbName: grant[]}, createdAt, isEphemeral}`.
+  A new user's default `accessHosts` is `["10.169.0.1"]` (the app tier source IP).
+- Privileges `PUT .../mysql-users/{username}/privileges {dbName, grants[]}` -> 201. **grants are a
+  lowercase enum**, not SQL text: `all, alter, alterRoutine, create, createRoutine,
+  createTablespace, createTemporaryTables, createView, delete, drop, event, execute, index,
+  insert, lockTables, references, select, showView, trigger, update`. `["all"]` works;
+  `"ALL PRIVILEGES"` is a 400 that lists the valid variants. After grant, the user's `grants`
+  became `{"vahi_dev1_demo": ["all"]}`.
+- Access hosts `POST/DELETE .../mysql-users/{username}/access-hosts {accessHosts[]}`.
+- Password change `PUT .../mysql-users/{username} {password}`.
+- Export `GET .../mysql-dbs/{db_name}/sql` -> SQL as a JSON string.
+- Import `POST /v2/websites/{id}/mysql/{db_name}/sql` multipart `{sql}` with optional `?force`.
+- phpMyAdmin SSO `GET .../phpmyadmin?shouldRedirect=false` -> a signon URL string
+  (`https://phpmyadmin.<panel>/signon.php?sess=...`); per-db variant `.../mysql-dbs/{db_name}/sso`.
+
+### PostgreSQL
+
+Endpoints mirror MySQL (`/postgresql-dbs`, `/postgresql-users`, grant/revoke). On this plan
+`canUse.postgresql` is `false` and `php_extensions` shows `pgsql` enabled but the DB feature is
+off, so PG tools must gate on `canUse.postgresql` and report unavailable rather than call.
+`PostgresqlUser {username, privs[], createdAt}`; grant body is a bare db-name string, revoke is
+`DELETE .../postgresql-users/{username}/privileges/{db_name}`. `getWebsitePostgresqlDbs` reuses
+the `MySQLDBsFullListing` type.
+
+### PHP settings, extensions, cache
+
+- Enabled extensions `GET /websites/{id}/php_extensions` -> string[] (was `["pgsql","pdo_pgsql"]`).
+  Available to enable `GET .../available_php_extensions`; compiled-in
+  `GET .../built_in_php_extensions` (mysqli, pdo_mysql, redis, gd, intl, imagick, ... always on).
+- Enable `POST .../php_extensions` / disable `DELETE .../php_extensions`, body is a **bare JSON
+  string** (the extension name), not an object.
+- PHP error log `GET .../php_error_log` -> string, last 256KB (empty `""` when none).
+- The only php.ini-style knob at customer tier is `GET/PUT /websites/{id}/lsphp_settings`
+  `{lsapiChildren: number}` (was 100). There is **no generic php.ini get/set endpoint**; the
+  spec's `php_ini_get/set` must map to lsphp settings, not arbitrary directives.
+- Redis is a feature toggle, not a KV API: `GET/PUT /v2/websites/{id}/redis` boolean (was false).
+  The spec's `redis_get/set` means this on/off state.
+- Cache: `DELETE /v2/domains/{domain_id}/nginx_fastcgi` clears the FastCGI cache (per domain);
+  OPcache is cleared by `website_restart_php`. That pair is the spec's `cache_clear`.
+- htaccess rewrites `GET/PATCH /orgs/{org}/websites/{id}/htaccess`
+  (`RewriteChain {lineNumber, rule{pattern, substitution, flags[]}, conds[]}`), and IP rules
+  `GET/PUT .../htaccess/ips {kind: "allow"|"block", ips[]}` (was `{ips:[], kind:"block"}`).
+  Domain-level `GET/PUT/DELETE /v2/domains/{id}/webserver_rewrites [{path, destinationFile}]`.
+
+### Cron
+
+- `GET /orgs/{org}/websites/{id}/crontab` -> `{items: CrontabValue[]}` where each item is
+  `{variable:{lineNumber,key,val}}` or `{cronCmd:{lineNumber,expr}}` (was empty). The spec marks
+  the response 204 but it is 200 with a body.
+- `PATCH .../crontab {items: UpdateCrontabValue[]}`; `DELETE .../crontab`.
+- Container cron on/off `GET/PUT /websites/{id}/container_cron_enabled` boolean (was false). The
+  PUT's spec summary is mislabeled "Set backups disabled status" -- ignore the label.
+
+### Node and persistent apps (milestone C, probed now)
+
+- `POST /websites/{id}/apps/node` installs nvm **and the stable node** (26.8.1); 200. Before this
+  the container has no node and no `~/.nvm`.
+- `GET .../apps/node/possible_versions` -> string[] (0.12 through 26.8.1).
+- `POST .../apps/node/versions` body bare string `"22.23.2"` installs it; 200.
+  `PUT .../apps/node/versions/default` body bare string sets the nvm `default` alias; 200. SSH
+  confirmed `node -v` = v22.23.2, npm 10.9.8.
+- **Bug: `GET .../apps/node/versions` is out of sync.** After installing 22.23.2 via the API and
+  setting it default, the list returned only `["26.8.1"]`, omitting 22.23.2, though `nvm ls`
+  shows both and default -> 22.23.2. A tool must not present this list as authoritative.
+- Persistent apps `GET/POST /websites/{id}/apps/persistent`,
+  `PATCH/DELETE .../apps/persistent/{app_id}`, `GET .../apps/persistent/{app_id}` returns the
+  **startup+stdout log** (nvm load, node version, app output) as a string.
+  `PersistentApp {proxyDetails{path, port, allowWebSocketUpgrade?}, startMode: automatic|manual,
+  command, workingDirectory?, nodeVersion?}`.
+  - `proxyDetails.path` **must not start with `/`**: alphanumeric and underscore, with hyphens,
+    dots and slashes allowed only in the middle. `"node"` works, `"/node"` is a 400.
+  - `workingDirectory` **must be relative to home**; an absolute path is silently stored as
+    `null` (so `node server.js` ran from home and failed with "Cannot find module"). `"nodeapp"`
+    worked and the app started ("listening on 3000").
+  - **The app proxy binds to the PRIMARY domain, not the preview/staging alias.** With the app
+    listening on 3000, `/node/` returned 200 with the app's JSON on `vahi.dev` (via
+    `curl --resolve` to the app server), but 404 on the `*.mystaging.site` preview URL. So Node
+    deploys are verified on the primary domain (via `--resolve` until DNS resolves), unlike
+    static and PHP which serve on the preview URL. Record this in the deploy skill for mode A.
+  - A `persistent_app_<id>.log` file remains in the home directory after the app is deleted.
