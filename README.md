@@ -16,7 +16,7 @@ git checkout and point Claude Code at that same directory.
    git clone <this repo> enhance-mcp && cd enhance-mcp
    cd server && npm ci && npm run build
    ```
-2. Install the plugin from the directory you just built in: `claude plugin add /path/to/enhance-mcp`
+2. Start Claude Code with the plugin loaded from the directory you just built in: `claude --plugin-dir /path/to/enhance-mcp` (Claude Code 2.1.258 has no `plugin add`; a marketplace install comes with the npm publish)
    (the repo root, the directory containing `.claude-plugin/`).
 
    The plugin runs `server/dist/index.js` in place, so **both `server/dist` and
