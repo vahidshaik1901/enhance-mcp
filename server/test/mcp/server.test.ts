@@ -1,4 +1,5 @@
-import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import { Client, type ClientOptions, InMemoryTransport } from '@modelcontextprotocol/client';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { describe, expect, it } from 'vitest';
 import { selectTools } from '../../src/core/registry.js';
 import { createServer } from '../../src/server.js';
@@ -14,6 +15,20 @@ import { domainMappings, ORG_ID, WEBSITE_ID, websiteDetail, websitesList, websit
  */
 type ElicitAnswer = { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> };
 
+/**
+ * The three client capability shapes that matter here:
+ * - `none`: no `elicitation` at all — the token path.
+ * - `bare`: `{ elicitation: {} }`, exactly what Claude Code 2.1.258 declares. The SDK's
+ *   multi-round-trip gate reads a bare declaration as form support
+ *   (`isImpliedCapabilityMember`, server/dist/src-CX2iR2pK.mjs:471), and the client accepts an
+ *   `elicitation/create` handler for it (`assertRequestHandlerCapability`, client/dist/index.mjs:3484,
+ *   `getSupportedElicitationModes`, client/dist/index.mjs:2877).
+ * - `form`: `{ elicitation: { form: {} } }`, the explicit declaration.
+ */
+type Caps = 'none' | 'bare' | 'form';
+
+const capabilities = (caps: Caps): ClientOptions => (caps === 'none' ? {} : { capabilities: { elicitation: caps === 'bare' ? {} : { form: {} } } });
+
 const base = () => [
   { method: 'GET', path: `/orgs/${ORG_ID}/websites`, body: websitesList },
   { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: websiteDetail },
@@ -21,23 +36,47 @@ const base = () => [
   { method: 'DELETE', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, status: 204 },
 ];
 
-async function connect(opts: { readOnly?: boolean; elicit?: (msg: string) => ElicitAnswer; routes?: Route[] } = {}) {
+async function connect(opts: { readOnly?: boolean; elicit?: (msg: string) => ElicitAnswer; caps?: Caps; routes?: Route[] } = {}) {
   const t = await makeContext(opts.routes ?? base());
   const tools = selectTools(allTools, { tiers: ['customer'], readOnly: opts.readOnly ?? false });
   const server = createServer(t.ctx, tools);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: 'test', version: '0.0.0' }, opts.elicit ? { capabilities: { elicitation: { form: {} } } } : {});
+  const client = new Client({ name: 'test', version: '0.0.0' }, capabilities(opts.caps ?? (opts.elicit ? 'form' : 'none')));
   if (opts.elicit) {
     const elicit = opts.elicit;
     client.setRequestHandler('elicitation/create', async (req) => elicit(String((req.params as { message?: string }).message ?? '')));
   }
   await server.connect(serverTransport);
   await client.connect(clientTransport);
-  const call = async (name: string, args: Record<string, unknown>) => {
+  return { ...t, client, call: caller(client) };
+}
+
+function caller(client: Client) {
+  return async (name: string, args: Record<string, unknown>) => {
     const r = (await client.callTool({ name, arguments: args })) as { content: Array<{ type: string; text?: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
     return { text: r.content.map((c) => c.text ?? '').join('\n'), structured: r.structuredContent, isError: r.isError ?? false };
   };
-  return { ...t, client, call };
+}
+
+/**
+ * The same server, served on the 2026-07-28 era instead of 2025 — the era Task 15's `serveStdio`
+ * wiring will run in production. `LATEST_PROTOCOL_VERSION` is `2025-11-25`, so a plain
+ * `server.connect()` / `client.connect()` pair can only ever negotiate the legacy era; the modern
+ * era is reachable only through a serving entry (`serveStdio`) plus a client pinned to it. That
+ * era has no server-to-client request channel at all, so it is the case the old `elicitInput` call
+ * could not serve.
+ */
+async function connectModern(elicit: (msg: string) => ElicitAnswer) {
+  const t = await makeContext(base());
+  const tools = selectTools(allTools, { tiers: ['customer'], readOnly: false });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const handle = serveStdio(() => createServer(t.ctx, tools), { transport: serverTransport, legacy: 'reject' });
+  // Bare `{ elicitation: {} }`, exactly as Claude Code declares it. Unlike the 2025 handshake, the
+  // modern per-request envelope carries it un-normalised — no `form` member is added.
+  const client = new Client({ name: 'test', version: '0.0.0' }, { capabilities: { elicitation: {} }, versionNegotiation: { mode: { pin: '2026-07-28' } } });
+  client.setRequestHandler('elicitation/create', async (req) => elicit(String((req.params as { message?: string }).message ?? '')));
+  await client.connect(clientTransport);
+  return { ...t, call: caller(client), close: () => handle.close() };
 }
 
 describe('createServer', () => {
@@ -129,25 +168,82 @@ describe('createServer', () => {
     expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ tool: 'website_delete', gate: 'token', outcome: 'error' });
   });
 
-  it('with elicitation: the server asks the human directly and executes on an exact match', async () => {
-    const seen: string[] = [];
-    const { call, f, auditLines } = await connect({ elicit: (msg) => { seen.push(msg); return { action: 'accept', content: { confirm_name: 'Vahi.Dev' } }; } });
-    const r = await call('website_delete', { website: 'vahi.dev' });
-    expect(seen[0]).toContain('soft-delete');
-    expect(r.isError).toBe(false);
-    expect(r.text).toContain('soft-deleted');
-    expect(f.calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
-    expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ tool: 'website_delete', gate: 'elicitation', outcome: 'ok' });
-  });
+  // Both declarations must reach the human. A bare `{ elicitation: {} }` is what the shipping
+  // Claude Code sends, and the old `elicitInput` path refused it outright.
+  for (const caps of ['bare', 'form'] as const) {
+    it(`with ${caps} elicitation capability: the server asks the human directly and executes on an exact match`, async () => {
+      const seen: string[] = [];
+      const { call, f, auditLines } = await connect({ caps, elicit: (msg) => { seen.push(msg); return { action: 'accept', content: { confirm_name: 'Vahi.Dev' } }; } });
+      const r = await call('website_delete', { website: 'vahi.dev' });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toContain('soft-delete');
+      expect(seen[0]).toContain('Type the name "vahi.dev"');
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain('soft-deleted');
+      expect(r.text).not.toContain('confirmation_token');
+      expect(f.calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
+      expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ tool: 'website_delete', gate: 'elicitation', outcome: 'ok' });
+    });
+  }
 
   it('with elicitation: decline, cancel and a wrong name never execute', async () => {
-    for (const answer of [{ action: 'decline' as const }, { action: 'cancel' as const }, { action: 'accept' as const, content: { confirm_name: 'vahi.com' } }]) {
-      const { call, f, auditLines } = await connect({ elicit: () => answer });
-      const r = await call('website_delete', { website: 'vahi.dev' });
-      expect(r.isError).toBe(false);
-      expect(r.text).toMatch(/cancelled|did not match/);
-      expect(f.calls.some((c) => c.method === 'DELETE')).toBe(false);
-      expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ outcome: 'cancelled' });
+    for (const caps of ['bare', 'form'] as const) {
+      for (const answer of [{ action: 'decline' as const }, { action: 'cancel' as const }, { action: 'accept' as const, content: { confirm_name: 'vahi.com' } }]) {
+        const { call, f, auditLines } = await connect({ caps, elicit: () => answer });
+        const r = await call('website_delete', { website: 'vahi.dev' });
+        expect(r.isError).toBe(false);
+        expect(r.text).toMatch(/cancelled|did not match/);
+        expect(f.calls.some((c) => c.method === 'DELETE')).toBe(false);
+        expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ tool: 'website_delete', gate: 'elicitation', outcome: 'cancelled' });
+      }
     }
+  });
+
+  it('on the 2026-07-28 era the prompt still reaches the human, where a server-to-client request could not', async () => {
+    const seen: string[] = [];
+    const { call, f, auditLines, close } = await connectModern((msg) => { seen.push(msg); return { action: 'accept', content: { confirm_name: 'Vahi.Dev' } }; });
+    try {
+      const r = await call('website_delete', { website: 'vahi.dev' });
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toContain('Type the name "vahi.dev"');
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain('soft-deleted');
+      expect(f.calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
+      expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ tool: 'website_delete', gate: 'elicitation', outcome: 'ok' });
+    } finally {
+      await close();
+    }
+  });
+
+  it('audits every confirm_action failure exit, without ever logging the token', async () => {
+    const { call, f, auditLines } = await connect();
+    const token = (await call('website_delete', { website: 'vahi.dev' })).structured as { confirmation_token: string };
+    const last = () => JSON.parse(auditLines.at(-1)!) as Record<string, unknown>;
+
+    // Mismatch: the human typed the wrong thing. Cancelled, not an error; the token survives.
+    const wrong = await call('confirm_action', { confirmation_token: token.confirmation_token, confirm_target: 'vahi.com' });
+    expect(wrong.isError).toBe(true);
+    expect(last()).toMatchObject({ tool: 'confirm_action', risk: 'destructive', gate: 'token', outcome: 'cancelled', args: { confirm_target: 'vahi.com' } });
+    expect(JSON.stringify(last())).not.toContain(token.confirmation_token);
+
+    // A UUID is never accepted as confirmation — also a cancellation.
+    const uuid = await call('confirm_action', { confirmation_token: token.confirmation_token, confirm_target: WEBSITE_ID });
+    expect(uuid.isError).toBe(true);
+    expect(last()).toMatchObject({ tool: 'confirm_action', gate: 'token', outcome: 'cancelled' });
+    expect(f.calls.some((c) => c.method === 'DELETE')).toBe(false);
+
+    // The token was still valid through both refusals.
+    const done = await call('confirm_action', { confirmation_token: token.confirmation_token, confirm_target: 'vahi.dev' });
+    expect(done.isError).toBe(false);
+    expect(f.calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
+
+    const reuse = await call('confirm_action', { confirmation_token: token.confirmation_token, confirm_target: 'vahi.dev' });
+    expect(reuse.isError).toBe(true);
+    expect(last()).toMatchObject({ tool: 'confirm_action', gate: 'token', outcome: 'error', args: { confirm_target: 'vahi.dev' } });
+
+    const malformed = await call('confirm_action', { confirmation_token: 'not-a-real-token', confirm_target: 'vahi.dev' });
+    expect(malformed.isError).toBe(true);
+    expect(malformed.text).toContain('malformed');
+    expect(last()).toMatchObject({ tool: 'confirm_action', gate: 'token', outcome: 'error' });
   });
 });

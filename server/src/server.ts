@@ -1,4 +1,4 @@
-import { type CallToolResult, type ElicitResult, McpServer, SdkError, SdkErrorCode, type ServerContext } from '@modelcontextprotocol/server';
+import { type CallToolResult, CLIENT_CAPABILITIES_META_KEY, type ClientCapabilities, inputRequired, inputResponse, McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { EnhanceApiError } from './client/errors.js';
 import type { ToolContext } from './core/context.js';
@@ -27,25 +27,40 @@ function toMcp(r: ToolResult): CallToolResult {
   return { content: [{ type: 'text', text: r.text }], ...(r.structured ? { structuredContent: r.structured } : {}), ...(r.isError ? { isError: true } : {}) };
 }
 
-/**
- * True when `elicitInput` failed because this connection cannot prompt the human at all,
- * rather than because the human answered badly — the signal to fall back to the token path.
- *
- * Two SDK v2 codes qualify (see node_modules/@modelcontextprotocol/server/dist/mcp-*.mjs):
- * `CAPABILITY_NOT_SUPPORTED` ("Client does not support form elicitation.") when the client
- * never declared `elicitation.form`, and `METHOD_NOT_SUPPORTED_BY_PROTOCOL_VERSION` when the
- * connection negotiated the 2026-07-28 era, which removed server-to-client requests entirely.
- * The message test is a fallback for a duplicated/older SDK copy whose class identity differs.
- */
-function cannotElicit(e: unknown): boolean {
-  if (SdkError.isInstance(e)) return e.code === SdkErrorCode.CapabilityNotSupported || e.code === SdkErrorCode.MethodNotSupportedByProtocolVersion;
-  const message = String((e as { message?: unknown } | undefined)?.message ?? '');
-  return /does not support .*elicitation|elicitation.*not supported|CAPABILITY_NOT_SUPPORTED|Server-to-client requests are not available/i.test(message);
-}
+/** The `inputRequests` key our destructive wrapper asks under, and reads back on re-entry. */
+const CONFIRM = 'confirm';
 
 export function createServer(ctx: ToolContext, tools: ToolDef[]): McpServer {
   const server = new McpServer({ name: 'enhance', version: VERSION });
   const byName = new Map(tools.map((t) => [t.name, t]));
+
+  /**
+   * Whether this client can be asked to prompt its human at all, i.e. whether returning an
+   * `inputRequired` result will reach a person rather than fail the call.
+   *
+   * Mirrors the SDK's own per-request capability view (`_inputRequestCapabilityView`,
+   * mcp-DXXb3Vv3.mjs:936), which is the gate our `inputRequired` result is actually judged
+   * against, and it differs per era:
+   *
+   * - 2026-07-28 era (what `serveStdio` serves): the capabilities ride the per-request `_meta`
+   *   envelope. `getClientCapabilities()` returns `undefined` there — the instance the entry pins
+   *   for the connection never sees an `initialize` — so reading only that accessor would send
+   *   every modern-era client down the token path. `RequestMetaEnvelope` is erased to `{}` on the
+   *   public surface (createMcpHandler-CLhGwQTn.d.mts:355), hence the cast; the key itself is
+   *   public.
+   * - 2025 era: no envelope, and the `initialize`-scoped accessor answers.
+   *
+   * Any `elicitation` declaration qualifies, bare `{}` included. The SDK's gate treats a bare
+   * declaration as form support (`isImpliedCapabilityMember`, src-CX2iR2pK.mjs:471) and the 2025
+   * wire schema rewrites `{}` to `{ form: {} }` outright while parsing `initialize`
+   * (`ElicitationCapabilitySchema`, core/dist/auth-*.mjs:268). Claude Code 2.1.258 sends the bare
+   * shape, so it must never be read as "no elicitation".
+   */
+  function clientCanElicit(extra: ServerContext): boolean {
+    const envelope = extra.mcpReq.envelope as Record<string, unknown> | undefined;
+    const declared = (envelope?.[CLIENT_CAPABILITIES_META_KEY] as ClientCapabilities | undefined) ?? server.server.getClientCapabilities();
+    return declared?.elicitation !== undefined;
+  }
 
   /** Runs the tool for real. Audits every write/destructive outcome; reads are not audited. */
   async function run(tool: ToolDef, args: Record<string, unknown>, target: Target | undefined, gate: GateMechanism): Promise<CallToolResult> {
@@ -90,6 +105,18 @@ export function createServer(ctx: ToolContext, tools: ToolDef[]): McpServer {
     return toMcp({ text: `${reason} Nothing was changed.`, structured: { cancelled: true, reason } });
   }
 
+  /**
+   * A `confirm_action` that never reached its pending tool. Audited under `confirm_action` itself —
+   * the pending tool's name is not always known, and when it is, the entry still describes the
+   * confirmation step rather than the action. Only `confirm_target` is recorded: the token is a
+   * bearer secret and never belongs in the audit log. Unlike `refuse`, a cancellation here is still
+   * an `isError` result, because the caller passed a token and needs to know it was not honoured.
+   */
+  function refuseConfirm(target: Target | undefined, confirmTarget: string, outcome: 'cancelled' | 'error', message: string): CallToolResult {
+    ctx.audit.append({ tool: 'confirm_action', risk: 'destructive', target, args: { confirm_target: confirmTarget }, outcome, durationMs: 0, gate: 'token', message: message.slice(0, 300) });
+    return toMcp({ text: message, isError: true });
+  }
+
   /** Same as `refuse(..., 'error', ...)`, carrying the panel's HTTP status when there was one. */
   function refuseError(tool: ToolDef, target: Target | undefined, args: Record<string, unknown>, gate: GateMechanism, e: unknown): CallToolResult {
     return refuse(tool, target, args, 'error', gate, errorText(e), e instanceof EnhanceApiError ? e.status : undefined);
@@ -113,33 +140,45 @@ export function createServer(ctx: ToolContext, tools: ToolDef[]): McpServer {
       },
       async (rawArgs, extra: ServerContext) => {
         const args = rawArgs as Record<string, unknown>;
+        // Re-entry is what the SDK's multi-round-trip flow looks like from inside the callback: the
+        // same tool call arrives a second time carrying the client's answers. `inputResponse` (not
+        // `acceptedContent`) is the accessor here because it discriminates decline/cancel from a
+        // missing answer, which `acceptedContent` collapses into `undefined`
+        // (createMcpHandler-CLhGwQTn.d.mts:1459 vs :1495).
+        const answer = inputResponse(extra.mcpReq.inputResponses, CONFIRM);
         let target: Target;
-        let preview: string;
+        let preview = '';
         try {
           target = await tool.target!(args, ctx);
-          preview = await tool.preview!(args, ctx, target);
+          // Re-resolving on re-entry keeps the confirmed name pointing at the record we delete;
+          // the preview is only needed for the prompt we are about to compose.
+          if (answer.kind !== 'elicit') preview = await tool.preview!(args, ctx, target);
         } catch (e) {
           return refuseError(tool, undefined, args, 'none', e);
         }
         const name = safe(target.name);
-        // Path A: elicitation — the human types the name in the client's own prompt. Only the
-        // elicitInput call sits in the try, so a failure inside run() can never be mistaken for
-        // "this client cannot prompt" and fall through to the token path.
-        let answer: ElicitResult | undefined;
-        try {
-          answer = await extra.mcpReq.elicitInput({
-            mode: 'form',
-            message: `${preview}\n\nType the name "${name}" to confirm.`,
-            requestedSchema: { type: 'object', properties: { confirm_name: { type: 'string', title: `Type ${name} to confirm` } }, required: ['confirm_name'] },
-          });
-        } catch (e) {
-          if (!cannotElicit(e)) return refuseError(tool, target, args, 'elicitation', e);
-        }
-        if (answer) {
+        // Path A, round 2: the human answered.
+        if (answer.kind === 'elicit') {
           if (answer.action !== 'accept') return refuse(tool, target, args, 'cancelled', 'elicitation', `Action cancelled: confirmation ${answer.action === 'decline' ? 'declined' : 'dismissed'} by the user.`);
           const typed = String(answer.content?.['confirm_name'] ?? '');
           if (!ConfirmationGate.matches(target, typed)) return refuse(tool, target, args, 'cancelled', 'elicitation', `Confirmation text "${safe(typed)}" did not match "${name}".`);
           return run(tool, args, target, 'elicitation');
+        }
+        // Path A, round 1: ask the human to type the name in the client's own prompt. This is the
+        // era-proof form of the request: on a 2025-era connection the SDK's default-on legacy shim
+        // performs the `elicitation/create` round trip and re-invokes this callback with the answer,
+        // and on a 2026-07-28-era connection (what `serveStdio` serves) the client does the same —
+        // whereas the push-style `mcpReq.elicitInput` throws outright there
+        // (`_assertPushApiInServedEra`, mcp-DXXb3Vv3.mjs:946).
+        if (clientCanElicit(extra)) {
+          return inputRequired({
+            inputRequests: {
+              [CONFIRM]: inputRequired.elicit({
+                message: `${preview}\n\nType the name "${name}" to confirm.`,
+                requestedSchema: { type: 'object', properties: { confirm_name: { type: 'string', title: `Type ${name} to confirm` } }, required: ['confirm_name'] },
+              }),
+            },
+          });
         }
         // Path B: the client cannot prompt the human; hand back a token for confirm_action.
         const token = ctx.gate.issue(tool.name, target, args);
@@ -172,10 +211,15 @@ export function createServer(ctx: ToolContext, tools: ToolDef[]): McpServer {
         try {
           pending = ctx.gate.verify(confirmation_token, confirm_target);
         } catch (e) {
-          return toMcp({ text: errorText(e), isError: true });
+          // A name the human got wrong (or a UUID they pasted) is a cancellation: the token is
+          // still live and they can retype. Everything else — malformed, unknown, expired, already
+          // used — is an error. Either way the attempt is recorded; the target is unknown here
+          // because `verify` refused before handing back the pending action.
+          const cancelled = e instanceof GateError && (e.reason === 'mismatch' || e.reason === 'uuid');
+          return refuseConfirm(undefined, confirm_target, cancelled ? 'cancelled' : 'error', errorText(e));
         }
         const tool = byName.get(pending.tool);
-        if (!tool) return toMcp({ text: `Tool ${pending.tool} is no longer registered.`, isError: true });
+        if (!tool) return refuseConfirm(pending.target, confirm_target, 'error', `Tool ${pending.tool} is no longer registered.`);
         // Re-resolve before executing: if the name now points at a different record (recreated,
         // renamed, moved) the human's confirmation no longer applies to what we would delete.
         let target: Target;
