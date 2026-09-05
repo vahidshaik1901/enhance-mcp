@@ -8,7 +8,10 @@ delete a site by accident.
 
 ## Current status (2026-09-04)
 
-**Phase: spec approved; milestone A implementation plan written; implementation next.**
+**Phase: milestone A implemented on branch `feat/milestone-a` (Tasks 1-18 done and
+reviewed; final whole-branch review in progress). Remaining: the live e2e run and Task 19
+(live walkthrough with the user), both blocked on a fresh panel credential (the stored
+session cookie expired 2026-09-05).**
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
 Plan: `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
@@ -20,8 +23,11 @@ capability and negotiates the legacy protocol era; the server uses the SDK's `in
 flow (not `elicitInput`) so the human prompt works on both eras (see docs/research.md).
 `outputSchema` has known issues so tools return `structuredContent` without declaring one;
 the Bash sandbox can never carry SSH (use `sandbox.excludedCommands` or run unsandboxed).
-Progress: Tasks 1-14 of the milestone A plan are done and reviewed (ledger in
-`.superpowers/sdd/progress.md`, git-ignored; `git log` is the recovery map).
+Progress: Tasks 1-18 of the milestone A plan are done and reviewed (ledger in
+`.superpowers/sdd/progress.md`, git-ignored; `git log` is the recovery map). To run the
+live suite: put a working credential in `.env` as `ENHANCE_TOKEN` (or a session JWT as
+`ENHANCE_SESSION_COOKIE`), then from `server/`:
+`set -a && source ../.env && set +a && ENHANCE_E2E=1 ENHANCE_E2E_SUBSCRIPTION_ID=664 npm run test:e2e`.
 
 ### Decisions made
 
