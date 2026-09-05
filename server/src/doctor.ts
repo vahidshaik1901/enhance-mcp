@@ -46,7 +46,7 @@ export async function runDoctor(env: NodeJS.ProcessEnv = process.env, deps: Clie
     const { mode } = await detectAuthMode(fetchFn, config.apiBase, config.token);
     okLine(`credential: ${mode}${mode === 'cookie' ? ' (panel session; it can expire on logout, prefer an access token)' : ''}`);
   } catch (e) {
-    failLine(`credential: ${(e as Error).message}`);
+    failLine(`credential: ${safe((e as Error).message)}`);
     return 1;
   }
 
@@ -59,7 +59,7 @@ export async function runDoctor(env: NodeJS.ProcessEnv = process.env, deps: Clie
       if (client.authMode === 'bearer') {
         const tokens = await client.call('GET', '/orgs/{org_id}/access_tokens', () => client.api.GET('/orgs/{org_id}/access_tokens', { params: { path: { org_id: org } } }));
         const mine = tokens.find((t) => config!.token.startsWith(t.firstFive));
-        if (mine) okLine(`access token "${safe(mine.friendlyName ?? '(unnamed)')}" roles ${mine.roles.join(',')} expires ${mine.tokenExpires ?? 'never'}`);
+        if (mine) okLine(`access token "${safe(mine.friendlyName ?? '(unnamed)')}" roles ${safe(mine.roles.join(','))} expires ${safe(mine.tokenExpires ?? 'never')}`);
         else okLine('access token not listed in this org (may belong to a parent org)');
       }
       const subs = await client.call('GET', '/orgs/{org_id}/subscriptions', () => client.api.GET('/orgs/{org_id}/subscriptions', { params: { path: { org_id: org } } }));
@@ -68,7 +68,7 @@ export async function runDoctor(env: NodeJS.ProcessEnv = process.env, deps: Clie
       okLine(`websites: ${sites.total}`);
     }
   } catch (e) {
-    failLine(`api: ${(e as Error).message}`);
+    failLine(`api: ${safe((e as Error).message)}`);
   }
 
   out(failed ? 'doctor: problems found' : 'doctor: all good');

@@ -37,4 +37,57 @@ describe('doctor', () => {
     expect(code).toBe(1);
     expect(lines.join('\n')).toContain('ENHANCE_PANEL_URL');
   });
+
+  it('prints the live text/plain version body', async () => {
+    const f = fakeFetch([
+      { method: 'GET', path: '/version', body: '12.25.5' },
+      authGuard({ bearer: TOKEN }, { method: 'GET', path: '/login/memberships', body: memberships }),
+      authGuard({ bearer: TOKEN }, { method: 'GET', path: '/login', body: login }),
+      authGuard({ bearer: TOKEN }, { method: 'GET', path: `/orgs/${ORG_ID}/access_tokens`, body: accessTokens }),
+      authGuard({ bearer: TOKEN }, { method: 'GET', path: `/orgs/${ORG_ID}/subscriptions`, body: subscriptions }),
+      authGuard({ bearer: TOKEN }, { method: 'GET', path: `/orgs/${ORG_ID}/websites`, body: websitesList }),
+    ]);
+    const lines: string[] = [];
+    const code = await runDoctor({ ENHANCE_PANEL_URL: PANEL_URL, ENHANCE_TOKEN: TOKEN, HOME: '/tmp' }, { fetch: f, sleep: async () => undefined }, (l) => lines.push(l));
+    expect(code).toBe(0);
+    expect(lines.join('\n')).toContain('ok  panel reachable (12.25.5)');
+  });
+
+  it('never lets a panel string forge an output line', async () => {
+    const forgedFriendlyName = 'x\nok  forged';
+    const forgedTokenExpires = '2026-12-31T00:00:00Z\nok  forged2';
+    const maliciousAccessTokens = [
+      {
+        id: 'token_123',
+        firstFive: TOKEN.substring(0, 5),
+        friendlyName: forgedFriendlyName,
+        roles: ['read', 'write'],
+        tokenExpires: forgedTokenExpires,
+        allowedIps: [],
+        ipRestricted: false,
+      },
+    ];
+    const f = fakeFetch([
+      { method: 'GET', path: '/version', body: '12.25.5' },
+      authGuard({ bearer: TOKEN }, { method: 'GET', path: '/login/memberships', body: memberships }),
+      authGuard({ bearer: TOKEN }, { method: 'GET', path: '/login', body: login }),
+      authGuard({ bearer: TOKEN }, { method: 'GET', path: `/orgs/${ORG_ID}/access_tokens`, body: maliciousAccessTokens }),
+      authGuard({ bearer: TOKEN }, { method: 'GET', path: `/orgs/${ORG_ID}/subscriptions`, body: subscriptions }),
+      authGuard({ bearer: TOKEN }, { method: 'GET', path: `/orgs/${ORG_ID}/websites`, body: websitesList }),
+    ]);
+    const lines: string[] = [];
+    const code = await runDoctor({ ENHANCE_PANEL_URL: PANEL_URL, ENHANCE_TOKEN: TOKEN, HOME: '/tmp' }, { fetch: f, sleep: async () => undefined }, (l) => lines.push(l));
+    expect(code).toBe(0);
+
+    const output = lines.join('\n');
+    const outputLines = output.split('\n');
+
+    // Check that no line starts with "ok  forged" (the forged lines)
+    outputLines.forEach((line) => {
+      expect(line).not.toMatch(/^ok  forged/);
+    });
+
+    // Check that the token line exists and contains the collapsed newline as a space
+    expect(output).toContain('x ok  forged');
+  });
 });
