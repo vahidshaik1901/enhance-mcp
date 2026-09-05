@@ -8,19 +8,16 @@ delete a site by accident.
 
 ## Current status (2026-09-05)
 
-**Phase: milestone A COMPLETE on branch `feat/milestone-a` (2026-09-05), NOT merged yet.
-Tasks 1-18 done and reviewed; live e2e suite 8/8 on subscription 664; Task 19 walkthrough
-passed every step (fresh `.test` site, preview URL over HTTPS, rsync deploy, DNS tree on
-vahi.dev, `website_delete` through the elicitation prompt), see "Live test A" in
-docs/research.md. Findings folded in: rsync `-rltvz`, preview DNS propagation hint,
-`invalid_session_token`, own `matchesPlatform`, mail records only when email accounts exist. The
-only unobserved item is how Claude Code's terminal renders the elicitation prompt (the protocol
-round trip is verified with a client shaped like Claude Code). Published 2026-09-05 to the
-public repo https://github.com/vahidshaik1901/enhance-mcp (MIT); PR #1 opens
-`feat/milestone-a` into `main`. The static test site from `~/enhance-e2e-site` is deployed on
-vahi.dev (preview URL vahi-dev-ccyq.sgp1.mystaging.site; the domain itself still has no DNS at
-Cloudflare). Next: merge PR #1, then milestone B (PHP + databases), then C (Node). Credential
-note: session JWTs expire within hours; the org still has no access token.**
+**Phase: milestone A MERGED to `main` on 2026-09-05 (PR #1, merge commit 7c0e4fa) in the
+public repo https://github.com/vahidshaik1901/enhance-mcp. Live-verified: e2e suite 8/8, the
+Task 19 walkthrough (fresh `.test` site, HTTPS preview URL, rsync deploy, DNS tree on vahi.dev,
+`website_delete` through the elicitation prompt), see "Live test A" in docs/research.md. The
+static test site from `~/enhance-e2e-site` is deployed on vahi.dev (preview URL
+vahi-dev-ccyq.sgp1.mystaging.site; the domain has no DNS at Cloudflare yet). Only unobserved:
+how Claude Code's terminal renders the elicitation prompt. NEXT: milestone B (PHP + MySQL on
+vahi.dev) on a new branch `feat/milestone-b`, starting with `superpowers:writing-plans` from the
+spec's milestone B section and the deferred Minor list in `.superpowers/sdd/progress.md`; then C
+(Node). Credential note: session JWTs expire within hours; the org still has no access token.**
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
 Plan: `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
