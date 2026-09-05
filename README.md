@@ -56,4 +56,4 @@ Claude Code's Bash sandbox cannot open SSH connections. For rsync/ssh deploy ste
 
 ## Status
 
-Milestone A (account, preflight, websites, domains, DNS, SSL, SSH, static-site deploy) is implemented; the live milestone test against a real panel is pending. See `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md` for the roadmap (PHP and databases, Node, WordPress, email, backups, staging, GitHub auto-deploy).
+Milestone A (account, preflight, websites, domains, DNS, SSL, SSH, static-site deploy) is implemented and verified live against a real panel on 2026-09-05 (see "Live test A" in `docs/research.md`). See `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md` for the roadmap (PHP and databases, Node, WordPress, email, backups, staging, GitHub auto-deploy).

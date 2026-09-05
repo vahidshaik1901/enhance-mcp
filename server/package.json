@@ -4,9 +4,16 @@
   "description": "MCP server for the Enhance hosting control panel: manage and deploy to your Enhance websites from Claude Code, safely.",
   "license": "MIT",
   "type": "module",
-  "bin": { "enhance-mcp": "./dist/index.js" },
-  "files": ["dist", "README.md"],
-  "engines": { "node": ">=20" },
+  "bin": {
+    "enhance-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/index.ts",
@@ -32,5 +39,12 @@
     "typescript": "~5.9.3",
     "vitest": "^4.1.11",
     "yaml": "^2.9.0"
-  }
+  },
+  "author": "Shaik Vahid",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vahidshaik1901/enhance-mcp.git",
+    "directory": "server"
+  },
+  "homepage": "https://github.com/vahidshaik1901/enhance-mcp#readme"
 }
