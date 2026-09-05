@@ -198,7 +198,7 @@ export const domainDnsStatus = defineTool({
       kv([['dns status', status], ['current nameservers', currentNsDisplay], ['provider', provider], ['platform nameservers', platformNs], ['app server ip', ip], ['preview domain', preview]]),
       ...advice,
     ].join('\n');
-    return ok(text, { website: w.id, domainId: d.domainId, domain: d.domain, status, provider, currentNameservers: current, platformNameservers: platformNs, serverIp: ip, previewDomain: preview ?? null, matchesPlatform: authNs.matchesPlatform, authNsLookupFailed });
+    return ok(text, { website: w.id, domainId: d.domainId, domain: d.domain, status, provider, currentNameservers: current, platformNameservers: platformNs, serverIp: ip, previewDomain: preview ?? null, matchesPlatform: provider === 'platform', panelMatchesPlatform: authNsLookupFailed ? null : authNs.matchesPlatform, authNsLookupFailed });
   },
 });
 
@@ -224,7 +224,7 @@ export const domainDnsRecords = defineTool({
   name: 'domain_dns_records',
   tier: 'customer',
   risk: 'read',
-  description: 'Read-only. The DNS records the customer must create at a third-party DNS provider (Cloudflare or other), taken from the panel\'s own zone: A @ and CNAME www always; mail records only when mail routing is local (or include_mail=yes); mysql/ftp only with include_extras. Never NS or SOA.',
+  description: 'Read-only. The DNS records the customer must create at a third-party DNS provider (Cloudflare or other), taken from the panel\'s own zone: A @ and CNAME www always; mail records only when mail routing is local AND the domain has email accounts on the platform (or include_mail=yes); mysql/ftp only with include_extras. Never NS or SOA.',
   input: z.object({ website: websiteArg, domain: domainArg, include_mail: z.enum(['auto', 'yes', 'no']).default('auto'), include_extras: z.boolean().default(false) }),
   async handler(args, ctx) {
     const { client } = ctx;
@@ -233,21 +233,35 @@ export const domainDnsRecords = defineTool({
     const zone = await client.call('GET', '/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-zone', () => client.api.GET('/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/dns-zone', { params: { path } }));
     let mail = args.include_mail === 'yes';
     let localRemote: 'local' | 'remote' | 'unknown' = 'local';
+    let emailAccounts: number | null = null;
+    let mailReason = args.include_mail === 'yes' ? 'include_mail=yes' : 'include_mail=no';
     if (args.include_mail === 'auto') {
       const lr = await client.call('GET', '/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/local_remote', () => client.api.GET('/orgs/{org_id}/websites/{website_id}/domains/{domain_id}/local_remote', { params: { path } })).catch(() => ({ localRemote: undefined }));
-      if (lr.localRemote === undefined) {
-        localRemote = 'unknown';
-        mail = true;
+      localRemote = lr.localRemote === undefined ? 'unknown' : lr.localRemote;
+      if (localRemote === 'remote') {
+        mail = false;
+        mailReason = 'mail routing is remote';
       } else {
-        localRemote = lr.localRemote;
-        mail = lr.localRemote === 'local';
+        // Routing is "local" for every site, mailboxes or not (verified live 2026-09-05), so it
+        // cannot tell whether the customer's mail lives here. Only real email accounts (mailboxes or
+        // forwarders) on this domain can; without them, handing a customer the platform MX would
+        // break mail hosted elsewhere.
+        const suffix = `@${d.domain.toLowerCase()}`;
+        const emails = await client.call('GET', '/orgs/{org_id}/websites/{website_id}/emails', () => client.api.GET('/orgs/{org_id}/websites/{website_id}/emails', { params: { path: { org_id: org, website_id: w.id }, query: { search: d.domain } } })).catch(() => undefined);
+        if (emails === undefined) {
+          mail = true;
+          mailReason = `${localRemote === 'unknown' ? 'mail routing and email account lookups' : 'email account lookup'} failed; treating mail as local`;
+        } else {
+          emailAccounts = emails.items.filter((e) => e.address.toLowerCase().endsWith(suffix)).length;
+          mail = emailAccounts > 0;
+          mailReason = mail ? `${emailAccounts} email account(s) on ${safe(d.domain)} are hosted on the platform mail server` : `no email accounts on ${safe(d.domain)} in the panel; pass include_mail=yes if mail should be hosted here`;
+        }
       }
     }
     const records = filterZoneForThirdParty(zone.records, { mail, extras: args.include_extras });
     const rows = records.map((r) => ({ host: r.name, type: r.kind, value: r.value, ttl: r.ttl ?? zone.soa.ttl, proxy: r.proxy ? 'ok to proxy' : '' }));
-    const mailRoutingLine = localRemote === 'unknown' ? 'mail routing: unknown (lookup failed); treating as local' : '';
-    const text = [identityBlock({ name: client.orgName, id: org }, w, d), `records to create at your DNS provider (mail records ${mail ? 'included' : 'omitted'}):`, mailRoutingLine, table(rows, ['host', 'type', 'value', 'ttl', 'proxy'])].filter(Boolean).join('\n');
-    return ok(text, { website: w.id, domain: d.domain, includeMail: mail, localRemote, records: records.map((r) => ({ kind: r.kind, name: r.name, value: r.value, ttl: r.ttl ?? zone.soa.ttl })) });
+    const text = [identityBlock({ name: client.orgName, id: org }, w, d), `records to create at your DNS provider (mail records ${mail ? 'included' : 'omitted'}: ${mailReason}):`, table(rows, ['host', 'type', 'value', 'ttl', 'proxy'])].join('\n');
+    return ok(text, { website: w.id, domain: d.domain, includeMail: mail, mailReason, emailAccounts, localRemote, records: records.map((r) => ({ kind: r.kind, name: r.name, value: r.value, ttl: r.ttl ?? zone.soa.ttl })) });
   },
 });
 

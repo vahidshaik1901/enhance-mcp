@@ -8,15 +8,16 @@ delete a site by accident.
 
 ## Current status (2026-09-05)
 
-**Phase: milestone A on branch `feat/milestone-a` (Tasks 1-18 done and reviewed; the live
-e2e suite PASSED 2026-09-05, 8/8 on subscription 664; the Task 19 walkthrough passed every
-step through the verified preview URL, see "Live test A" in docs/research.md). NOT merged yet.
-Still pending in Task 19: `website_delete` through the elicitation prompt (in Claude Code with
-the plugin installed) and the DNS tree against vahi.dev. Both stopped because the session JWT
-was rejected (`invalid_session_token`) at its next use, some four hours after it was issued: ask
-the user for an ACCESS TOKEN (Settings > Access Tokens), not another session JWT. Leftover test site to
-soft-delete first: `mcp-demo-vyruhg.test` (id d3957969-1bc0-4026-83de-df3d2d394276). After
-that: `superpowers:finishing-a-development-branch`, then milestone B (PHP + databases).**
+**Phase: milestone A COMPLETE on branch `feat/milestone-a` (2026-09-05), NOT merged yet.
+Tasks 1-18 done and reviewed; live e2e suite 8/8 on subscription 664; Task 19 walkthrough
+passed every step (fresh `.test` site, preview URL over HTTPS, rsync deploy, DNS tree on
+vahi.dev, `website_delete` through the elicitation prompt), see "Live test A" in
+docs/research.md. Findings folded in: rsync `-rltvz`, preview DNS propagation hint,
+`invalid_session_token`, own `matchesPlatform`, mail records only when email accounts exist. The
+only unobserved item is how Claude Code's terminal renders the elicitation prompt (the protocol
+round trip is verified with a client shaped like Claude Code). Next:
+`superpowers:finishing-a-development-branch`, then milestone B (PHP + databases). Credential
+note: session JWTs expire within hours; the org still has no access token.**
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
 Plan: `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.

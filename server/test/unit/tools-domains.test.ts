@@ -96,7 +96,9 @@ describe('domain_dns_status', () => {
       { method: 'GET', path: `/orgs/${ORG_ID}/domains/${DOMAIN_ID}/auth-ns`, body: authNsCloudflare },
     ]);
     const r = await callTool(byName(tools, 'domain_dns_status'), { website: 'vahi.dev' }, ctx);
-    expect(r.structured).toMatchObject({ status: 'ForeignServer', provider: 'cloudflare', serverIp: '65.98.32.45' });
+    // The live panel answers auth-ns with matchesPlatform: true for Cloudflare nameservers; ours
+    // comes from the names, and the panel's flag is exposed separately.
+    expect(r.structured).toMatchObject({ status: 'ForeignServer', provider: 'cloudflare', serverIp: '65.98.32.45', matchesPlatform: false, panelMatchesPlatform: true });
     expect(r.text).toContain('Cloudflare');
     expect(r.text).toContain('domain_cloudflare_connect');
     expect(r.text).toContain('domain_dns_records');
@@ -127,16 +129,46 @@ describe('domain_dns_status', () => {
 });
 
 describe('domain_dns_records', () => {
-  it('uses local/remote mail routing for auto', async () => {
-    const { ctx } = await makeContext([
-      ...base(),
-      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${DOMAIN_ID}/dns-zone`, body: dnsZone },
-      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${DOMAIN_ID}/local_remote`, body: { localRemote: 'remote' } },
-    ]);
+  const zoneRoute = { method: 'GET' as const, path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${DOMAIN_ID}/dns-zone`, body: dnsZone };
+  const routing = (localRemote: 'local' | 'remote') => ({ method: 'GET' as const, path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${DOMAIN_ID}/local_remote`, body: { localRemote } });
+  const mailboxes = (...addresses: string[]) => ({ method: 'GET' as const, path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/emails`, body: { items: addresses.map((address) => ({ address })), total: addresses.length } });
+  const kinds = (r: { structured?: unknown }) => (r.structured as { records: Array<{ kind: string; name: string }> }).records.map((x) => `${x.kind} ${x.name}`);
+
+  it('auto omits mail records when routing is remote', async () => {
+    const { ctx } = await makeContext([...base(), zoneRoute, routing('remote')]);
     const r = await callTool(byName(tools, 'domain_dns_records'), { website: 'vahi.dev', include_mail: 'auto', include_extras: false }, ctx);
-    const recs = (r.structured as { records: Array<{ kind: string; name: string }> }).records;
-    expect(recs.map((x) => `${x.kind} ${x.name}`)).toEqual(['A @', 'CNAME www']);
+    expect(kinds(r)).toEqual(['A @', 'CNAME www']);
+    expect(r.text).toContain('mail records omitted: mail routing is remote');
     expect(r.text).toContain('65.98.32.45');
+  });
+  // Routing is "local" for every site (live 2026-09-05, vahi.dev with zero mailboxes), so on its
+  // own it must not put the platform MX in front of a customer whose mail lives elsewhere.
+  it('auto omits mail records when routing is local but the domain has no email accounts', async () => {
+    const { ctx } = await makeContext([...base(), zoneRoute, routing('local'), mailboxes()]);
+    const r = await callTool(byName(tools, 'domain_dns_records'), { website: 'vahi.dev', include_mail: 'auto', include_extras: false }, ctx);
+    expect(kinds(r)).toEqual(['A @', 'CNAME www']);
+    expect(r.text).toContain('mail records omitted: no email accounts on vahi.dev in the panel; pass include_mail=yes');
+    expect(r.structured).toMatchObject({ includeMail: false, emailAccounts: 0, localRemote: 'local' });
+  });
+  it('auto includes mail records when routing is local and an email account exists on this domain', async () => {
+    const { ctx } = await makeContext([...base(), zoneRoute, routing('local'), mailboxes('info@vahi.dev', 'x@other.example')]);
+    const r = await callTool(byName(tools, 'domain_dns_records'), { website: 'vahi.dev', include_mail: 'auto', include_extras: false }, ctx);
+    expect(kinds(r)).toContain('MX @');
+    expect(r.text).toContain('mail records included: 1 email account(s) on vahi.dev are hosted on the platform mail server');
+    expect(r.structured).toMatchObject({ includeMail: true, emailAccounts: 1 });
+  });
+  it('auto ignores email accounts that belong to another domain', async () => {
+    const { ctx } = await makeContext([...base(), zoneRoute, routing('local'), mailboxes('x@other.example')]);
+    const r = await callTool(byName(tools, 'domain_dns_records'), { website: 'vahi.dev', include_mail: 'auto', include_extras: false }, ctx);
+    expect(kinds(r)).toEqual(['A @', 'CNAME www']);
+    expect(r.structured).toMatchObject({ includeMail: false, emailAccounts: 0 });
+  });
+  it('include_mail=yes forces mail records without any lookup', async () => {
+    const { ctx, f } = await makeContext([...base(), zoneRoute]);
+    const r = await callTool(byName(tools, 'domain_dns_records'), { website: 'vahi.dev', include_mail: 'yes', include_extras: false }, ctx);
+    expect(kinds(r)).toContain('MX @');
+    expect(r.text).toContain('mail records included: include_mail=yes');
+    expect(f.calls.some((c) => c.path.includes('/local_remote') || c.path.includes('/emails'))).toBe(false);
   });
   it('reports lookup failure when local_remote returns 500', async () => {
     const { ctx } = await makeContext([
@@ -147,8 +179,8 @@ describe('domain_dns_records', () => {
     const r = await callTool(byName(tools, 'domain_dns_records'), { website: 'vahi.dev', include_mail: 'auto', include_extras: false }, ctx);
     const recs = (r.structured as { records: Array<{ kind: string; name: string }> }).records;
     expect(recs.some((x) => x.kind === 'MX')).toBe(true);
-    expect(r.text).toContain('mail routing: unknown (lookup failed)');
-    expect(r.structured).toMatchObject({ localRemote: 'unknown' });
+    expect(r.text).toContain('mail records included: mail routing and email account lookups failed; treating mail as local');
+    expect(r.structured).toMatchObject({ localRemote: 'unknown', emailAccounts: null });
   });
 });
 

@@ -327,8 +327,8 @@ as documented for soft deletes).
 | SSH | `ssh_connection_info` | login, home, docroot, one key; login worked from an unsandboxed shell with `ssh -i <key>` |
 | Deploy | rsync dry-run, then real | three files into `public_html`; `-a` changed the docroot mode from `750` to `755` (restored by hand) |
 | Verify | curl on the preview URL | `200` on `/`, `/index.html`, `/style.css`, `/app.js`; heading matched; plain HTTP `200` with no redirect |
-| Delete | `website_delete` via elicitation | NOT RUN: the session credential was rejected before this step |
-| DNS tree | `domain_dns_status` and `domain_dns_records` on vahi.dev | NOT RUN: same |
+| Delete | `website_delete` via elicitation | prompt carried the preview and asked for the typed name; one soft-delete on the resolved id; audit line `gate: elicitation, outcome: ok`; site gone from the list (12:44, second session JWT) |
+| DNS tree | `domain_dns_status` and `domain_dns_records` on vahi.dev | `ForeignServer`, Cloudflare nameservers, provider `cloudflare`, both fix paths offered; records listed from the panel zone (see the two findings below) |
 
 Findings and what changed because of them:
 
@@ -336,7 +336,8 @@ Findings and what changed because of them:
   next use, 12:23, with 401 `invalid_session_token` (a code distinct from `no_session_token`;
   an expiry or a newer login replacing the session; the lifetime is under four and a half hours
   and was not measured more precisely). `explainError` now names this case and points at access
-  tokens. The rest of the walkthrough must use an access token from Settings > Access Tokens.
+  tokens. A second session JWT (12:44) completed the remaining steps; real use needs an access
+  token from Settings > Access Tokens.
 - **Preview DNS propagates in about five minutes.** The vhost answered at once when pinned
   with `curl --resolve`, and the record appeared on the authoritative servers after a few
   minutes. `website_preview_domain` and the deploy skill now say so and give the `--resolve`
@@ -352,5 +353,15 @@ Findings and what changed because of them:
 - Container facts for a new shared-plan site: home `/var/www/<website id>`, docroot
   `public_html` (750, owner unix user, group 33), rsync present, `ssh: false` in the payload
   while key auth works.
-- Leftover to clean up with the next credential: `mcp-demo-vyruhg.test`
-  (id `d3957969-1bc0-4026-83de-df3d2d394276`), the intended target of the elicitation delete test.
+- **The panel's `auth-ns` `matchesPlatform` flag is not reliable.** vahi.dev on Cloudflare
+  nameservers came back `{"matchesPlatform": true, "authNs": [cloudflare names with empty ips]}`.
+  `domain_dns_status` now derives `matchesPlatform` from the nameserver names itself and exposes
+  the raw flag as `panelMatchesPlatform`.
+- **Mail routing is `local` for every site, mailboxes or not.** In `auto` mode
+  `domain_dns_records` therefore listed MX, SPF, DMARC and the mail hosts for vahi.dev, which has
+  zero mailboxes (`GET .../websites/{id}/emails` returns `{items: [], total: 0}`). A customer
+  whose mail lives elsewhere would have been told to add the platform MX at Cloudflare. `auto`
+  now includes mail records only when routing is local and the website has at least one
+  email account (mailbox or forwarder) on that domain; `include_mail=yes` still forces them, and the text says which rule
+  applied.
+- The demo site was soft-deleted through the elicitation gate at 12:44; only vahi.dev remains.
