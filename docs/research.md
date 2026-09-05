@@ -306,3 +306,51 @@ names matching `platform_info.nameServers` mean the platform; anything else is `
 - Residual: if a client's elicitation handler itself errors, the SDK shim returns its own
   `isError` result without re-entering the callback; nothing executes, but that attempt
   is not audited. Fix direction: audit destructive *intent* at round 1.
+
+## Live test A: static site from a fresh domain to a verified URL (2026-09-05)
+
+Driver: a scripted MCP client over stdio against the built server (`node dist/index.js serve`),
+declaring the bare `elicitation: {}` capability Claude Code 2.1.258 declares, on the legacy
+protocol era Claude Code negotiates. Credential: a panel session JWT sent as the `id0` cookie.
+Subscription 664 (shared plan). The live e2e suite ran first: 8/8 in 13 s, its throwaway
+`mcp-e2e-*.test` site created and soft-deleted (the domain lingers in `/orgs/{org}/domains`,
+as documented for soft deletes).
+
+| Step | Tool | Result |
+|---|---|---|
+| Domain free | `domain_check` | `notInUse` for `mcp-demo-vyruhg.test`; `.test` names are accepted for creation |
+| Create | `website_create` | site on 664, `php81` (plan default; `php85` offered), unix user `mcp_demo1`, app server `209.42.27.117`, preview alias created by the panel at creation, next steps listed |
+| Preview | `website_preview_domain` | `(existing)`, `created: false`; the hostname did not resolve for about five minutes, then resolved on `ns1/ns2.stableserver.net` and public resolvers |
+| DNS | `domain_dns_status` | `Failed`, no nameservers found, provider `unknown`, platform nameservers plus the A record alternative |
+| SSL | `domain_ssl_get` | placeholder detected on the primary domain (issuer equals the name, 1975 to 4096, force https off) |
+| SSH key | `ssh_key_add` twice | `added: true` then `added: false`, key id `0`; `public_key` shows as `[redacted]` in the audit log |
+| SSH | `ssh_connection_info` | login, home, docroot, one key; login worked from an unsandboxed shell with `ssh -i <key>` |
+| Deploy | rsync dry-run, then real | three files into `public_html`; `-a` changed the docroot mode from `750` to `755` (restored by hand) |
+| Verify | curl on the preview URL | `200` on `/`, `/index.html`, `/style.css`, `/app.js`; heading matched; plain HTTP `200` with no redirect |
+| Delete | `website_delete` via elicitation | NOT RUN: the session credential was rejected before this step |
+| DNS tree | `domain_dns_status` and `domain_dns_records` on vahi.dev | NOT RUN: same |
+
+Findings and what changed because of them:
+
+- **Session cookies expire.** The JWT worked from 07:56 to 08:01 local and was rejected at its
+  next use, 12:23, with 401 `invalid_session_token` (a code distinct from `no_session_token`;
+  an expiry or a newer login replacing the session; the lifetime is under four and a half hours
+  and was not measured more precisely). `explainError` now names this case and points at access
+  tokens. The rest of the walkthrough must use an access token from Settings > Access Tokens.
+- **Preview DNS propagates in about five minutes.** The vhost answered at once when pinned
+  with `curl --resolve`, and the record appeared on the authoritative servers after a few
+  minutes. `website_preview_domain` and the deploy skill now say so and give the `--resolve`
+  check for the gap. The platform nameservers `ns1/ns2.stableserver.net` resolve to the same IPs
+  as `ns1/ns2.a2hosting.com`, which serve the `mystaging.site` zone.
+- **The preview host gets a real certificate at creation.** Let's Encrypt issued for
+  `<preview>` and `www.<preview>` with a notBefore one hour before creation (the usual backdate),
+  while the primary domain keeps the placeholder until DNS resolves. So a customer has a
+  working HTTPS URL before touching DNS.
+- **rsync flags.** With a trailing-slash source, `-a` copies the local folder's owner, group and
+  mode onto the docroot, which the panel keeps at `750` with group gid 33. The tool example and
+  the skill now use `-rltvz` and mention `-e "ssh -i <key>"`.
+- Container facts for a new shared-plan site: home `/var/www/<website id>`, docroot
+  `public_html` (750, owner unix user, group 33), rsync present, `ssh: false` in the payload
+  while key auth works.
+- Leftover to clean up with the next credential: `mcp-demo-vyruhg.test`
+  (id `d3957969-1bc0-4026-83de-df3d2d394276`), the intended target of the elicitation delete test.

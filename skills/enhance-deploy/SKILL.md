@@ -61,7 +61,9 @@ Detect the project type and build here, never on the server for PHP:
 
 ### 8. Deploy with rsync
 - Always dry-run first and show the summary:
-  `rsync -avz --dry-run --exclude .git --exclude node_modules --exclude .env <src>/ <user>@<host>:<docroot>/`
+  `rsync -rltvz --dry-run --exclude .git --exclude node_modules --exclude .env <src>/ <user>@<host>:<docroot>/`
+- Use `-rltvz`, not `-a`. With a trailing-slash source, `-a` copies the local folder's owner, group and mode onto the document root, which the panel keeps at `750` with the web server's group (verified live 2026-09-05).
+- Add `-e "ssh -i <key>"` when the authorized key is not the user's default one.
 - Then run it for real. Use `--delete` only if the user explicitly asked to remove files not in the source.
 - Target is the document root or a named subdirectory. Never the home directory root.
 - **Sandbox**: this command needs the sandbox disabled (or `ssh`/`rsync` in `sandbox.excludedCommands`). Say so before running.
@@ -75,6 +77,7 @@ Detect the project type and build here, never on the server for PHP:
 ### 10. Verify
 - Request a file you just deployed, not just `/`: an empty docroot returns 404 on every hostname.
   `curl -sS -o /dev/null -w '%{http_code}' https://<preview-domain>/index.html` (or `curl -k --resolve …` when there is no preview domain).
+- `curl: (6) Could not resolve host` on a preview domain created minutes ago is DNS propagation, not a failed deploy (about five minutes live). Verify the vhost meanwhile with `curl -k --resolve <preview-domain>:443:<app-server-ip> https://<preview-domain>/index.html`, then retry the plain URL.
 - Report: preview URL, primary URL and its DNS status, SSL state, what was uploaded (from the rsync summary), and what the user still has to do (DNS at the registrar, if anything).
 
 ## Rollback

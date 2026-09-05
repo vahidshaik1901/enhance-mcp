@@ -107,7 +107,10 @@ export const sshConnectionInfo = defineTool({
     const missing = [!c.user ? 'unix user' : undefined, !c.host ? 'server IP' : undefined].filter((x): x is string => x !== undefined);
     const ready = missing.length === 0;
     const sshCommand = ready ? `ssh -p ${c.port} ${c.user}@${c.host}` : undefined;
-    const rsyncExample = ready ? `rsync -avz --dry-run ./dist/ ${c.user}@${c.host}:${c.documentRoot}/` : undefined;
+    // -rltvz, not -a: with a trailing-slash source, -a copies the local folder's owner, group and
+    // mode onto the document root, which the panel keeps at 750 with the web server group
+    // (verified live 2026-09-05).
+    const rsyncExample = ready ? `rsync -rltvz --dry-run ./dist/ ${c.user}@${c.host}:${c.documentRoot}/` : undefined;
     const authorizedKeysValue = keysUnavailable ? `unavailable (${keyErrorCode})` : keys.length;
     const text = [
       identityBlock({ name: ctx.client.orgName, id: org }, w),
@@ -119,6 +122,7 @@ export const sshConnectionInfo = defineTool({
       ]),
       'deploy example (dry run first, then without --dry-run):',
       `  ${ready ? safe(rsyncExample) : 'unavailable — see login above'}`,
+      `  (use -rltvz, not -a: -a would copy the local folder's owner, group and mode onto ${safe(c.documentRoot)}, which the panel keeps at 750 with the web server group; add -e "ssh -i <key>" for a non-default key)`,
       "sandbox: Claude Code's Bash sandbox cannot open SSH connections. Run ssh and rsync with the sandbox disabled for that command, or add \"ssh\" and \"rsync\" to sandbox.excludedCommands in settings.",
     ].join('\n');
     return ok(text, { website: w.id, ...c, keysAuthorized: keysUnavailable ? null : keys.length, keysUnavailable, sshCommand, rsyncExample });

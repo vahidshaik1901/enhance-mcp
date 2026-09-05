@@ -4,6 +4,8 @@ import { EnhanceApiError, explainError } from '../../src/client/errors.js';
 describe('explainError', () => {
   it('maps the codes seen on the live panel', () => {
     expect(explainError(401, 'no_session_token').explanation).toMatch(/no credential/i);
+    expect(explainError(401, 'invalid_session_token').explanation).toMatch(/no longer valid/i);
+    expect(explainError(401, 'invalid_session_token').nextStep).toMatch(/access token/i);
     expect(explainError(403, 'unauthorized').explanation).toMatch(/invalid, expired, IP-restricted, or lacks the role/);
     expect(explainError(403, 'unauthorized').nextStep).toMatch(/auth_status/);
     expect(explainError(403, 'only_mo_allowed').explanation).toMatch(/master org/i);

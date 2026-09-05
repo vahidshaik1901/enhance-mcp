@@ -32,7 +32,7 @@ describe('ssh_connection_info', () => {
     const { ctx } = await makeContext(base());
     const r = await callTool(byName(tools, 'ssh_connection_info'), { website: 'vahi.dev' }, ctx);
     expect(r.text).toContain('ssh -p 22 vahi_dev1@65.98.32.45');
-    expect(r.text).toContain(`rsync -avz --dry-run ./dist/ vahi_dev1@65.98.32.45:public_html/`);
+    expect(r.text).toContain(`rsync -rltvz --dry-run ./dist/ vahi_dev1@65.98.32.45:public_html/`);
     expect(r.text).toContain('sandbox');
     expect(r.structured).toMatchObject({ user: 'vahi_dev1', host: '65.98.32.45', port: 22, home: `/var/www/${WEBSITE_ID}`, documentRoot: 'public_html', keysAuthorized: 1 });
   });

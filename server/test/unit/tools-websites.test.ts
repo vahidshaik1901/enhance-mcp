@@ -117,6 +117,7 @@ describe('website_preview_domain', () => {
     const { ctx, f } = await makeContext([...base(), { method: 'GET', path: '/branding', body: branding }]);
     const r = await callTool(byName(tools, 'website_preview_domain'), { website: 'vahi.dev' }, ctx);
     expect(r.structured).toMatchObject({ available: true, previewDomain: 'vahi-dev-ccyq.sgp1.mystaging.site', created: false });
+    expect(r.text).toContain('curl -k --resolve vahi-dev-ccyq.sgp1.mystaging.site:443:65.98.32.45 https://vahi-dev-ccyq.sgp1.mystaging.site/');
     expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
   });
   // The preview endpoint answers with a bare scalar: the live panel sends `text/plain` with an
@@ -140,6 +141,7 @@ describe('website_preview_domain', () => {
       const r = await callTool(byName(tools, 'website_preview_domain'), { website: 'vahi.dev' }, ctx);
       expect(r.structured).toMatchObject({ available: true, previewDomain: 'vahi-dev-zzzz.sgp1.mystaging.site', created: true });
       expect(r.text).toContain('preview domain: vahi-dev-zzzz.sgp1.mystaging.site (created)');
+      expect(r.text).toContain('curl -k --resolve vahi-dev-zzzz.sgp1.mystaging.site:443:65.98.32.45 https://vahi-dev-zzzz.sgp1.mystaging.site/');
     });
   }
   it('reports unavailable with the curl --resolve fallback when the provider has none', async () => {

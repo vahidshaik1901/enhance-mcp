@@ -175,13 +175,16 @@ export const websitePreviewDomain = defineTool({
     const w = await ctx.resolver.resolveWebsite(website);
     const existing = previewDomain(w);
     const id = identityBlock({ name: client.orgName, id: org }, w);
+    const ip = safe(serverIp(w) ?? '<app-server-ip>');
+    // A preview host created minutes ago can take about five minutes to resolve (verified live
+    // 2026-09-05); the vhost itself is ready at once, so give the --resolve check for the gap.
+    const propagation = (domain: string) => `if curl cannot resolve the host yet, the record is still propagating (a few minutes after creation); verify meanwhile with: curl -k --resolve ${domain}:443:${ip} https://${domain}/`;
     if (existing) {
       const domain = safe(existing);
-      return ok(`${id}\npreview domain: ${domain} (existing)\nverify with: curl -I https://${domain}/`, { available: true, previewDomain: existing, created: false });
+      return ok(`${id}\npreview domain: ${domain} (existing)\nverify with: curl -I https://${domain}/\n${propagation(domain)}`, { available: true, previewDomain: existing, created: false });
     }
     const b = await client.call('GET', '/branding', () => client.api.GET('/branding', { params: { query: { orgId: org } } }));
     if (!b.stagingDomain) {
-      const ip = safe(serverIp(w) ?? '<app-server-ip>');
       const d = safe(w.domain.domain);
       return ok([id, 'preview domain: not available (the provider has not configured a staging domain).', 'verify deploys against the app server directly instead:', `  curl -k --resolve ${d}:443:${ip} https://${d}/`, `  browser: add "${ip} ${d}" to /etc/hosts temporarily`].join('\n'), { available: false, previewDomain: null, created: false, fallback: { serverIp: serverIp(w) ?? null, domain: w.domain.domain } });
     }
@@ -191,7 +194,7 @@ export const websitePreviewDomain = defineTool({
     const name = parseScalarText(raw);
     ctx.resolver.invalidate();
     const domain = safe(name);
-    return ok(`${id}\npreview domain: ${domain} (created)\nverify with: curl -I https://${domain}/`, { available: true, previewDomain: name, created: true });
+    return ok(`${id}\npreview domain: ${domain} (created)\nverify with: curl -I https://${domain}/\n${propagation(domain)}`, { available: true, previewDomain: name, created: true });
   },
 });
 

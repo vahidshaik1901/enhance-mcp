@@ -15,6 +15,9 @@ export interface ErrorExplanation {
 
 export function explainError(status: number, code: string, message?: string): ErrorExplanation {
   const msg = message ?? '';
+  if (status === 401 && code === 'invalid_session_token') {
+    return { code, explanation: 'The panel session credential is no longer valid (invalid_session_token): it expired or a newer login replaced it. Panel sessions expire on their own or when a newer login replaces them.', nextStep: 'Create an access token under Settings > Access Tokens and put it in ENHANCE_TOKEN, or copy a fresh session credential.' };
+  }
   if (status === 401) {
     return { code, explanation: 'No credential reached the panel (no_session_token). This is a configuration problem, not a permissions problem.', nextStep: 'Check ENHANCE_TOKEN and run auth_status.' };
   }
