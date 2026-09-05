@@ -173,4 +173,22 @@ describe('loadConfig', () => {
     const c = loadConfig({ env: { ENHANCE_PANEL_URL: '', ENHANCE_TOKEN: '   ' }, readFile: () => file, home: '/home/u' });
     expect(c.panelUrl).toBe('https://file.example.com');
   });
+
+  it('treats a whitespace-only ENHANCE_PANEL_URL as incomplete env, so a malformed profile file still throws', () => {
+    const leaky = `{"profiles":{"default":{"panelUrl":"https://f.example.com","token":${TOKEN}}}}`;
+    expect(() =>
+      loadConfig({
+        env: { ENHANCE_PANEL_URL: '   ', ENHANCE_TOKEN: TOKEN },
+        readFile: () => leaky,
+        home: '/home/u',
+      }),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig({
+        env: { ENHANCE_PANEL_URL: '   ', ENHANCE_TOKEN: TOKEN },
+        readFile: () => leaky,
+        home: '/home/u',
+      }),
+    ).toThrow(/not valid JSON/);
+  });
 });

@@ -83,7 +83,7 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
 }
 
 export function loadConfig({ env, readFile = defaultReadFile, home = homedir() }: ConfigSource): Config {
-  const envComplete = !!(env['ENHANCE_PANEL_URL'] && env['ENHANCE_TOKEN']);
+  const envComplete = !!(envValue(env, 'ENHANCE_PANEL_URL') && envValue(env, 'ENHANCE_TOKEN'));
   const profile = loadProfile(env, readFile, home, envComplete);
   const tiersEnv = envValue(env, 'ENHANCE_TIERS');
   const timeoutMsEnv = envValue(env, 'ENHANCE_TIMEOUT_MS');

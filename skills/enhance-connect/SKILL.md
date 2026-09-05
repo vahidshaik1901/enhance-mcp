@@ -30,9 +30,12 @@ Never ask the user to paste the credential into the chat. Point them at the file
 
 ## Verify
 
-1. Run `npx enhance-mcp doctor` in the terminal (or the plugin's built server: `node <plugin>/server/dist/index.js doctor`). Every line should start with `ok`.
+1. Run the plugin's built server first: `node <plugin dir>/server/dist/index.js doctor`, where `<plugin dir>` is wherever Claude Code installed this plugin. If you're working from a git checkout instead of an installed plugin, build it once first: `cd server && npm install && npm run build`. Confirm no line starts with `FAIL`, and the last line reads `doctor: all good`.
+   Note: after the package is published to npm, `npx enhance-mcp doctor` works too.
 2. Call the `auth_status` tool. Confirm the org name and, for access tokens, the expiry. Warn if it expires within a week.
 3. Call `subscriptions_list` and `websites_list` and summarise what the account can do: number of sites, free website quota, whether `featureSSH` and persistent apps are allowed.
+
+This applies to every enhance tool, not just `doctor`: the plugin always runs the server from `server/dist`, which is a build output and is not committed to the repository.
 
 ## Troubleshooting
 
@@ -41,7 +44,8 @@ Never ask the user to paste the credential into the chat. Point them at the file
 | `Missing ENHANCE_PANEL_URL` | nothing configured | create the profile file above |
 | `panel unreachable` | wrong URL or the panel is down | open the URL in a browser; it must show the Enhance login |
 | `credential: … rejected … as a Bearer … and as a session cookie` | token expired, wrong panel, or IP-restricted | create a new access token in the panel; check the token's IP list |
-| `unauthorized` on one tool only | the credential lacks the role | `auth_status` shows roles; SiteAccess can only touch its own sites |
+| `no_session_token` (HTTP 401) | no credential reached the panel (configuration problem, not permissions) | check `ENHANCE_TOKEN` or the profile file, then run `auth_status` |
+| `unauthorized` on one tool only | the panel returns one code for invalid, expired, IP-restricted, or lacks-the-role; `auth_status` shows roles and expiry | run `auth_status`; if it also fails, create a new access token in the panel |
 | `only_mo_allowed` / `Only a reseller or the MO` | platform or reseller operation | not available to a customer account; nothing to fix |
 | `credential spans N orgs` | login is a member of several orgs | set `ENHANCE_ORG_ID` from the list in `auth_status` |
 | ssh/rsync fail with `Connection reset by peer` from Claude Code but work in a terminal | Claude Code sandbox | run the command with the sandbox disabled, or add `ssh` and `rsync` to `sandbox.excludedCommands` |

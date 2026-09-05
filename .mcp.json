@@ -4,10 +4,10 @@
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/server/dist/index.js", "serve"],
       "env": {
-        "ENHANCE_PANEL_URL": "${ENHANCE_PANEL_URL}",
-        "ENHANCE_TOKEN": "${ENHANCE_TOKEN}",
-        "ENHANCE_ORG_ID": "${ENHANCE_ORG_ID}",
-        "ENHANCE_READ_ONLY": "${ENHANCE_READ_ONLY}"
+        "ENHANCE_PANEL_URL": "${ENHANCE_PANEL_URL:-}",
+        "ENHANCE_TOKEN": "${ENHANCE_TOKEN:-}",
+        "ENHANCE_ORG_ID": "${ENHANCE_ORG_ID:-}",
+        "ENHANCE_READ_ONLY": "${ENHANCE_READ_ONLY:-}"
       }
     }
   }

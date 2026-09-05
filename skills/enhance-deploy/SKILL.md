@@ -40,6 +40,8 @@ Work through the steps in order. Say which step you are on. Stop and report when
   - provider `platform` → wait for propagation.
   - provider `cloudflare` → offer (a) the integration: user adds a Cloudflare API token in the panel, then you call `domain_cloudflare_connect` with the key id from `cloudflare_keys_list`; or (b) manual: `domain_dns_records` and the user adds them at Cloudflare.
   - provider `other` or `unknown` / status `Failed` → give the platform nameservers from `platform_info` or the A record; `domain_dns_records` for the full list.
+  - status `ForeignServer` → the domain currently points somewhere else (often a CDN or an old host); continue on the preview domain and give the customer the instructions for their provider; do not tell them the site is live.
+  - status `Mixed` → the website's domains resolve differently; run `domain_dns_status` per domain and treat each on its own.
 - Never change the registrar or a third-party DNS host yourself.
 
 ### 5. SSL
