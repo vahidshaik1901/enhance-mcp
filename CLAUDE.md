@@ -6,18 +6,37 @@ provider or billing system. Lets a customer manage and deploy to their Enhance-h
 websites from Claude Code, with strong guardrails so an AI can never wipe a server or
 delete a site by accident.
 
-## Current status (2026-09-04)
+## Current status (2026-09-05)
 
-**Phase: spec approved; milestone A implementation plan written; implementation next.**
+**Phase: milestone A COMPLETE on branch `feat/milestone-a` (2026-09-05), NOT merged yet.
+Tasks 1-18 done and reviewed; live e2e suite 8/8 on subscription 664; Task 19 walkthrough
+passed every step (fresh `.test` site, preview URL over HTTPS, rsync deploy, DNS tree on
+vahi.dev, `website_delete` through the elicitation prompt), see "Live test A" in
+docs/research.md. Findings folded in: rsync `-rltvz`, preview DNS propagation hint,
+`invalid_session_token`, own `matchesPlatform`, mail records only when email accounts exist. The
+only unobserved item is how Claude Code's terminal renders the elicitation prompt (the protocol
+round trip is verified with a client shaped like Claude Code). Published 2026-09-05 to the
+public repo https://github.com/vahidshaik1901/enhance-mcp (MIT); PR #1 opens
+`feat/milestone-a` into `main`. The static test site from `~/enhance-e2e-site` is deployed on
+vahi.dev (preview URL vahi-dev-ccyq.sgp1.mystaging.site; the domain itself still has no DNS at
+Cloudflare). Next: merge PR #1, then milestone B (PHP + databases), then C (Node). Credential
+note: session JWTs expire within hours; the org still has no access token.**
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
 Plan: `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
 No code exists yet. Key library facts: MCP TypeScript SDK is v2 (`@modelcontextprotocol/server`
 2.0.0, `serveStdio`, `registerTool`, form elicitation via `ctx.mcpReq.elicitInput`), zod 4
 (`zod/v4`), openapi-fetch 0.17, openapi-typescript 7.13, npm name `enhance-mcp` is free.
-Claude Code supports MCP elicitation (>= 2.1.76); `outputSchema` has known issues so tools
-return `structuredContent` without declaring one; the Bash sandbox can never carry SSH
-(use `sandbox.excludedCommands` or run unsandboxed).
+Claude Code supports MCP elicitation (>= 2.1.76) but advertises a bare `elicitation: {}`
+capability and negotiates the legacy protocol era; the server uses the SDK's `inputRequired`
+flow (not `elicitInput`) so the human prompt works on both eras (see docs/research.md).
+`outputSchema` has known issues so tools return `structuredContent` without declaring one;
+the Bash sandbox can never carry SSH (use `sandbox.excludedCommands` or run unsandboxed).
+Progress: Tasks 1-18 of the milestone A plan are done and reviewed (ledger in
+`.superpowers/sdd/progress.md`, git-ignored; `git log` is the recovery map). To run the
+live suite: put a working credential in `.env` as `ENHANCE_TOKEN` (or a session JWT as
+`ENHANCE_SESSION_COOKIE`), then from `server/`:
+`set -a && source ../.env && set +a && ENHANCE_E2E=1 ENHANCE_E2E_SUBSCRIPTION_ID=664 npm run test:e2e`.
 
 ### Decisions made
 

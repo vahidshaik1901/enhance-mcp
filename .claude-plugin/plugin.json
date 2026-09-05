@@ -1,0 +1,19 @@
+{
+  "name": "enhance",
+  "version": "0.1.0",
+  "description": "Manage and deploy to your Enhance-hosted websites from Claude Code, safely: preflight DNS and SSL, prepare SSH, deploy over rsync, with confirmation gates on every destructive action.",
+  "keywords": [
+    "enhance",
+    "hosting",
+    "mcp",
+    "deploy",
+    "wordpress",
+    "php",
+    "node"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "Shaik Vahid"
+  },
+  "repository": "https://github.com/vahidshaik1901/enhance-mcp"
+}

@@ -266,6 +266,15 @@ reports the Cloudflare nameservers and `active`/`pending`.
 Provider detection: nameserver names ending in `.ns.cloudflare.com` mean Cloudflare;
 names matching `platform_info.nameServers` mean the platform; anything else is `other`.
 
+Cloudflare proxy and Let's Encrypt (reported by the panel owner 2026-09-05, from experience;
+not yet reproduced live because vahi.dev has no records at Cloudflare): the panel's automatic
+Let's Encrypt issuance fails while the A record is proxied (orange cloud). Customer flow the
+tools and the deploy skill now give: add A `@` and CNAME `www` as "DNS only" (grey cloud),
+wait for `Resolved`, issue via `domain_ssl_issue`, confirm a real issuer with `domain_ssl_get`,
+then turn the proxy on with Cloudflare SSL/TLS mode Full (strict). Flexible mode loops once
+force-https is on. Open question for milestone D: whether the 60-day renewals also need the
+proxy off, or pass through the proxy once Full (strict) is set.
+
 ## Preview domain availability (2026-09-04)
 
 - `GET /branding?orgId=` -> `stagingDomain: "sgp1.mystaging.site"` on this panel. This
@@ -280,3 +289,88 @@ names matching `platform_info.nameServers` mean the platform; anything else is `
   (404 because `public_html` is empty; `ssl_verify_result=18` = self-signed placeholder).
 - An empty docroot returns 404 on every hostname, so verification must request a file
   that was deployed.
+
+## MCP TypeScript SDK v2 facts learned in Task 14 (2026-09-05)
+
+- Installed: `@modelcontextprotocol/server` 2.0.0, `core` 2.0.0, `client` 2.0.0.
+  `LATEST_PROTOCOL_VERSION` is `2025-11-25`; a `2026-07-28` "modern era" exists and is
+  entered when the process is served via `serveStdio`/`createMcpHandler` and the client
+  negotiates it.
+- Claude Code 2.1.258 advertises `capabilities: { elicitation: {} }` (bare) and
+  negotiates the legacy era over stdio. The SDK's `ElicitationCapabilitySchema`
+  preprocesses a bare `{}` into `{ form: {} }`, so `elicitInput` works on legacy
+  connections, but `elicitInput` throws `MethodNotSupportedByProtocolVersion` on the
+  modern era.
+- The portable API is the **`inputRequired` flow**: the tool callback returns
+  `inputRequired({ inputRequests: { confirm: inputRequired.elicit({ message, requestedSchema }) } })`;
+  on legacy connections the SDK's default-on shim performs `elicitation/create` and
+  re-invokes the (zod-validated) callback with `inputResponses`; on the modern era the
+  client drives it. Read the answer with `inputResponse(ctx.mcpReq.inputResponses, 'confirm')`
+  (distinguishes accept/decline/cancel/missing).
+- Client capability detection: `getClientCapabilities()` is `undefined` under
+  `serveStdio`; read `ctx.mcpReq.envelope['io.modelcontextprotocol/clientCapabilities']`
+  first (required on the modern era), then fall back.
+- `_meta: { 'anthropic/requiresUserInteraction': true }` is accepted by `registerTool`'s
+  config type; `outputSchema` is deliberately not declared (Claude Code issues).
+- Residual: if a client's elicitation handler itself errors, the SDK shim returns its own
+  `isError` result without re-entering the callback; nothing executes, but that attempt
+  is not audited. Fix direction: audit destructive *intent* at round 1.
+
+## Live test A: static site from a fresh domain to a verified URL (2026-09-05)
+
+Driver: a scripted MCP client over stdio against the built server (`node dist/index.js serve`),
+declaring the bare `elicitation: {}` capability Claude Code 2.1.258 declares, on the legacy
+protocol era Claude Code negotiates. Credential: a panel session JWT sent as the `id0` cookie.
+Subscription 664 (shared plan). The live e2e suite ran first: 8/8 in 13 s, its throwaway
+`mcp-e2e-*.test` site created and soft-deleted (the domain lingers in `/orgs/{org}/domains`,
+as documented for soft deletes).
+
+| Step | Tool | Result |
+|---|---|---|
+| Domain free | `domain_check` | `notInUse` for `mcp-demo-vyruhg.test`; `.test` names are accepted for creation |
+| Create | `website_create` | site on 664, `php81` (plan default; `php85` offered), unix user `mcp_demo1`, app server `209.42.27.117`, preview alias created by the panel at creation, next steps listed |
+| Preview | `website_preview_domain` | `(existing)`, `created: false`; the hostname did not resolve for about five minutes, then resolved on `ns1/ns2.stableserver.net` and public resolvers |
+| DNS | `domain_dns_status` | `Failed`, no nameservers found, provider `unknown`, platform nameservers plus the A record alternative |
+| SSL | `domain_ssl_get` | placeholder detected on the primary domain (issuer equals the name, 1975 to 4096, force https off) |
+| SSH key | `ssh_key_add` twice | `added: true` then `added: false`, key id `0`; `public_key` shows as `[redacted]` in the audit log |
+| SSH | `ssh_connection_info` | login, home, docroot, one key; login worked from an unsandboxed shell with `ssh -i <key>` |
+| Deploy | rsync dry-run, then real | three files into `public_html`; `-a` changed the docroot mode from `750` to `755` (restored by hand) |
+| Verify | curl on the preview URL | `200` on `/`, `/index.html`, `/style.css`, `/app.js`; heading matched; plain HTTP `200` with no redirect |
+| Delete | `website_delete` via elicitation | prompt carried the preview and asked for the typed name; one soft-delete on the resolved id; audit line `gate: elicitation, outcome: ok`; site gone from the list (12:44, second session JWT) |
+| DNS tree | `domain_dns_status` and `domain_dns_records` on vahi.dev | `ForeignServer`, Cloudflare nameservers, provider `cloudflare`, both fix paths offered; records listed from the panel zone (see the two findings below) |
+
+Findings and what changed because of them:
+
+- **Session cookies expire.** The JWT worked from 07:56 to 08:01 local and was rejected at its
+  next use, 12:23, with 401 `invalid_session_token` (a code distinct from `no_session_token`;
+  an expiry or a newer login replacing the session; the lifetime is under four and a half hours
+  and was not measured more precisely). `explainError` now names this case and points at access
+  tokens. A second session JWT (12:44) completed the remaining steps; real use needs an access
+  token from Settings > Access Tokens.
+- **Preview DNS propagates in about five minutes.** The vhost answered at once when pinned
+  with `curl --resolve`, and the record appeared on the authoritative servers after a few
+  minutes. `website_preview_domain` and the deploy skill now say so and give the `--resolve`
+  check for the gap. The platform nameservers `ns1/ns2.stableserver.net` resolve to the same IPs
+  as `ns1/ns2.a2hosting.com`, which serve the `mystaging.site` zone.
+- **The preview host gets a real certificate at creation.** Let's Encrypt issued for
+  `<preview>` and `www.<preview>` with a notBefore one hour before creation (the usual backdate),
+  while the primary domain keeps the placeholder until DNS resolves. So a customer has a
+  working HTTPS URL before touching DNS.
+- **rsync flags.** With a trailing-slash source, `-a` copies the local folder's owner, group and
+  mode onto the docroot, which the panel keeps at `750` with group gid 33. The tool example and
+  the skill now use `-rltvz` and mention `-e "ssh -i <key>"`.
+- Container facts for a new shared-plan site: home `/var/www/<website id>`, docroot
+  `public_html` (750, owner unix user, group 33), rsync present, `ssh: false` in the payload
+  while key auth works.
+- **The panel's `auth-ns` `matchesPlatform` flag is not reliable.** vahi.dev on Cloudflare
+  nameservers came back `{"matchesPlatform": true, "authNs": [cloudflare names with empty ips]}`.
+  `domain_dns_status` now derives `matchesPlatform` from the nameserver names itself and exposes
+  the raw flag as `panelMatchesPlatform`.
+- **Mail routing is `local` for every site, mailboxes or not.** In `auto` mode
+  `domain_dns_records` therefore listed MX, SPF, DMARC and the mail hosts for vahi.dev, which has
+  zero mailboxes (`GET .../websites/{id}/emails` returns `{items: [], total: 0}`). A customer
+  whose mail lives elsewhere would have been told to add the platform MX at Cloudflare. `auto`
+  now includes mail records only when routing is local and the website has at least one
+  email account (mailbox or forwarder) on that domain; `include_mail=yes` still forces them, and the text says which rule
+  applied.
+- The demo site was soft-deleted through the elicitation gate at 12:44; only vahi.dev remains.
