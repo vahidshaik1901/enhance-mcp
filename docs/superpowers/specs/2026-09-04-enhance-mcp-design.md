@@ -477,6 +477,10 @@ A; B and C are documented as "coming" until milestone D.
      key id and Enhance syncs the zone itself; `cloudflareStatus` becomes `Connected`.
      The token never passes through Claude Code. (b) *Manual:* `domain_dns_records`
      returns the records to create at Cloudflare, taken from the panel's own zone.
+     In both paths the A and CNAME records stay "DNS only" (proxy off) until
+     `domain_ssl_get` shows a real certificate, because the panel's Let's Encrypt
+     issuance fails through the Cloudflare proxy; afterwards the customer turns the
+     proxy on with SSL/TLS mode Full (strict).
    - **Provider is `other`:** manual path only, same `domain_dns_records` output, or
      switch the registrar to the platform nameservers from `platform_info`.
    - **`Failed`:** the domain has no working DNS at all; give the nameserver

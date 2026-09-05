@@ -266,6 +266,15 @@ reports the Cloudflare nameservers and `active`/`pending`.
 Provider detection: nameserver names ending in `.ns.cloudflare.com` mean Cloudflare;
 names matching `platform_info.nameServers` mean the platform; anything else is `other`.
 
+Cloudflare proxy and Let's Encrypt (reported by the panel owner 2026-09-05, from experience;
+not yet reproduced live because vahi.dev has no records at Cloudflare): the panel's automatic
+Let's Encrypt issuance fails while the A record is proxied (orange cloud). Customer flow the
+tools and the deploy skill now give: add A `@` and CNAME `www` as "DNS only" (grey cloud),
+wait for `Resolved`, issue via `domain_ssl_issue`, confirm a real issuer with `domain_ssl_get`,
+then turn the proxy on with Cloudflare SSL/TLS mode Full (strict). Flexible mode loops once
+force-https is on. Open question for milestone D: whether the 60-day renewals also need the
+proxy off, or pass through the proxy once Full (strict) is set.
+
 ## Preview domain availability (2026-09-04)
 
 - `GET /branding?orgId=` -> `stagingDomain: "sgp1.mystaging.site"` on this panel. This

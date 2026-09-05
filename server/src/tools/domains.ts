@@ -186,6 +186,8 @@ export const domainDnsStatus = defineTool({
       advice.push('The domain is on Cloudflare. Two options:');
       advice.push(`  a) Integration: add a Cloudflare API token in the panel (Settings > Cloudflare), then run domain_cloudflare_connect website=${websiteDomain} key_id=<id from cloudflare_keys_list>. Enhance then creates and maintains the records at Cloudflare itself.`);
       advice.push(`  b) Manual: run domain_dns_records website=${websiteDomain} and add those records in the Cloudflare dashboard (A @ -> ${ip}, CNAME www -> ${domainName}).`);
+      advice.push('  Either way, keep the A and CNAME records on "DNS only" (grey cloud, proxy off) until domain_ssl_get shows a real certificate: the panel\'s Let\'s Encrypt issuance fails while Cloudflare proxies the record.');
+      advice.push('  Once the certificate is issued the customer can turn the proxy on and set Cloudflare SSL/TLS to Full (strict). Never Flexible: it loops with force-https.');
     } else {
       advice.push('Either switch the registrar to the platform nameservers:');
       advice.push(`  ${platformNs.length ? platformNs.map(safe).join(', ') : '(provider has not published nameservers)'}`);
@@ -259,9 +261,9 @@ export const domainDnsRecords = defineTool({
       }
     }
     const records = filterZoneForThirdParty(zone.records, { mail, extras: args.include_extras });
-    const rows = records.map((r) => ({ host: r.name, type: r.kind, value: r.value, ttl: r.ttl ?? zone.soa.ttl, proxy: r.proxy ? 'ok to proxy' : '' }));
-    const text = [identityBlock({ name: client.orgName, id: org }, w, d), `records to create at your DNS provider (mail records ${mail ? 'included' : 'omitted'}: ${mailReason}):`, table(rows, ['host', 'type', 'value', 'ttl', 'proxy'])].join('\n');
-    return ok(text, { website: w.id, domain: d.domain, includeMail: mail, mailReason, emailAccounts, localRemote, records: records.map((r) => ({ kind: r.kind, name: r.name, value: r.value, ttl: r.ttl ?? zone.soa.ttl })) });
+    const rows = records.map((r) => ({ host: r.name, type: r.kind, value: r.value, ttl: r.ttl ?? zone.soa.ttl, proxy: r.proxy ? 'DNS only until SSL is issued' : 'DNS only' }));
+    const text = [identityBlock({ name: client.orgName, id: org }, w, d), `records to create at your DNS provider (mail records ${mail ? 'included' : 'omitted'}: ${mailReason}):`, table(rows, ['host', 'type', 'value', 'ttl', 'proxy']), 'cloudflare proxy: keep every record on "DNS only" (grey cloud) until domain_ssl_get shows a real certificate; the panel\'s Let\'s Encrypt issuance fails through the proxy. After that, the records marked above may be proxied with SSL/TLS mode Full (strict).'].join('\n');
+    return ok(text, { website: w.id, domain: d.domain, includeMail: mail, mailReason, emailAccounts, localRemote, records: records.map((r) => ({ kind: r.kind, name: r.name, value: r.value, ttl: r.ttl ?? zone.soa.ttl, proxyEligible: !!r.proxy })) });
   },
 });
 
@@ -298,9 +300,14 @@ export const domainSslIssue = defineTool({
   async handler(args, ctx) {
     const { w, d } = await site(ctx, args.website, args.domain);
     const path = { domain_id: d.domainId };
+    // Cloudflare's proxy breaks the panel's Let's Encrypt challenge (reported by the panel owner,
+    // 2026-09-05), so name it in both outcomes. A failed nameserver lookup just drops the hint.
+    const authNs = await ctx.client.call('GET', '/orgs/{org_id}/domains/{domain_id}/auth-ns', () => ctx.client.api.GET('/orgs/{org_id}/domains/{domain_id}/auth-ns', { params: { path: { org_id: w.orgId, domain_id: d.domainId } } })).catch(() => ({ authNs: [] as Array<{ name: string }> }));
+    const onCloudflare = detectProvider(authNs.authNs.map((n) => normNs(n.name)), []) === 'cloudflare';
     const pre = await ctx.client.call('POST', '/v2/domains/{domain_id}/letsencrypt_preflight', () => ctx.client.api.POST('/v2/domains/{domain_id}/letsencrypt_preflight', { params: { path } }));
     if (!pre.canIssue) {
-      return fail(`${identityBlock({ name: ctx.client.orgName, id: w.orgId }, w, d)}\nLet's Encrypt preflight failed: ${safe(pre.error ?? 'no reason given')}.\nFix DNS first (domain_dns_status) and retry. The preview domain already has HTTPS.`, { website: w.id, domainId: d.domainId, issued: false, preflightError: pre.error ?? null });
+      const cfHint = onCloudflare ? '\nThe domain is on Cloudflare: its A and CNAME records must be "DNS only" (grey cloud, proxy off) until the certificate is issued; the challenge fails through the proxy. Turn the proxy back on afterwards with SSL/TLS mode Full (strict).' : '';
+      return fail(`${identityBlock({ name: ctx.client.orgName, id: w.orgId }, w, d)}\nLet's Encrypt preflight failed: ${safe(pre.error ?? 'no reason given')}.\nFix DNS first (domain_dns_status) and retry. The preview domain already has HTTPS.${cfHint}`, { website: w.id, domainId: d.domainId, issued: false, preflightError: pre.error ?? null, cloudflare: onCloudflare });
     }
     await ctx.client.call('POST', '/v2/domains/{domain_id}/letsencrypt', () => ctx.client.api.POST('/v2/domains/{domain_id}/letsencrypt', { params: { path } }));
     const cert = await ctx.client.call('GET', '/v2/domains/{domain_id}/ssl', () => ctx.client.api.GET('/v2/domains/{domain_id}/ssl', { params: { path } }));
@@ -308,7 +315,8 @@ export const domainSslIssue = defineTool({
     ctx.resolver.invalidate();
     // `rest.issued` is the certificate's own issue date; our "we just issued it" flag is a
     // separate key so neither shadows the other.
-    return ok(`${certText(w, d, rest, ctx.client.orgName)}\ncertificate issued.`, { website: w.id, domainId: d.domainId, ...rest, justIssued: true, placeholder: isPlaceholderCert(rest) });
+    const cfNext = onCloudflare ? '\nThe domain is on Cloudflare: the proxy can be turned on now, with SSL/TLS mode Full (strict).' : '';
+    return ok(`${certText(w, d, rest, ctx.client.orgName)}\ncertificate issued.${cfNext}`, { website: w.id, domainId: d.domainId, ...rest, justIssued: true, placeholder: isPlaceholderCert(rest), cloudflare: onCloudflare });
   },
 });
 

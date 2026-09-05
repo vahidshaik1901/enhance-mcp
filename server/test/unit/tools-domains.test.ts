@@ -102,6 +102,8 @@ describe('domain_dns_status', () => {
     expect(r.text).toContain('Cloudflare');
     expect(r.text).toContain('domain_cloudflare_connect');
     expect(r.text).toContain('domain_dns_records');
+    expect(r.text).toContain('"DNS only" (grey cloud, proxy off) until domain_ssl_get shows a real certificate');
+    expect(r.text).toContain('Full (strict)');
     expect(r.text).toContain('preview domain');
   });
   it('explains the platform and failed cases', async () => {
@@ -140,6 +142,8 @@ describe('domain_dns_records', () => {
     expect(kinds(r)).toEqual(['A @', 'CNAME www']);
     expect(r.text).toContain('mail records omitted: mail routing is remote');
     expect(r.text).toContain('65.98.32.45');
+    expect(r.text).toContain('cloudflare proxy: keep every record on "DNS only"');
+    expect((r.structured as { records: Array<{ proxyEligible: boolean }> }).records.every((x) => typeof x.proxyEligible === 'boolean')).toBe(true);
   });
   // Routing is "local" for every site (live 2026-09-05, vahi.dev with zero mailboxes), so on its
   // own it must not put the platform MX in front of a customer whose mail lives elsewhere.
@@ -216,7 +220,31 @@ describe('ssl tools', () => {
     const r = await callTool(byName(tools, 'domain_ssl_issue'), { website: 'vahi.dev' }, ctx);
     expect(r.isError).toBe(true);
     expect(r.text).toContain('DNS does not resolve to this server');
+    expect(r.text).not.toContain('Cloudflare');
+    expect(r.structured).toMatchObject({ cloudflare: false });
     expect(f.calls.some((c) => c.path.endsWith('/letsencrypt'))).toBe(false);
+  });
+  // The panel's Let's Encrypt challenge fails while Cloudflare proxies the record (panel owner,
+  // 2026-09-05): a Cloudflare domain gets the proxy-off instruction on failure and the
+  // proxy-on / Full (strict) step on success.
+  it('names the Cloudflare proxy rule when the domain is on Cloudflare', async () => {
+    const cf = { method: 'GET' as const, path: `/orgs/${ORG_ID}/domains/${DOMAIN_ID}/auth-ns`, body: authNsCloudflare };
+    const failed = await makeContext([...base(), cf, { method: 'POST', path: `/v2/domains/${DOMAIN_ID}/letsencrypt_preflight`, body: { canIssue: false, error: 'challenge failed' } }]);
+    const r1 = await callTool(byName(tools, 'domain_ssl_issue'), { website: 'vahi.dev' }, failed.ctx);
+    expect(r1.isError).toBe(true);
+    expect(r1.text).toContain('"DNS only" (grey cloud, proxy off) until the certificate is issued');
+    expect(r1.structured).toMatchObject({ cloudflare: true });
+    const ok = await makeContext([
+      ...base(),
+      cf,
+      { method: 'POST', path: `/v2/domains/${DOMAIN_ID}/letsencrypt_preflight`, body: { canIssue: true } },
+      { method: 'POST', path: `/v2/domains/${DOMAIN_ID}/letsencrypt`, status: 200, body: null },
+      { method: 'GET', path: `/v2/domains/${DOMAIN_ID}/ssl`, body: sslReal },
+    ]);
+    const r2 = await callTool(byName(tools, 'domain_ssl_issue'), { website: 'vahi.dev' }, ok.ctx);
+    expect(r2.isError).toBeFalsy();
+    expect(r2.text).toContain('the proxy can be turned on now, with SSL/TLS mode Full (strict)');
+    expect(r2.structured).toMatchObject({ justIssued: true, cloudflare: true });
   });
   it('sets force ssl', async () => {
     const { ctx, f } = await makeContext([...base(), { method: 'PUT', path: `/v2/domains/${DOMAIN_ID}/ssl/force_ssl`, status: 200, body: null }]);

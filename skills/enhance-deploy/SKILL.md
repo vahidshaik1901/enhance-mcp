@@ -38,7 +38,7 @@ Work through the steps in order. Say which step you are on. Stop and report when
 - `domain_dns_status`. Relay its advice verbatim to the user:
   - `Resolved` → nothing to do.
   - provider `platform` → wait for propagation.
-  - provider `cloudflare` → offer (a) the integration: user adds a Cloudflare API token in the panel, then you call `domain_cloudflare_connect` with the key id from `cloudflare_keys_list`; or (b) manual: `domain_dns_records` and the user adds them at Cloudflare.
+  - provider `cloudflare` → offer (a) the integration: user adds a Cloudflare API token in the panel, then you call `domain_cloudflare_connect` with the key id from `cloudflare_keys_list`; or (b) manual: `domain_dns_records` and the user adds them at Cloudflare with the proxy OFF ("DNS only", grey cloud) on the A and CNAME records until SSL is issued (step 5).
   - provider `other` or `unknown` / status `Failed` → give the platform nameservers from `platform_info` or the A record; `domain_dns_records` for the full list.
   - status `ForeignServer` → the domain currently points somewhere else (often a CDN or an old host); continue on the preview domain and give the customer the instructions for their provider; do not tell them the site is live.
   - Mail: `domain_dns_records` adds MX, SPF, DMARC and the mail hosts only when the domain has email accounts on the platform. Never tell a customer to add the platform's mail records for a domain whose mail lives elsewhere (Google Workspace, Microsoft 365, and so on); that breaks their email. `include_mail=yes` forces them when the customer says mail should move here.
@@ -47,6 +47,7 @@ Work through the steps in order. Say which step you are on. Stop and report when
 
 ### 5. SSL
 - `domain_ssl_get`. If `placeholder` is true and DNS already resolves (`Resolved`), call `domain_ssl_issue`. If DNS does not resolve yet, say SSL will be issued after DNS and continue; the preview domain already has HTTPS.
+- Cloudflare: the panel's Let's Encrypt issuance fails while Cloudflare proxies the A record. Sequence: records on DNS only, `domain_dns_status` reports `Resolved`, `domain_ssl_issue`, `domain_ssl_get` shows a real issuer, then tell the customer to turn the proxy on and set Cloudflare SSL/TLS to Full (strict). Never Flexible: it redirect-loops once force-https is on.
 - After a real certificate exists, offer `domain_set_force_ssl enabled=true`.
 
 ### 6. SSH
