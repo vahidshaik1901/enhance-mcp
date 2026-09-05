@@ -48,6 +48,11 @@ function defaultReadFile(path: string): string | undefined {
   }
 }
 
+function envValue(env: ConfigSource['env'], key: string): string | undefined {
+  const v = env[key]?.trim();
+  return v ? v : undefined;
+}
+
 function loadProfile(env: ConfigSource['env'], readFile: NonNullable<ConfigSource['readFile']>, home: string, envComplete: boolean): Profile {
   const text = readFile(join(home, '.enhance-mcp', 'config.json'));
   if (!text) return {};
@@ -61,9 +66,10 @@ function loadProfile(env: ConfigSource['env'], readFile: NonNullable<ConfigSourc
     }
     throw new ConfigError('~/.enhance-mcp/config.json is not valid JSON. Fix the file or remove it.');
   }
-  const name = env['ENHANCE_PROFILE'] ?? 'default';
+  const profileName = envValue(env, 'ENHANCE_PROFILE');
+  const name = profileName ?? 'default';
   const profile = parsed.profiles?.[name];
-  if (env['ENHANCE_PROFILE'] && !profile) throw new ConfigError(`profile "${name}" not found in ~/.enhance-mcp/config.json`);
+  if (profileName && !profile) throw new ConfigError(`profile "${name}" not found in ~/.enhance-mcp/config.json`);
   return profile ?? {};
 }
 
@@ -79,14 +85,16 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
 export function loadConfig({ env, readFile = defaultReadFile, home = homedir() }: ConfigSource): Config {
   const envComplete = !!(env['ENHANCE_PANEL_URL'] && env['ENHANCE_TOKEN']);
   const profile = loadProfile(env, readFile, home, envComplete);
+  const tiersEnv = envValue(env, 'ENHANCE_TIERS');
+  const timeoutMsEnv = envValue(env, 'ENHANCE_TIMEOUT_MS');
   const raw = stripUndefined({
-    panelUrl: env['ENHANCE_PANEL_URL'] ?? profile.panelUrl,
-    token: env['ENHANCE_TOKEN'] ?? profile.token,
-    orgId: env['ENHANCE_ORG_ID'] ?? profile.orgId,
-    tiers: env['ENHANCE_TIERS'] ? env['ENHANCE_TIERS'].split(',').map((s) => s.trim()).filter(Boolean) : profile.tiers,
-    readOnly: parseBool(env['ENHANCE_READ_ONLY']) ?? profile.readOnly,
-    auditLog: env['ENHANCE_AUDIT_LOG'] ?? profile.auditLog ?? join(home, '.enhance-mcp', 'audit.jsonl'),
-    timeoutMs: env['ENHANCE_TIMEOUT_MS'] ? Number(env['ENHANCE_TIMEOUT_MS']) : profile.timeoutMs,
+    panelUrl: envValue(env, 'ENHANCE_PANEL_URL') ?? profile.panelUrl,
+    token: envValue(env, 'ENHANCE_TOKEN') ?? profile.token,
+    orgId: envValue(env, 'ENHANCE_ORG_ID') ?? profile.orgId,
+    tiers: tiersEnv ? tiersEnv.split(',').map((s) => s.trim()).filter(Boolean) : profile.tiers,
+    readOnly: parseBool(envValue(env, 'ENHANCE_READ_ONLY')) ?? profile.readOnly,
+    auditLog: envValue(env, 'ENHANCE_AUDIT_LOG') ?? profile.auditLog ?? join(home, '.enhance-mcp', 'audit.jsonl'),
+    timeoutMs: timeoutMsEnv ? Number(timeoutMsEnv) : profile.timeoutMs,
   });
   if (!raw.panelUrl || !raw.token) {
     const missing = [!raw.panelUrl && 'ENHANCE_PANEL_URL', !raw.token && 'ENHANCE_TOKEN'].filter(Boolean).join(' and ');

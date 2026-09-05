@@ -167,4 +167,10 @@ describe('loadConfig', () => {
       }),
     ).toThrow(/timeoutMs/);
   });
+
+  it('treats empty env values as unset so plugin env passthrough does not shadow the profile', () => {
+    const file = JSON.stringify({ profiles: { default: { panelUrl: 'https://file.example.com', token: TOKEN } } });
+    const c = loadConfig({ env: { ENHANCE_PANEL_URL: '', ENHANCE_TOKEN: '   ' }, readFile: () => file, home: '/home/u' });
+    expect(c.panelUrl).toBe('https://file.example.com');
+  });
 });
