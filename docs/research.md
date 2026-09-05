@@ -280,3 +280,29 @@ names matching `platform_info.nameServers` mean the platform; anything else is `
   (404 because `public_html` is empty; `ssl_verify_result=18` = self-signed placeholder).
 - An empty docroot returns 404 on every hostname, so verification must request a file
   that was deployed.
+
+## MCP TypeScript SDK v2 facts learned in Task 14 (2026-09-05)
+
+- Installed: `@modelcontextprotocol/server` 2.0.0, `core` 2.0.0, `client` 2.0.0.
+  `LATEST_PROTOCOL_VERSION` is `2025-11-25`; a `2026-07-28` "modern era" exists and is
+  entered when the process is served via `serveStdio`/`createMcpHandler` and the client
+  negotiates it.
+- Claude Code 2.1.258 advertises `capabilities: { elicitation: {} }` (bare) and
+  negotiates the legacy era over stdio. The SDK's `ElicitationCapabilitySchema`
+  preprocesses a bare `{}` into `{ form: {} }`, so `elicitInput` works on legacy
+  connections, but `elicitInput` throws `MethodNotSupportedByProtocolVersion` on the
+  modern era.
+- The portable API is the **`inputRequired` flow**: the tool callback returns
+  `inputRequired({ inputRequests: { confirm: inputRequired.elicit({ message, requestedSchema }) } })`;
+  on legacy connections the SDK's default-on shim performs `elicitation/create` and
+  re-invokes the (zod-validated) callback with `inputResponses`; on the modern era the
+  client drives it. Read the answer with `inputResponse(ctx.mcpReq.inputResponses, 'confirm')`
+  (distinguishes accept/decline/cancel/missing).
+- Client capability detection: `getClientCapabilities()` is `undefined` under
+  `serveStdio`; read `ctx.mcpReq.envelope['io.modelcontextprotocol/clientCapabilities']`
+  first (required on the modern era), then fall back.
+- `_meta: { 'anthropic/requiresUserInteraction': true }` is accepted by `registerTool`'s
+  config type; `outputSchema` is deliberately not declared (Claude Code issues).
+- Residual: if a client's elicitation handler itself errors, the SDK shim returns its own
+  `isError` result without re-entering the callback; nothing executes, but that attempt
+  is not audited. Fix direction: audit destructive *intent* at round 1.

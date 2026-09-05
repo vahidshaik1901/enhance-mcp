@@ -15,9 +15,13 @@ Execute with `superpowers:subagent-driven-development` or `superpowers:executing
 No code exists yet. Key library facts: MCP TypeScript SDK is v2 (`@modelcontextprotocol/server`
 2.0.0, `serveStdio`, `registerTool`, form elicitation via `ctx.mcpReq.elicitInput`), zod 4
 (`zod/v4`), openapi-fetch 0.17, openapi-typescript 7.13, npm name `enhance-mcp` is free.
-Claude Code supports MCP elicitation (>= 2.1.76); `outputSchema` has known issues so tools
-return `structuredContent` without declaring one; the Bash sandbox can never carry SSH
-(use `sandbox.excludedCommands` or run unsandboxed).
+Claude Code supports MCP elicitation (>= 2.1.76) but advertises a bare `elicitation: {}`
+capability and negotiates the legacy protocol era; the server uses the SDK's `inputRequired`
+flow (not `elicitInput`) so the human prompt works on both eras (see docs/research.md).
+`outputSchema` has known issues so tools return `structuredContent` without declaring one;
+the Bash sandbox can never carry SSH (use `sandbox.excludedCommands` or run unsandboxed).
+Progress: Tasks 1-14 of the milestone A plan are done and reviewed (ledger in
+`.superpowers/sdd/progress.md`, git-ignored; `git log` is the recovery map).
 
 ### Decisions made
 
