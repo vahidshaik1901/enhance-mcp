@@ -1107,7 +1107,7 @@ git commit -m "feat(php): extensions, LSPHP settings, error log, Redis toggle, c
 - Test: `server/test/unit/tools-htaccess.test.ts`
 
 **Interfaces:**
-- Produces `tools: ToolDef[]`: `htaccess_rewrites_get`, `htaccess_rewrites_set`, `ip_rules_get`, `ip_rules_set`.
+- Produces `tools: ToolDef[]`: `htaccess_rewrites_get`, `htaccess_rewrites_set`, `htaccess_rewrites_delete`, `ip_rules_get`, `ip_rules_set` (delete tool added 2026-09-06: the PATCH merges by line number, bare line numbers delete, chains renumber).
 - `ip_rules_set(website, kind: 'allow'|'block', ips[])` replaces the whole rule.
 - `htaccess_rewrites_get(website)` reads the rewrite chains; `htaccess_rewrites_set(website, items)` replaces them with the given chains.
 
@@ -1245,7 +1245,7 @@ git commit -m "feat(htaccess): managed rewrite chains and IP access rules"
 - Test: `server/test/unit/tools-cron.test.ts`
 
 **Interfaces:**
-- Produces `tools: ToolDef[]`: `cron_get`, `cron_set`, `cron_delete` (D), `container_cron_get`, `container_cron_set`.
+- Produces `tools: ToolDef[]`: `cron_get`, `cron_add`, `cron_remove`, `cron_delete` (D), `container_cron_get`, `container_cron_set` (redesigned 2026-09-06 after the live probe: the crontab PATCH merges with 0-based line numbers, so add/remove replace the blanket set).
 - `cron_get(website)` lists the crontab (commands and variables). `cron_set(website, jobs[])` replaces command lines. `cron_delete(website)` removes the whole crontab (destructive). `container_cron_get/set(website[, enabled])` toggles whether the container runs cron at all.
 
 - [ ] **Step 1: Write the failing test**
@@ -1464,7 +1464,7 @@ import { tools as websites } from './websites.js';
 export const allTools: ToolDef[] = [...account, ...websites, ...domains, ...ssh, ...mysql, ...postgres, ...php, ...htaccess, ...cron];
 ```
 
-If `smoke.test.ts` asserts an exact tool count, update it to the new total (29 milestone A tools + 12 mysql + 9 postgres + 9 php + 4 htaccess + 5 cron = 68). Prefer asserting `allTools.length >= 29` and that names are unique over a brittle exact count:
+If `smoke.test.ts` asserts an exact tool count, update it to the new total (29 milestone A tools + 13 mysql + 9 postgres + 9 php + 5 htaccess + 6 cron = 71). Prefer asserting `allTools.length >= 29` and that names are unique over a brittle exact count:
 
 ```ts
 it('registers a unique, non-empty tool set', () => {
@@ -1671,7 +1671,7 @@ git commit -m "test(e2e): live database round trip for milestone B"
 - PHP: `php_extensions_get/enable/disable` -> Task 5 (`php_extensions_list`, `php_extension_enable/disable`). `php_ini_get/set` -> Task 5 `php_settings_get/set` (lsphp; documented limitation). `php_error_log` -> Task 5. `redis_get/set` -> Task 5 `redis_state_get/set`. `cache_clear` -> Task 5. `htaccess_rewrites_get/update` -> Task 6 (`_get`/`_set`). `ip_rules_get/set` -> Task 6.
 - MySQL: `db_list/create/delete/users_list/user_create/user_update/user_delete/user_set_privileges/user_access_hosts_set/phpmyadmin_url/export_sql/import_sql` -> Tasks 2-3, all present.
 - PostgreSQL: `pg_db_list/create/delete/users_list/user_create/user_update/user_delete/user_grant/user_revoke` -> Task 4, all present, `canUse` gated.
-- Cron: `cron_get/update/delete` -> Task 7 (`cron_get`/`cron_set`/`cron_delete`) plus `container_cron_get/set`.
+- Cron: `cron_get/update/delete` -> Task 7 (`cron_get`/`cron_add`/`cron_remove`/`cron_delete`) plus `container_cron_get/set`.
 - `enhance-database` skill -> Task 9. Live test B (PHP+MySQL, Laravel) -> Task 10.
 
 **Placeholder scan:** no TBD/TODO; every code step contains the code; no "similar to Task N".
