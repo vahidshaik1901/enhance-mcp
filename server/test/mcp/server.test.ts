@@ -5,7 +5,7 @@ import { selectTools } from '../../src/core/registry.js';
 import { createServer } from '../../src/server.js';
 import { allTools } from '../../src/tools/index.js';
 import { makeContext } from '../helpers/context.js';
-import type { Route } from '../helpers/fakeFetch.js';
+import type { FakeFetch, Route } from '../helpers/fakeFetch.js';
 import { domainMappings, MYSQL_DB, ORG_ID, PREVIEW_DOMAIN_ID, sshKeys, WEBSITE_ID, websiteDetail, websitesList, websiteSummary } from '../fixtures/panel.js';
 
 /**
@@ -307,6 +307,9 @@ describe('createServer', () => {
    *  same site on a plan that includes it. */
   const pgEnabled = { ...websiteDetail, canUse: { ...websiteDetail.canUse, postgresql: true } };
 
+  /** Spelled out rather than spreading `base()`: fakeFetch takes the *first* matching route, and
+   *  the site-detail GET here is the one overridden for the PostgreSQL cases, so a spread base()
+   *  ahead of it would shadow the override with the plan that has `canUse.postgresql: false`. */
   const destructiveRoutes = (postgresql = false): Route[] => [
     { method: 'GET', path: `/orgs/${ORG_ID}/websites`, body: websitesList },
     { method: 'GET', path: sitePath, body: postgresql ? pgEnabled : websiteDetail },
@@ -338,6 +341,15 @@ describe('createServer', () => {
     { tool: 'pg_user_revoke', args: { website: 'vahi.dev', username: 'app', database: 'shop' }, typed: PG_USER, postgresql: true, write: { method: 'DELETE', path: `${sitePath}/postgresql-users/${PG_USER}/privileges/${PG_DB}` } },
   ];
 
+  /**
+   * The real invariant: the panel's purge (`DELETE …?force=true`, which wipes a website's data
+   * outright and needs a privileged master-org member) is never exposed, so no DELETE this server
+   * sends may carry a force flag. Deliberately not a ban on the substring everywhere — `force` does
+   * appear once in the codebase, as `db_import_sql`'s continue-on-error flag (the mysql CLI's
+   * --force), and that rides on the POST carrying the SQL, never on a DELETE.
+   */
+  const expectNoForcedDelete = (f: FakeFetch) => expect(f.calls.filter((x) => x.method === 'DELETE' && x.path.includes('force='))).toEqual([]);
+
   it('drives every registered destructive tool through the cases below', () => {
     expect(destructiveCases.map((c) => c.tool).sort()).toEqual(allTools.filter((t) => t.risk === 'destructive').map((t) => t.name).sort());
   });
@@ -362,11 +374,28 @@ describe('createServer', () => {
         expect(writes[0]?.headers.get('content-type')).toMatch(/^multipart\/form-data/);
         expect(writes[0]?.body).toContain(IMPORT_SQL);
       }
-      // No tool may ever reach for the panel's force/purge variants.
-      expect(f.calls.filter((x) => x.path.includes('force='))).toEqual([]);
+      expectNoForcedDelete(f);
       expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ tool: c.tool, gate: 'elicitation', outcome: 'ok' });
     });
   }
+
+  it('website_delete through the gate sends one plain DELETE, never the panel purge', async () => {
+    const { call, f } = await connect({ caps: 'bare', routes: destructiveRoutes(), elicit: () => ({ action: 'accept', content: { confirm_name: 'vahi.dev' } }) });
+    const r = await call('website_delete', { website: 'vahi.dev' });
+    expect(r.isError).toBe(false);
+    expect(f.calls.filter((x) => x.method === 'DELETE').map((x) => x.path)).toEqual([sitePath]);
+    expectNoForcedDelete(f);
+  });
+
+  it("db_import_sql's own force flag rides on its POST, and the guard above still holds", async () => {
+    const { call, f } = await connect({ caps: 'bare', routes: destructiveRoutes(), elicit: () => ({ action: 'accept', content: { confirm_name: MYSQL_DB } }) });
+    const r = await call('db_import_sql', { website: 'vahi.dev', name: 'demo', sql: IMPORT_SQL, force: true });
+    expect(r.isError).toBe(false);
+    const writes = f.calls.filter((x) => x.method !== 'GET');
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ method: 'POST', path: `/v2/websites/${WEBSITE_ID}/mysql/${MYSQL_DB}/sql?force=true` });
+    expectNoForcedDelete(f);
+  });
 
   it('db_delete with the wrong name typed drops nothing and audits a cancellation', async () => {
     const { call, f, auditLines } = await connect({

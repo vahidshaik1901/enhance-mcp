@@ -24,9 +24,18 @@ const SECRET_KEYS = new Set(['password', 'token', 'secret', 'public_key', 'priva
 /** A PEM private key pasted into any argument, whatever the argument is called. */
 const PRIVATE_KEY_RE = /-----BEGIN [A-Z ]*PRIVATE KEY/;
 
+/** Longest string argument written verbatim. `db_import_sql`'s `sql` (and any future large
+ *  payload) would otherwise land in ~/.enhance-mcp/audit.jsonl in full; the audit trail only needs
+ *  to say that a payload of that size went, not what was in it. Redaction still wins over elision,
+ *  so an oversized secret is never merely summarised. */
+const MAX_STRING = 512;
+
 export function redact(value: unknown, secrets: string[]): unknown {
   const live = secrets.filter((s) => s.length >= 5);
-  if (typeof value === 'string') return PRIVATE_KEY_RE.test(value) || live.some((s) => value.includes(s)) ? '[redacted]' : value;
+  if (typeof value === 'string') {
+    if (PRIVATE_KEY_RE.test(value) || live.some((s) => value.includes(s))) return '[redacted]';
+    return value.length > MAX_STRING ? `[elided ${value.length} chars]` : value;
+  }
   if (Array.isArray(value)) return value.map((v) => redact(v, secrets));
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, SECRET_KEYS.has(k.toLowerCase()) ? '[redacted]' : redact(v, secrets)]));

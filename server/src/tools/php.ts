@@ -92,7 +92,7 @@ export const phpWorkersGet = defineTool({
   name: 'php_workers_get',
   tier: 'customer',
   risk: 'read',
-  description: 'Shows the tunable PHP (LSPHP) settings for a website. At the customer tier this is the number of LSAPI child processes; arbitrary php.ini directives are not editable here.',
+  description: 'Shows the number of PHP workers (LSPHP/LSAPI child processes) for a website: how many PHP requests it can run at once. That count is the only PHP setting tunable at the customer tier; arbitrary php.ini directives are not editable here.',
   input: z.object({ website: websiteArg }),
   async handler({ website }, ctx) {
     const s = await phpSite(ctx, website);

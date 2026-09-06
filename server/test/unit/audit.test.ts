@@ -13,6 +13,23 @@ describe('redact', () => {
     expect(redact({ pem: '-----BEGIN RSA PRIVATE KEY-----\nMII...' }, [])).toEqual({ pem: '[redacted]' });
   });
 
+  it('elides a string longer than 512 characters, anywhere in the structure, keeping its length', () => {
+    const sql = 'a'.repeat(600);
+    expect(redact({ sql }, [])).toEqual({ sql: '[elided 600 chars]' });
+    expect(redact({ nested: { sql }, list: [sql] }, [])).toEqual({ nested: { sql: '[elided 600 chars]' }, list: ['[elided 600 chars]'] });
+  });
+
+  it('leaves a string at or under the cap untouched', () => {
+    expect(redact({ sql: 'b'.repeat(100) }, [])).toEqual({ sql: 'b'.repeat(100) });
+    expect(redact({ sql: 'c'.repeat(512) }, [])).toEqual({ sql: 'c'.repeat(512) });
+  });
+
+  it('redacts rather than elides, whatever the length: a secret-named key and a long value carrying a secret', () => {
+    expect(redact({ password: 'p'.repeat(600) }, [])).toEqual({ password: '[redacted]' });
+    expect(redact({ password: 'short' }, [])).toEqual({ password: '[redacted]' });
+    expect(redact({ note: `${'a'.repeat(600)}SECRETVALUE` }, ['SECRETVALUE'])).toEqual({ note: '[redacted]' });
+  });
+
   it('only treats secrets of length >= 5 as redaction triggers', () => {
     expect(redact({ a: 'has tok inside', b: 'has LONGSECRET inside' }, ['tok', 'LONGSECRET'])).toEqual({ a: 'has tok inside', b: '[redacted]' });
   });

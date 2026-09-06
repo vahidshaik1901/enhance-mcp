@@ -16,7 +16,9 @@ export interface TestContext {
 
 export async function makeContext(routes: Route[], env: Record<string, string> = {}, membershipsBody: unknown = memberships): Promise<TestContext> {
   const f = fakeFetch([authGuard({ bearer: TOKEN }, { method: 'GET', path: '/login/memberships', body: membershipsBody }), ...routes]);
-  const config = loadConfig({ env: { ENHANCE_PANEL_URL: PANEL_URL, ENHANCE_TOKEN: TOKEN, ...env }, home: '/tmp' });
+  // `readFile: () => undefined` is loadConfig's "no profile file" answer (see loadProfile), so a
+  // stray /tmp/.enhance-mcp/config.json on a developer machine can never leak into these tests.
+  const config = loadConfig({ env: { ENHANCE_PANEL_URL: PANEL_URL, ENHANCE_TOKEN: TOKEN, ...env }, readFile: () => undefined, home: '/tmp' });
   const client = await createEnhanceClient(config, { fetch: f, sleep: async () => undefined });
   const auditLines: string[] = [];
   const ctx: ToolContext = {

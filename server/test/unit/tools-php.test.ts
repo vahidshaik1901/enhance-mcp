@@ -83,6 +83,10 @@ describe('php_workers_get', () => {
     expect(r.text).toContain('LSAPI children: 10');
     expect(r.structured).toMatchObject({ lsapiChildren: 10 });
   });
+
+  it('describes itself as the worker count, matching php_workers_set', async () => {
+    expect(byName(tools, 'php_workers_get').description).toMatch(/number of PHP workers/);
+  });
 });
 
 describe('php_workers_set', () => {
