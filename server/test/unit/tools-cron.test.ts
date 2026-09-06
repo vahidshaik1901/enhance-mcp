@@ -19,6 +19,24 @@ const twoLines = {
   ],
 };
 
+/** Only the editable part of the crontab comes back, so the numbering can be sparse: here the
+ *  file's next free line is 6, while `items.length` is 2 — a number that would REPLACE line 2. */
+const gappedLines = {
+  items: [
+    { cronCmd: { lineNumber: 0, expr: JOB_A } },
+    { cronCmd: { lineNumber: 5, expr: JOB_B } },
+  ],
+};
+
+/** Three lines with no gaps: a command, a variable, a command. */
+const threeLines = {
+  items: [
+    { cronCmd: { lineNumber: 0, expr: JOB_A } },
+    { variable: { lineNumber: 1, key: 'PATH', val: '/usr/local/bin:/usr/bin' } },
+    { cronCmd: { lineNumber: 2, expr: JOB_B } },
+  ],
+};
+
 function json(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 }
@@ -29,6 +47,26 @@ function crontabTrace(seen: Array<{ method: string; body?: unknown }>, listing: 
   return [
     { method: 'GET', path: cronPath, handler: async () => { seen.push({ method: 'GET' }); return json(listing); } },
     { method: 'PATCH', path: cronPath, handler: async (req) => { seen.push({ method: 'PATCH', body: await req.json() }); return new Response(null, { status: 204 }); } },
+  ];
+}
+
+/** Like `crontabTrace`, but the `failOn`th PATCH (1-based) answers 400, so a failure that lands
+ *  after some lines have already been written can be asserted on. 400 is not retryable, so the
+ *  sequence stops exactly there. */
+function crontabTraceFailingAt(seen: Array<{ method: string; body?: unknown }>, failOn: number, listing: unknown = twoLines): Route[] {
+  let patches = 0;
+  return [
+    { method: 'GET', path: cronPath, handler: async () => { seen.push({ method: 'GET' }); return json(listing); } },
+    {
+      method: 'PATCH',
+      path: cronPath,
+      handler: async (req) => {
+        patches += 1;
+        seen.push({ method: 'PATCH', body: await req.json() });
+        if (patches !== failOn) return new Response(null, { status: 204 });
+        return new Response(JSON.stringify({ code: 'invalid_syntax', message: 'panel refused the line' }), { status: 400, headers: { 'content-type': 'application/json' } });
+      },
+    },
   ];
 }
 
@@ -52,6 +90,19 @@ describe('cron_get', () => {
     expect(r.text).toContain('cron commands (0)');
     expect(r.structured).toEqual({ commands: 0, variables: 0, items: [] });
   });
+
+  // The spec declares this GET as 204, and the client returns undefined for a real 204 body.
+  it('renders a 204 (no body) listing as an empty crontab', async () => {
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: cronPath, status: 204 }]);
+    const r = await callTool(byName(tools, 'cron_get'), { website: 'vahi.dev' }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toContain('cron commands (0)');
+    expect(r.structured).toEqual({ commands: 0, variables: 0, items: [] });
+  });
+
+  it('does not claim jobs need the container cron flag to fire', async () => {
+    expect(byName(tools, 'cron_get').description).not.toContain('container_cron_get');
+  });
 });
 
 describe('cron_add', () => {
@@ -67,8 +118,19 @@ describe('cron_add', () => {
     expect(r.isError).toBeUndefined();
     expect(r.text).toContain(websiteLine);
     expect(r.text).toContain('2, 3');
-    expect(r.text).toContain('container_cron_get');
+    // The container cron flag does not gate execution, so the result must not send the human off
+    // to turn it on before the job will fire (verified live 2026-09-06).
+    expect(r.text).not.toContain('container_cron_get');
     expect(r.structured).toEqual({ added: [{ line: 2, expr: JOB_B }, { line: 3, expr: '@daily /usr/bin/backup.sh' }] });
+  });
+
+  it('appends after the highest line number, not after items.length, when the numbering has gaps', async () => {
+    const seen: Array<{ method: string; body?: unknown }> = [];
+    const { ctx } = await makeContext([...base(), ...crontabTrace(seen, gappedLines)]);
+    const r = await callTool(byName(tools, 'cron_add'), { website: 'vahi.dev', jobs: ['@daily /usr/bin/backup.sh'] }, ctx);
+    // items.length is 2 here, and line 2 is inside the file: sending it would replace a job.
+    expect(seen).toEqual([{ method: 'GET' }, { method: 'PATCH', body: { items: [{ cronCmd: { lineNumber: 6, expr: '@daily /usr/bin/backup.sh' } }] } }]);
+    expect(r.structured).toEqual({ added: [{ line: 6, expr: '@daily /usr/bin/backup.sh' }] });
   });
 
   it('appends from line 0 on an empty crontab', async () => {
@@ -88,18 +150,43 @@ describe('cron_add', () => {
     expect(f.calls.some((c) => c.method === 'PATCH')).toBe(false);
   });
 
-  it('says in its description that variables (and MAILTO in particular) are not settable here', async () => {
+  it('rejects an unescaped % and says to write \\% instead', async () => {
+    const { ctx, f } = await makeContext([...base(), ...crontabTrace([])]);
+    // crontab ends the command at a bare %, so `date +%s >> log` silently never wrote the file
+    // (verified live 2026-09-06).
+    await expect(callTool(byName(tools, 'cron_add'), { website: 'vahi.dev', jobs: ['* * * * * /bin/date +%s >> /tmp/x.log'] }, ctx)).rejects.toThrow(/\\%/);
+    expect(f.calls.some((c) => c.method === 'PATCH')).toBe(false);
+    // An escaped % is the documented way to write one, so it must pass.
+    const seen: Array<{ method: string; body?: unknown }> = [];
+    const { ctx: ctx2 } = await makeContext([...base(), ...crontabTrace(seen, { items: [] })]);
+    const r = await callTool(byName(tools, 'cron_add'), { website: 'vahi.dev', jobs: ['* * * * * /bin/date +\\%s >> /tmp/x.log'] }, ctx2);
+    expect(r.isError).toBeUndefined();
+    expect(seen).toHaveLength(2);
+  });
+
+  it('reports how many lines were already added when a later PATCH fails', async () => {
+    const seen: Array<{ method: string; body?: unknown }> = [];
+    const { ctx } = await makeContext([...base(), ...crontabTraceFailingAt(seen, 2)]);
+    await expect(callTool(byName(tools, 'cron_add'), { website: 'vahi.dev', jobs: [JOB_B, '@daily /usr/bin/backup.sh'] }, ctx)).rejects.toThrow(/added 1 of 2 lines before line 3 failed/);
+    // It stops at the failure rather than carrying on with the rest.
+    expect(seen.filter((s) => s.method === 'PATCH')).toHaveLength(2);
+  });
+
+  it('says in its description that variables (and MAILTO in particular) are not settable here, and that the read-then-append is not atomic', async () => {
     const d = byName(tools, 'cron_add').description;
     expect(d).toContain('MAILTO');
+    expect(d).toMatch(/not atomic/i);
+    expect(d).not.toContain('container_cron_get');
   });
 });
 
 describe('cron_remove', () => {
   it('removes the highest line first, one request per line, so renumbering cannot shift a target', async () => {
     const seen: Array<{ method: string; body?: unknown }> = [];
-    const { ctx } = await makeContext([...base(), ...crontabTrace(seen)]);
+    const { ctx } = await makeContext([...base(), ...crontabTrace(seen, threeLines)]);
     const r = await callTool(byName(tools, 'cron_remove'), { website: 'vahi.dev', line_numbers: [0, 2] }, ctx);
     expect(seen).toEqual([
+      { method: 'GET' },
       { method: 'PATCH', body: { items: [{ cronCmd: { lineNumber: 2 } }] } },
       { method: 'PATCH', body: { items: [{ cronCmd: { lineNumber: 0 } }] } },
     ]);
@@ -112,13 +199,49 @@ describe('cron_remove', () => {
 
   it('sends one request per distinct line number', async () => {
     const seen: Array<{ method: string; body?: unknown }> = [];
-    const { ctx } = await makeContext([...base(), ...crontabTrace(seen)]);
-    const r = await callTool(byName(tools, 'cron_remove'), { website: 'vahi.dev', line_numbers: [1, 4, 1] }, ctx);
+    const { ctx } = await makeContext([...base(), ...crontabTrace(seen, gappedLines)]);
+    const r = await callTool(byName(tools, 'cron_remove'), { website: 'vahi.dev', line_numbers: [0, 5, 0] }, ctx);
     expect(seen).toEqual([
-      { method: 'PATCH', body: { items: [{ cronCmd: { lineNumber: 4 } }] } },
-      { method: 'PATCH', body: { items: [{ cronCmd: { lineNumber: 1 } }] } },
+      { method: 'GET' },
+      { method: 'PATCH', body: { items: [{ cronCmd: { lineNumber: 5 } }] } },
+      { method: 'PATCH', body: { items: [{ cronCmd: { lineNumber: 0 } }] } },
     ]);
-    expect(r.structured).toEqual({ removed: [4, 1] });
+    expect(r.structured).toEqual({ removed: [5, 0] });
+  });
+
+  it('removes a variable line with the variable shape the listing showed for it', async () => {
+    const seen: Array<{ method: string; body?: unknown }> = [];
+    const { ctx } = await makeContext([...base(), ...crontabTrace(seen)]);
+    const r = await callTool(byName(tools, 'cron_remove'), { website: 'vahi.dev', line_numbers: [1] }, ctx);
+    expect(seen).toEqual([{ method: 'GET' }, { method: 'PATCH', body: { items: [{ variable: { lineNumber: 1 } }] } }]);
+    expect(r.isError).toBeUndefined();
+    expect(r.structured).toEqual({ removed: [1] });
+  });
+
+  it('refuses a line number the crontab does not have, and sends no PATCH', async () => {
+    const seen: Array<{ method: string; body?: unknown }> = [];
+    const { ctx } = await makeContext([...base(), ...crontabTrace(seen)]);
+    // An out-of-range line number is an append on this endpoint, not a no-op, so a typo would
+    // add a line instead of removing one.
+    const r = await callTool(byName(tools, 'cron_remove'), { website: 'vahi.dev', line_numbers: [1, 7] }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('no such cron line(s): 7');
+    expect(r.text).toContain('has line(s) 0, 1');
+    // The identity block still leads, so the human sees which site was left alone.
+    expect(r.text.indexOf(websiteLine)).toBeLessThan(r.text.indexOf('no such cron line'));
+    expect(r.structured).toEqual({ removed: [], unknown: [7], available: [0, 1] });
+    expect(seen).toEqual([{ method: 'GET' }]);
+  });
+
+  it('reports how many lines were already removed when a later PATCH fails', async () => {
+    const seen: Array<{ method: string; body?: unknown }> = [];
+    const { ctx } = await makeContext([...base(), ...crontabTraceFailingAt(seen, 2, threeLines)]);
+    await expect(callTool(byName(tools, 'cron_remove'), { website: 'vahi.dev', line_numbers: [0, 2] }, ctx)).rejects.toThrow(/removed 1 of 2 lines before line 0 failed/);
+    expect(seen.filter((s) => s.method === 'PATCH')).toHaveLength(2);
+  });
+
+  it('says in its description that variables can be removed too', async () => {
+    expect(byName(tools, 'cron_remove').description).toMatch(/variable/i);
   });
 
   it('rejects an empty list and a negative line number before anything is sent', async () => {
@@ -199,6 +322,28 @@ describe('container_cron_get', () => {
       expect(r.structured).toEqual({ enabled });
     }
   });
+
+  // The spec declares 204 for some of these container settings; an empty body must not read as on.
+  it('reports a 204 (no body) as off, cleanly', async () => {
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: containerPath, status: 204 }]);
+    const r = await callTool(byName(tools, 'container_cron_get'), { website: 'vahi.dev' }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toContain(websiteLine);
+    expect(r.text).toContain('container cron: off');
+    expect(r.structured).toEqual({ enabled: false });
+  });
+
+  it('describes the flag as crontab access from inside the container, not a job switch', async () => {
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: containerPath, body: false }]);
+    const r = await callTool(byName(tools, 'container_cron_get'), { website: 'vahi.dev' }, ctx);
+    // Verified live 2026-09-06: with the flag off, a panel-managed job still fired on schedule,
+    // while `crontab -l` inside the container answered "Command unavailable".
+    expect(r.text).toMatch(/crontab -l/);
+    expect(r.text).toMatch(/run either way|regardless/i);
+    const d = byName(tools, 'container_cron_get').description;
+    expect(d).toMatch(/crontab -l/);
+    expect(d).not.toMatch(/nothing fires/i);
+  });
 });
 
 describe('container_cron_set', () => {
@@ -226,6 +371,13 @@ describe('container_cron_set', () => {
       expect(r.text).toContain(enabled ? 'turned on' : 'turned off');
       expect(r.structured).toEqual({ enabled });
     }
+  });
+
+  it('says what the flag actually does: crontab access inside the container, not job execution', async () => {
+    const d = byName(tools, 'container_cron_set').description;
+    expect(d).toMatch(/crontab -l/);
+    expect(d).toMatch(/run either way|regardless/i);
+    expect(d).not.toMatch(/has to be on/i);
   });
 });
 
