@@ -1,14 +1,16 @@
+import { randomBytes } from 'node:crypto';
 import { defaultPathSerializer, type PathSerializer } from 'openapi-fetch';
 import * as z from 'zod/v4';
 import { parseScalarText } from '../client/client.js';
 import type { ToolContext } from '../core/context.js';
 import { identityBlock, websiteHome } from '../core/identity.js';
 import { defineTool, type Target, type ToolDef } from '../core/registry.js';
-import { kv, ok, safe, table } from '../core/respond.js';
+import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
-import { resolveDbName, siteWebsite, siteWebsiteById, unixUserOf, websiteArg } from './dbcommon.js';
+import { MYSQL_GRANTS, resolveDbName, resolveDbUser, siteWebsite, siteWebsiteById, unixUserOf, websiteArg } from './dbcommon.js';
 
 const nameArg = z.string().min(1).describe('Database name (short, or the full <unixUser>_ prefixed form)');
+const userArg = z.string().min(1).describe('Database user name (short, or the full <unixUser>_ prefixed form)');
 
 export interface DbSite {
   org: string;
@@ -34,17 +36,17 @@ export async function dbSite(ctx: ToolContext, website: string): Promise<DbSiteW
 
 /**
  * Convention 12: a destructive `preview()`/`handler()` acts on the target it was handed. The
- * target id is `<websiteId>:<full db name>`, so split it and re-read that website by id rather
- * than resolving the user's `website` string again — otherwise the preview the human confirmed
- * and the drop that follows could land on different sites.
+ * target id is `<websiteId>:<full db or user name>`, so split it and re-read that website by id
+ * rather than resolving the user's `website` string again — otherwise the preview the human
+ * confirmed and the drop that follows could land on different sites.
  */
-export async function dbTargetSite(ctx: ToolContext, target: Target): Promise<{ site: DbSite; database: string }> {
+export async function dbTargetSite(ctx: ToolContext, target: Target): Promise<{ site: DbSite; name: string }> {
   const cut = target.id.indexOf(':');
   if (cut <= 0) throw new Error(`malformed database target "${safe(target.id)}"`);
   const { org, w } = await siteWebsiteById(ctx, target.id.slice(0, cut));
-  // No unix user is looked up here: the database name is already the full prefixed one carried
-  // by `target.id`, so only the create/user-facing paths need the prefix.
-  return { site: siteOf(ctx, org, w), database: target.id.slice(cut + 1) };
+  // No unix user is looked up here: the name is already the full prefixed one carried by
+  // `target.id`, so only the create/user-facing paths need the prefix.
+  return { site: siteOf(ctx, org, w), name: target.id.slice(cut + 1) };
 }
 
 /**
@@ -119,12 +121,12 @@ export const dbDelete = defineTool({
     return { kind: 'mysql_db', id: `${s.id}:${full}`, name: full };
   },
   async preview(_args, ctx, target) {
-    const { site, database } = await dbTargetSite(ctx, target);
+    const { site, name: database } = await dbTargetSite(ctx, target);
     // The identity block leads so the human confirming sees which site the database belongs to.
     return `${site.identity}\nThis will permanently drop MySQL database ${safe(database)}. Every table and row is destroyed and cannot be restored from the panel. Export first with db_export_sql if you need a backup.`;
   },
   async handler(_args, ctx, target) {
-    const { site, database } = await dbTargetSite(ctx, target!);
+    const { site, name: database } = await dbTargetSite(ctx, target!);
     await ctx.client.call('DELETE', '/orgs/{org_id}/websites/{website_id}/mysql-dbs/{db_name}', () =>
       ctx.client.api.DELETE('/orgs/{org_id}/websites/{website_id}/mysql-dbs/{db_name}', { params: { path: { org_id: site.org, website_id: site.id, db_name: database } } }),
     );
@@ -154,9 +156,17 @@ export const dbExportSql = defineTool({
       ctx.client.api.GET('/orgs/{org_id}/websites/{website_id}/mysql-dbs/{db_name}/sql', { params: { path: { org_id: s.org, website_id: s.id, db_name: full } }, parseAs: 'text' }),
     );
     const file = parseScalarText(raw);
+    // `parseScalarText` answers "unknown" for a body that is not a string and "" for an empty one.
+    // Either way the panel named no backup, and `<home>/unknown` would send the caller after a
+    // file that does not exist, so say so instead of rendering a path.
+    if (file === '' || file === 'unknown') {
+      return fail(`${s.identity}\nthe panel did not return a backup filename for ${safe(full)}, so there is no path to fetch. Nothing was downloaded; retry, or take the dump over SSH with mysqldump.`, { database: full });
+    }
     const path = `${websiteHome(w)}/${file}`;
     const host = (w.serverIps?.find((ip) => ip.isPrimary) ?? w.serverIps?.[0])?.ip;
-    const scpCommand = host ? `scp -P 22 ${unixUser}@${host}:${path} .` : undefined;
+    // The panel's filenames carry a colon (`..._06-09-2026_01:29.sql.gz`), so the remote path is
+    // single-quoted: unquoted, a colon or a space would split the argument in the user's shell.
+    const scpCommand = host ? `scp -P 22 ${unixUser}@${host}:'${path}' .` : undefined;
     const text = [
       s.identity,
       `gzipped SQL backup of ${safe(full)} written on the server, in the website's home directory (mode 0600, outside the docroot).`,
@@ -188,11 +198,11 @@ export const dbImportSql = defineTool({
     return { kind: 'mysql_db', id: `${s.id}:${full}`, name: full };
   },
   async preview({ sql }, ctx, target) {
-    const { site, database } = await dbTargetSite(ctx, target);
+    const { site, name: database } = await dbTargetSite(ctx, target);
     return `${site.identity}\nThis will run ${Buffer.byteLength(sql)} bytes of SQL against MySQL database ${safe(database)}. Statements such as DROP TABLE and TRUNCATE destroy data and cannot be undone from the panel. Export first with db_export_sql.`;
   },
   async handler({ sql, force }, ctx, target) {
-    const { site, database } = await dbTargetSite(ctx, target!);
+    const { site, name: database } = await dbTargetSite(ctx, target!);
     const bytes = Buffer.byteLength(sql);
     await ctx.client.call('POST', '/v2/websites/{websiteId}/mysql/{db_id}/sql', () =>
       ctx.client.api.POST('/v2/websites/{websiteId}/mysql/{db_id}/sql', {
@@ -237,7 +247,152 @@ export const dbPhpmyadminUrl = defineTool({
   },
 });
 
-/** Task 3 appends the MySQL user tools; `tools` is what `src/tools/index.ts` registers. */
-export const mysqlDatabaseTools: ToolDef[] = [dbList, dbCreate, dbDelete, dbExportSql, dbImportSql, dbPhpmyadminUrl];
+/**
+ * A password strong enough for a database login the human never types: 18 random bytes (144 bits)
+ * as base64 with the non-alphanumeric characters dropped, wrapped in a fixed upper/lower/digit/
+ * symbol frame so it always satisfies a MySQL password policy. At least 20 characters.
+ */
+function generatePassword(): string {
+  const body = randomBytes(18).toString('base64').replace(/[+/=]/g, '');
+  return `Db${body}9!`;
+}
 
-export const tools: ToolDef[] = [...mysqlDatabaseTools];
+export const dbUsersList = defineTool({
+  name: 'db_users_list',
+  tier: 'customer',
+  risk: 'read',
+  description: 'Lists MySQL users for a website, with the hosts each may connect from and the databases they can access.',
+  input: z.object({ website: websiteArg }),
+  async handler({ website }, ctx) {
+    const s = await dbSite(ctx, website);
+    const res = await ctx.client.call('GET', '/orgs/{org_id}/websites/{website_id}/mysql-users', () =>
+      ctx.client.api.GET('/orgs/{org_id}/websites/{website_id}/mysql-users', { params: { path: { org_id: s.org, website_id: s.id } } }),
+    );
+    const rows = (res.items ?? []).map((u) => ({
+      user: u.username,
+      'access hosts': (u.accessHosts ?? []).join(', ') || 'none',
+      databases: Object.keys(u.grants ?? {}).join(', ') || 'none',
+      auth: u.authPlugin,
+    }));
+    return ok([s.identity, `users (${rows.length}):`, table(rows, ['user', 'access hosts', 'databases', 'auth'])].join('\n'), { total: rows.length, items: rows });
+  },
+});
+
+export const dbUserCreate = defineTool({
+  name: 'db_user_create',
+  tier: 'customer',
+  risk: 'write',
+  description: 'Creates a MySQL user. The panel prefixes the name with the unix user. When no password is given a strong one is generated and returned once, in structuredContent. Apps connect with host "localhost".',
+  input: z.object({ website: websiteArg, username: userArg, password: z.string().min(8).optional().describe('Optional; a strong password is generated when omitted') }),
+  async handler({ website, username, password }, ctx) {
+    const s = await dbSite(ctx, website);
+    const full = resolveDbUser(s.unixUser, username);
+    // As with databases, the panel adds the prefix itself: send the short form (see dbCreate).
+    const short = full.slice(s.unixUser.length + 1);
+    const pw = password ?? generatePassword();
+    await ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/mysql-users', () =>
+      ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/mysql-users', { params: { path: { org_id: s.org, website_id: s.id } }, body: { username: short, password: pw } }),
+    );
+    ctx.resolver.invalidate();
+    return ok(
+      [
+        s.identity,
+        `MySQL user ${safe(full)} created.`,
+        kv([
+          ['password', 'shown once, in structuredContent.password; store it now'],
+          ['connect from PHP', 'host DB_HOST=localhost'],
+          ['next', `db_user_set_privileges website=${safe(website)} username=${safe(short)} database=<db> grants=all`],
+        ]),
+      ].join('\n'),
+      { user: full, password: pw },
+    );
+  },
+});
+
+export const dbUserUpdate = defineTool({
+  name: 'db_user_update',
+  tier: 'customer',
+  risk: 'write',
+  description: "Sets a MySQL user's password. Every application using the old password stops connecting until it is updated. The new password is returned once, in structuredContent.",
+  input: z.object({ website: websiteArg, username: userArg, password: z.string().min(8) }),
+  async handler({ website, username, password }, ctx) {
+    const s = await dbSite(ctx, website);
+    const full = resolveDbUser(s.unixUser, username);
+    await ctx.client.call('PUT', '/orgs/{org_id}/websites/{website_id}/mysql-users/{username}', () =>
+      ctx.client.api.PUT('/orgs/{org_id}/websites/{website_id}/mysql-users/{username}', { params: { path: { org_id: s.org, website_id: s.id, username: full } }, body: { password } }),
+    );
+    return ok(`${s.identity}\npassword for ${safe(full)} updated (shown once in structuredContent.password).`, { user: full, password });
+  },
+});
+
+export const dbUserDelete = defineTool({
+  name: 'db_user_delete',
+  tier: 'customer',
+  risk: 'destructive',
+  description: 'DESTRUCTIVE. Deletes a MySQL user. Any app using this login stops working. Requires the user to confirm by typing the full user name.',
+  input: z.object({ website: websiteArg, username: userArg }),
+  async target({ website, username }, ctx) {
+    const s = await dbSite(ctx, website);
+    const full = resolveDbUser(s.unixUser, username);
+    return { kind: 'mysql_user', id: `${s.id}:${full}`, name: full };
+  },
+  async preview(_args, ctx, target) {
+    const { site, name: user } = await dbTargetSite(ctx, target);
+    // The identity block leads so the human confirming sees which site the login belongs to.
+    return `${site.identity}\nThis will delete MySQL user ${safe(user)}. Any application or connection string using this login will fail immediately. The databases themselves are not touched.`;
+  },
+  async handler(_args, ctx, target) {
+    const { site, name: user } = await dbTargetSite(ctx, target!);
+    await ctx.client.call('DELETE', '/orgs/{org_id}/websites/{website_id}/mysql-users/{username}', () =>
+      ctx.client.api.DELETE('/orgs/{org_id}/websites/{website_id}/mysql-users/{username}', { params: { path: { org_id: site.org, website_id: site.id, username: user } } }),
+    );
+    return ok(`${site.identity}\nMySQL user ${safe(user)} deleted.`, { user, deleted: true });
+  },
+});
+
+export const dbUserSetPrivileges = defineTool({
+  name: 'db_user_set_privileges',
+  tier: 'customer',
+  risk: 'write',
+  description:
+    "Sets a MySQL user's privileges on one database, replacing whatever grants that user had on it. Grants come from the panel's fixed lowercase set (all, select, insert, update, delete, create, drop, alter, index, references, ...), not SQL text; use ['all'] for a typical app user.",
+  input: z.object({ website: websiteArg, username: userArg, database: nameArg, grants: z.array(z.enum(MYSQL_GRANTS)).min(1) }),
+  async handler({ website, username, database, grants }, ctx) {
+    const s = await dbSite(ctx, website);
+    const user = resolveDbUser(s.unixUser, username);
+    const db = resolveDbName(s.unixUser, database);
+    await ctx.client.call('PUT', '/orgs/{org_id}/websites/{website_id}/mysql-users/{username}/privileges', () =>
+      ctx.client.api.PUT('/orgs/{org_id}/websites/{website_id}/mysql-users/{username}/privileges', {
+        params: { path: { org_id: s.org, website_id: s.id, username: user } },
+        body: { dbName: db, grants },
+      }),
+    );
+    return ok(`${s.identity}\n${safe(user)} now has [${grants.map(safe).join(', ')}] on ${safe(db)}.`, { user, database: db, grants });
+  },
+});
+
+export const dbUserAccessHostsSet = defineTool({
+  name: 'db_user_access_hosts_set',
+  tier: 'customer',
+  risk: 'write',
+  description:
+    "Adds hosts a MySQL user may connect from. The panel's endpoint adds the hosts given rather than replacing the list, so read the result back with db_users_list. A new user already has the app tier's host, which is what a PHP app on this website connects from; only add a host when the user connects from somewhere else.",
+  input: z.object({ website: websiteArg, username: userArg, hosts: z.array(z.string().min(1)).min(1).describe('Host names or IPs the user may connect from') }),
+  async handler({ website, username, hosts }, ctx) {
+    const s = await dbSite(ctx, website);
+    const user = resolveDbUser(s.unixUser, username);
+    await ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/mysql-users/{username}/access-hosts', () =>
+      ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/mysql-users/{username}/access-hosts', {
+        params: { path: { org_id: s.org, website_id: s.id, username: user } },
+        body: { accessHosts: hosts },
+      }),
+    );
+    return ok(`${s.identity}\naccess hosts [${hosts.map(safe).join(', ')}] added for ${safe(user)}; db_users_list shows the full list.`, { user, accessHosts: hosts });
+  },
+});
+
+export const mysqlDatabaseTools: ToolDef[] = [dbList, dbCreate, dbDelete, dbExportSql, dbImportSql, dbPhpmyadminUrl];
+export const mysqlUserTools: ToolDef[] = [dbUsersList, dbUserCreate, dbUserUpdate, dbUserDelete, dbUserSetPrivileges, dbUserAccessHostsSet];
+
+/** What `src/tools/index.ts` registers (Task 8). */
+export const tools: ToolDef[] = [...mysqlDatabaseTools, ...mysqlUserTools];

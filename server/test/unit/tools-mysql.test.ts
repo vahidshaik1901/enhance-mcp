@@ -37,6 +37,14 @@ function movingTargetRoutes(seen: string[]): Route[] {
       },
     },
     {
+      method: 'DELETE',
+      path: new RegExp(`^/orgs/${ORG_ID}/websites/[^/]+/mysql-users/`),
+      handler: async (_req, url) => {
+        seen.push(url.pathname.replace(/^\/api/, ''));
+        return new Response(null, { status: 204 });
+      },
+    },
+    {
       method: 'POST',
       path: new RegExp('^/v2/websites/[^/]+/mysql/[^/]+/sql$'),
       handler: async (_req, url) => {
@@ -134,7 +142,9 @@ describe('db_delete', () => {
 describe('db_export_sql', () => {
   // Verified live 2026-09-06: the endpoint answers with the backup's *filename* as a JSON
   // string, not with the SQL. The panel writes the gzipped dump into the website's home.
-  const FILE = 'sql_backup_x.sql.gz';
+  // The live filename carries a colon (`..._06-09-2026_01:29.sql.gz`), so the path must be quoted
+  // in the scp line the caller is told to run.
+  const FILE = 'sql_backup_vahi_dev1_demo_06-09-2026_01:29.sql.gz';
   const SERVER_PATH = `/var/www/${WEBSITE_ID}/${FILE}`;
   const exportRoute: Route = {
     method: 'GET',
@@ -150,13 +160,26 @@ describe('db_export_sql', () => {
     // Nothing of the dump itself comes back: the body was never the SQL.
     expect(r.structured).not.toHaveProperty('sql');
     const scp = (r.structured as { scpCommand: string }).scpCommand;
-    expect(scp).toContain(`vahi_dev1@${SERVER_IP}`);
-    expect(scp).toContain(SERVER_PATH);
+    // The remote path is single-quoted so a filename with a colon or a space survives the shell.
+    expect(scp).toBe(`scp -P 22 vahi_dev1@${SERVER_IP}:'${SERVER_PATH}' .`);
     expect(r.text).toContain(websiteLine);
     expect(r.text).toContain(SERVER_PATH);
     expect(r.text).toContain('scp');
     // The Bash sandbox cannot open SSH connections, so the caller has to be told.
     expect(r.text).toContain('sandbox');
+  });
+
+  it('fails rather than rendering a path when the panel returns no filename', async () => {
+    // An empty JSON string, and a 200 with no body at all: parseScalarText answers '' and
+    // 'unknown' respectively, and neither names a file.
+    for (const empty of [() => new Response('""', { status: 200, headers: { 'content-type': 'application/json' } }), () => new Response(null, { status: 200 })]) {
+      const { ctx } = await makeContext([...base(), { method: 'GET', path: `${dbsPath}/${MYSQL_DB}/sql`, handler: async () => empty() }]);
+      const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo' }, ctx);
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('did not return a backup filename');
+      expect(r.text).not.toContain(`/var/www/${WEBSITE_ID}/unknown`);
+      expect(r.structured).not.toHaveProperty('path');
+    }
   });
 
   it('is a write tool, because it creates a file on the server', () => {
@@ -269,5 +292,177 @@ describe('databases need a unix user', () => {
       { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: noUnixUser },
     ]);
     await expect(callTool(byName(tools, 'db_list'), { website: 'vahi.dev' }, ctx)).rejects.toThrow(/no unix user/);
+  });
+});
+
+const usersPath = `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/mysql-users`;
+const MYSQL_USER = 'vahi_dev1_app';
+/** The shape a live panel returned (docs/research.md, live probe 2026-09-05). */
+const mysqlUser = { username: MYSQL_USER, accessHosts: ['10.169.0.1'], authPlugin: 'mysql_native_password', grants: { [MYSQL_DB]: ['all'] }, createdAt: '2026-09-05T15:00:35.000099999Z', isEphemeral: false };
+const mysqlUsers = { items: [mysqlUser] };
+
+/** Captures the JSON body of the single write the test makes. */
+function captureBody(route: Omit<Route, 'handler'>, status: number, sink: { body?: unknown; path?: string }): Route {
+  return {
+    ...route,
+    handler: async (req, url) => {
+      sink.body = await req.json();
+      sink.path = url.pathname.replace(/^\/api/, '');
+      return new Response(null, { status });
+    },
+  };
+}
+
+describe('db_users_list', () => {
+  it('lists users with their access hosts and the databases they can reach', async () => {
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: usersPath, body: mysqlUsers }]);
+    const r = await callTool(byName(tools, 'db_users_list'), { website: 'vahi.dev' }, ctx);
+    expect(r.text).toContain(websiteLine);
+    expect(r.text).toContain(MYSQL_USER);
+    expect(r.text).toContain('10.169.0.1');
+    expect(r.text).toContain(MYSQL_DB);
+    expect(r.text).toContain('access hosts');
+    expect(r.structured).toMatchObject({ total: 1, items: [{ user: MYSQL_USER, 'access hosts': '10.169.0.1', databases: MYSQL_DB, auth: 'mysql_native_password' }] });
+  });
+
+  it('says "none" for a user with no access hosts and no databases', async () => {
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: usersPath, body: { items: [{ ...mysqlUser, accessHosts: [], grants: {} }] } }]);
+    const r = await callTool(byName(tools, 'db_users_list'), { website: 'vahi.dev' }, ctx);
+    expect(r.structured).toMatchObject({ total: 1, items: [{ user: MYSQL_USER, 'access hosts': 'none', databases: 'none' }] });
+  });
+});
+
+describe('db_user_create', () => {
+  it('generates a password when none is given and shows it once', async () => {
+    const sink: { body?: unknown } = {};
+    const { ctx } = await makeContext([...base(), captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
+    const r = await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app' }, ctx);
+    const body = sink.body as { username: string; password: string };
+    // The panel adds the `<unixUser>_` prefix itself, so only the short name goes over the wire.
+    expect(body.username).toBe('app');
+    expect(body.password.length).toBeGreaterThanOrEqual(20);
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, password: body.password });
+    expect(r.text).toContain('DB_HOST=localhost');
+    expect(r.text).toContain('shown once');
+    // The password itself belongs in structuredContent only, like the phpMyAdmin sign-on URL.
+    expect(r.text).not.toContain(body.password);
+  });
+
+  it('generates a different password every time', async () => {
+    const seen: string[] = [];
+    const { ctx } = await makeContext([
+      ...base(),
+      { method: 'POST', path: usersPath, handler: async (req) => { seen.push(((await req.json()) as { password: string }).password); return new Response(null, { status: 201 }); } },
+    ]);
+    await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app' }, ctx);
+    await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'other' }, ctx);
+    expect(seen[0]).not.toBe(seen[1]);
+    expect(seen[0]!.length).toBeGreaterThanOrEqual(20);
+    expect(seen[1]!.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it('sends the password the user supplied and keeps it out of the rendered text', async () => {
+    const sink: { body?: unknown } = {};
+    const { ctx } = await makeContext([...base(), captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
+    const r = await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app', password: 'sup3r-secret-pw' }, ctx);
+    expect(sink.body).toEqual({ username: 'app', password: 'sup3r-secret-pw' });
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, password: 'sup3r-secret-pw' });
+    expect(r.text).not.toContain('sup3r-secret-pw');
+  });
+
+  it('strips the prefix the user typed rather than sending it twice', async () => {
+    const sink: { body?: unknown } = {};
+    const { ctx } = await makeContext([...base(), captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
+    const r = await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: MYSQL_USER, password: 'sup3r-secret-pw' }, ctx);
+    expect(sink.body).toMatchObject({ username: 'app' });
+    expect(r.structured).toMatchObject({ user: MYSQL_USER });
+  });
+});
+
+describe('db_user_update', () => {
+  it('sets the password by the full user name and keeps it out of the rendered text', async () => {
+    const sink: { body?: unknown; path?: string } = {};
+    const { ctx } = await makeContext([...base(), captureBody({ method: 'PUT', path: new RegExp(`^${usersPath}/[^/]+$`) }, 200, sink)]);
+    const r = await callTool(byName(tools, 'db_user_update'), { website: 'vahi.dev', username: 'app', password: 'n3w-secret-pw' }, ctx);
+    expect(sink.path).toBe(`${usersPath}/${MYSQL_USER}`);
+    expect(sink.body).toEqual({ password: 'n3w-secret-pw' });
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, password: 'n3w-secret-pw' });
+    expect(r.text).toContain(websiteLine);
+    expect(r.text).not.toContain('n3w-secret-pw');
+  });
+});
+
+describe('db_user_set_privileges', () => {
+  it('sends the lowercase grant enum with the full db name', async () => {
+    const sink: { body?: unknown; path?: string } = {};
+    const { ctx } = await makeContext([...base(), captureBody({ method: 'PUT', path: new RegExp(`^${usersPath}/[^/]+/privileges$`) }, 201, sink)]);
+    const r = await callTool(byName(tools, 'db_user_set_privileges'), { website: 'vahi.dev', username: 'app', database: 'demo', grants: ['all'] }, ctx);
+    expect(sink.path).toBe(`${usersPath}/${MYSQL_USER}/privileges`);
+    expect(sink.body).toMatchObject({ dbName: MYSQL_DB, grants: ['all'] });
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, database: MYSQL_DB, grants: ['all'] });
+  });
+
+  it('rejects a grant outside the enum before calling the panel', async () => {
+    const { ctx, f } = await makeContext([...base()]);
+    await expect(callTool(byName(tools, 'db_user_set_privileges'), { website: 'vahi.dev', username: 'app', database: 'demo', grants: ['ALL PRIVILEGES'] }, ctx)).rejects.toThrow();
+    expect(f.calls.some((c) => c.path.includes('/privileges'))).toBe(false);
+  });
+
+  it('rejects an empty grant list', async () => {
+    const { ctx, f } = await makeContext([...base()]);
+    await expect(callTool(byName(tools, 'db_user_set_privileges'), { website: 'vahi.dev', username: 'app', database: 'demo', grants: [] }, ctx)).rejects.toThrow();
+    expect(f.calls.some((c) => c.path.includes('/privileges'))).toBe(false);
+  });
+});
+
+describe('db_user_access_hosts_set', () => {
+  it('posts the hosts for the full user name', async () => {
+    const sink: { body?: unknown; path?: string } = {};
+    const { ctx } = await makeContext([...base(), captureBody({ method: 'POST', path: new RegExp(`^${usersPath}/[^/]+/access-hosts$`) }, 200, sink)]);
+    const r = await callTool(byName(tools, 'db_user_access_hosts_set'), { website: 'vahi.dev', username: 'app', hosts: ['10.169.0.1', '203.0.113.7'] }, ctx);
+    expect(sink.path).toBe(`${usersPath}/${MYSQL_USER}/access-hosts`);
+    expect(sink.body).toEqual({ accessHosts: ['10.169.0.1', '203.0.113.7'] });
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, accessHosts: ['10.169.0.1', '203.0.113.7'] });
+    expect(r.text).toContain('203.0.113.7');
+    expect(r.text).toContain(websiteLine);
+  });
+});
+
+describe('db_user_delete', () => {
+  it('is destructive and deletes by the full user name', async () => {
+    let deleted: string | undefined;
+    const { ctx } = await makeContext([
+      ...base(),
+      { method: 'DELETE', path: new RegExp(`^${usersPath}/[^/]+$`), handler: async (_req, url) => { deleted = decodeURIComponent(url.pathname.split('/').pop()!); return new Response(null, { status: 204 }); } },
+    ]);
+    const del = byName(tools, 'db_user_delete');
+    const args = del.input.parse({ website: 'vahi.dev', username: 'app' });
+    const target = await del.target!(args, ctx);
+    expect(target).toMatchObject({ kind: 'mysql_user', id: `${WEBSITE_ID}:${MYSQL_USER}`, name: MYSQL_USER });
+    const preview = await del.preview!(args, ctx, target);
+    expect(preview).toContain(MYSQL_USER);
+    expect(preview).toContain(`org: Shaik Vahid (${ORG_ID})`);
+    expect(preview).toContain(websiteLine);
+    // The identity block leads, then the warning.
+    expect(preview.indexOf(websiteLine)).toBeLessThan(preview.indexOf('delete MySQL user'));
+    const r = await del.handler(args, ctx, target);
+    expect(deleted).toBe(MYSQL_USER);
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, deleted: true });
+  });
+
+  it('acts on the website the target named, even if the domain now resolves elsewhere', async () => {
+    const seen: string[] = [];
+    const { ctx } = await makeContext(movingTargetRoutes(seen));
+    const del = byName(tools, 'db_user_delete');
+    const args = del.input.parse({ website: 'vahi.dev', username: 'app' });
+    const target = await del.target!(args, ctx);
+    expect(target.id).toBe(`${WEBSITE_ID}:${MYSQL_USER}`);
+    // The panel changed under us: a different website (with a different unix user) now answers.
+    ctx.resolver.invalidate();
+    const preview = await del.preview!(args, ctx, target);
+    expect(preview).toContain(WEBSITE_ID);
+    expect(preview).not.toContain(OTHER_WEBSITE_ID);
+    await del.handler(args, ctx, target);
+    expect(seen).toEqual([`${usersPath}/${MYSQL_USER}`]);
   });
 });
