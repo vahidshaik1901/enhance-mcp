@@ -88,8 +88,8 @@ export const phpExtensionDisable = defineTool({
   },
 });
 
-export const phpSettingsGet = defineTool({
-  name: 'php_settings_get',
+export const phpWorkersGet = defineTool({
+  name: 'php_workers_get',
   tier: 'customer',
   risk: 'read',
   description: 'Shows the tunable PHP (LSPHP) settings for a website. At the customer tier this is the number of LSAPI child processes; arbitrary php.ini directives are not editable here.',
@@ -103,8 +103,8 @@ export const phpSettingsGet = defineTool({
   },
 });
 
-export const phpSettingsSet = defineTool({
-  name: 'php_settings_set',
+export const phpWorkersSet = defineTool({
+  name: 'php_workers_set',
   tier: 'customer',
   risk: 'write',
   description: 'Sets the number of LSPHP (LSAPI) child processes for a website. Raising it allows more concurrent PHP requests at the cost of memory.',
@@ -196,4 +196,4 @@ export const cacheClear = defineTool({
   },
 });
 
-export const tools: ToolDef[] = [phpExtensionsList, phpExtensionEnable, phpExtensionDisable, phpSettingsGet, phpSettingsSet, phpErrorLog, redisStateGet, redisStateSet, cacheClear];
+export const tools: ToolDef[] = [phpExtensionsList, phpExtensionEnable, phpExtensionDisable, phpWorkersGet, phpWorkersSet, phpErrorLog, redisStateGet, redisStateSet, cacheClear];

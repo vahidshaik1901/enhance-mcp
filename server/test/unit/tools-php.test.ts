@@ -76,20 +76,20 @@ describe('php_extension_disable', () => {
   });
 });
 
-describe('php_settings_get', () => {
+describe('php_workers_get', () => {
   it('shows the LSAPI child process count', async () => {
     const { ctx } = await makeContext([...base(), { method: 'GET', path: `/websites/${WEBSITE_ID}/lsphp_settings`, body: { lsapiChildren: 10 } }]);
-    const r = await callTool(byName(tools, 'php_settings_get'), { website: 'vahi.dev' }, ctx);
+    const r = await callTool(byName(tools, 'php_workers_get'), { website: 'vahi.dev' }, ctx);
     expect(r.text).toContain('LSAPI children: 10');
     expect(r.structured).toMatchObject({ lsapiChildren: 10 });
   });
 });
 
-describe('php_settings_set', () => {
+describe('php_workers_set', () => {
   it('puts the new child count', async () => {
     const sink: { raw?: string; path?: string } = {};
     const { ctx } = await makeContext([...base(), captureRaw({ method: 'PUT', path: `/websites/${WEBSITE_ID}/lsphp_settings` }, sink)]);
-    const r = await callTool(byName(tools, 'php_settings_set'), { website: 'vahi.dev', lsapi_children: 25 }, ctx);
+    const r = await callTool(byName(tools, 'php_workers_set'), { website: 'vahi.dev', lsapi_children: 25 }, ctx);
     expect(sink.raw).toBe('{"lsapiChildren":25}');
     expect(r.structured).toMatchObject({ lsapiChildren: 25 });
     expect(r.text).toContain('LSAPI children set to 25');
@@ -98,7 +98,7 @@ describe('php_settings_set', () => {
   it('rejects a child count outside the allowed range before any request', async () => {
     const { ctx, f } = await makeContext([...base()]);
     const before = f.calls.length;
-    await expect(callTool(byName(tools, 'php_settings_set'), { website: 'vahi.dev', lsapi_children: 0 }, ctx)).rejects.toThrow();
+    await expect(callTool(byName(tools, 'php_workers_set'), { website: 'vahi.dev', lsapi_children: 0 }, ctx)).rejects.toThrow();
     expect(f.calls.length).toBe(before);
   });
 });
@@ -238,8 +238,8 @@ describe('cache_clear', () => {
 describe('the php tool set', () => {
   it('exports every tool at the customer tier with no destructive ones', () => {
     expect(tools.map((t) => t.name)).toEqual([
-      'php_extensions_list', 'php_extension_enable', 'php_extension_disable', 'php_settings_get',
-      'php_settings_set', 'php_error_log', 'redis_state_get', 'redis_state_set', 'cache_clear',
+      'php_extensions_list', 'php_extension_enable', 'php_extension_disable', 'php_workers_get',
+      'php_workers_set', 'php_error_log', 'redis_state_get', 'redis_state_set', 'cache_clear',
     ]);
     expect(tools.every((t) => t.tier === 'customer')).toBe(true);
     expect(tools.some((t) => t.risk === 'destructive')).toBe(false);
