@@ -322,13 +322,22 @@ describe('db_users_list', () => {
     expect(r.text).toContain('10.169.0.1');
     expect(r.text).toContain(MYSQL_DB);
     expect(r.text).toContain('access hosts');
-    expect(r.structured).toMatchObject({ total: 1, items: [{ user: MYSQL_USER, 'access hosts': '10.169.0.1', databases: MYSQL_DB, auth: 'mysql_native_password' }] });
+    // The table renders the ephemeral flag as yes/no, in its own column after the auth plugin.
+    expect(r.text).toContain('ephemeral');
+    expect(r.text).toMatch(/mysql_native_password\s+no/);
+    // structuredContent keeps the panel's own shapes: the hosts stay an array and `grants` stays
+    // the database -> privileges map, so a caller can act on it without re-parsing the table.
+    expect(r.structured).toMatchObject({
+      total: 1,
+      items: [{ user: MYSQL_USER, accessHosts: ['10.169.0.1'], grants: { [MYSQL_DB]: ['all'] }, authPlugin: 'mysql_native_password', ephemeral: false }],
+    });
   });
 
-  it('says "none" for a user with no access hosts and no databases', async () => {
+  it('says "none" in the table for a user with no access hosts and no databases, and keeps the empty shapes in structuredContent', async () => {
     const { ctx } = await makeContext([...base(), { method: 'GET', path: usersPath, body: { items: [{ ...mysqlUser, accessHosts: [], grants: {} }] } }]);
     const r = await callTool(byName(tools, 'db_users_list'), { website: 'vahi.dev' }, ctx);
-    expect(r.structured).toMatchObject({ total: 1, items: [{ user: MYSQL_USER, 'access hosts': 'none', databases: 'none' }] });
+    expect(r.text).toMatch(/none\s+none/);
+    expect(r.structured).toMatchObject({ total: 1, items: [{ user: MYSQL_USER, accessHosts: [], grants: {}, ephemeral: false }] });
   });
 });
 
@@ -340,7 +349,11 @@ describe('db_user_create', () => {
     const body = sink.body as { username: string; password: string };
     // The panel adds the `<unixUser>_` prefix itself, so only the short name goes over the wire.
     expect(body.username).toBe('app');
-    expect(body.password.length).toBeGreaterThanOrEqual(20);
+    // Fixed length, no probabilistic branch: `Db` + 32 base64url characters + `9x`. base64url
+    // never yields `+`, `/` or `=`, so the password is safe unquoted in a `.env` file and inside
+    // shell double quotes.
+    expect(body.password).toHaveLength(36);
+    expect(body.password).toMatch(/^Db[A-Za-z0-9_-]{32}9x$/);
     expect(r.structured).toMatchObject({ user: MYSQL_USER, password: body.password });
     expect(r.text).toContain('DB_HOST=localhost');
     expect(r.text).toContain('shown once');
@@ -357,8 +370,8 @@ describe('db_user_create', () => {
     await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app' }, ctx);
     await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'other' }, ctx);
     expect(seen[0]).not.toBe(seen[1]);
-    expect(seen[0]!.length).toBeGreaterThanOrEqual(20);
-    expect(seen[1]!.length).toBeGreaterThanOrEqual(20);
+    expect(seen[0]).toHaveLength(36);
+    expect(seen[1]).toHaveLength(36);
   });
 
   it('sends the password the user supplied and keeps it out of the rendered text', async () => {
@@ -415,16 +428,39 @@ describe('db_user_set_privileges', () => {
   });
 });
 
-describe('db_user_access_hosts_set', () => {
+describe('db_user_access_hosts_add', () => {
   it('posts the hosts for the full user name', async () => {
     const sink: { body?: unknown; path?: string } = {};
     const { ctx } = await makeContext([...base(), captureBody({ method: 'POST', path: new RegExp(`^${usersPath}/[^/]+/access-hosts$`) }, 200, sink)]);
-    const r = await callTool(byName(tools, 'db_user_access_hosts_set'), { website: 'vahi.dev', username: 'app', hosts: ['10.169.0.1', '203.0.113.7'] }, ctx);
+    const r = await callTool(byName(tools, 'db_user_access_hosts_add'), { website: 'vahi.dev', username: 'app', hosts: ['10.169.0.1', '203.0.113.7'] }, ctx);
     expect(sink.path).toBe(`${usersPath}/${MYSQL_USER}/access-hosts`);
     expect(sink.body).toEqual({ accessHosts: ['10.169.0.1', '203.0.113.7'] });
-    expect(r.structured).toMatchObject({ user: MYSQL_USER, accessHosts: ['10.169.0.1', '203.0.113.7'] });
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, added: ['10.169.0.1', '203.0.113.7'] });
+    expect(r.text).toContain('added hosts');
     expect(r.text).toContain('203.0.113.7');
     expect(r.text).toContain(websiteLine);
+  });
+});
+
+describe('db_user_access_hosts_remove', () => {
+  // Verified live 2026-09-06: DELETE on the same path with the same body removes exactly the
+  // hosts listed and leaves the rest, so it is the inverse of the POST, not a replace.
+  it('sends DELETE with the hosts in the body', async () => {
+    const sink: { body?: unknown; path?: string } = {};
+    const { ctx, f } = await makeContext([...base(), captureBody({ method: 'DELETE', path: new RegExp(`^${usersPath}/[^/]+/access-hosts$`) }, 204, sink)]);
+    const r = await callTool(byName(tools, 'db_user_access_hosts_remove'), { website: 'vahi.dev', username: 'app', hosts: ['203.0.113.7'] }, ctx);
+    expect(f.calls.at(-1)?.method).toBe('DELETE');
+    expect(sink.path).toBe(`${usersPath}/${MYSQL_USER}/access-hosts`);
+    // The hosts travel in the body of the DELETE, not in the path or the query string.
+    expect(sink.body).toEqual({ accessHosts: ['203.0.113.7'] });
+    expect(f.calls.at(-1)?.body).toBe(JSON.stringify({ accessHosts: ['203.0.113.7'] }));
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, removed: ['203.0.113.7'] });
+    expect(r.text).toContain('removed hosts');
+    expect(r.text).toContain(websiteLine);
+  });
+
+  it('is a write tool, not a destructive one, because _add puts the host back', () => {
+    expect(byName(tools, 'db_user_access_hosts_remove').risk).toBe('write');
   });
 });
 

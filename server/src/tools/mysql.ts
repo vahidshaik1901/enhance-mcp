@@ -62,6 +62,8 @@ const uploadSqlPath: PathSerializer = (pathname, params) => {
   return patched.includes('{') ? defaultPathSerializer(patched, params) : patched;
 };
 
+// None of the database or database-user tools invalidates the resolver cache: it holds only the
+// website list, and databases and users are not in it, so a write here cannot make it stale.
 export const dbList = defineTool({
   name: 'db_list',
   tier: 'customer',
@@ -94,7 +96,6 @@ export const dbCreate = defineTool({
     await ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/mysql-dbs', () =>
       ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/mysql-dbs', { params: { path: { org_id: s.org, website_id: s.id } }, body: { name: short } }),
     );
-    ctx.resolver.invalidate();
     return ok(
       [
         s.identity,
@@ -130,7 +131,6 @@ export const dbDelete = defineTool({
     await ctx.client.call('DELETE', '/orgs/{org_id}/websites/{website_id}/mysql-dbs/{db_name}', () =>
       ctx.client.api.DELETE('/orgs/{org_id}/websites/{website_id}/mysql-dbs/{db_name}', { params: { path: { org_id: site.org, website_id: site.id, db_name: database } } }),
     );
-    ctx.resolver.invalidate();
     return ok(`${site.identity}\ndatabase ${safe(database)} dropped.`, { database, deleted: true });
   },
 });
@@ -248,13 +248,15 @@ export const dbPhpmyadminUrl = defineTool({
 });
 
 /**
- * A password strong enough for a database login the human never types: 18 random bytes (144 bits)
- * as base64 with the non-alphanumeric characters dropped, wrapped in a fixed upper/lower/digit/
- * symbol frame so it always satisfies a MySQL password policy. At least 20 characters.
+ * A password for a database login the human never types: 24 random bytes (192 bits) as base64url,
+ * which is always exactly 32 characters and, unlike base64, never contains `+`, `/` or `=` — so
+ * nothing is stripped and the length is fixed rather than probabilistic. The `Db`/`9x` frame
+ * guarantees an upper case letter, a lower case one and a digit for any password policy (the live
+ * panel enforces none), and every character is safe unquoted in a `.env` file and inside shell
+ * double quotes: no `!`, `$`, backtick or quote. Always 36 characters.
  */
 function generatePassword(): string {
-  const body = randomBytes(18).toString('base64').replace(/[+/=]/g, '');
-  return `Db${body}9!`;
+  return `Db${randomBytes(24).toString('base64url')}9x`;
 }
 
 export const dbUsersList = defineTool({
@@ -268,13 +270,24 @@ export const dbUsersList = defineTool({
     const res = await ctx.client.call('GET', '/orgs/{org_id}/websites/{website_id}/mysql-users', () =>
       ctx.client.api.GET('/orgs/{org_id}/websites/{website_id}/mysql-users', { params: { path: { org_id: s.org, website_id: s.id } } }),
     );
-    const rows = (res.items ?? []).map((u) => ({
+    const items = (res.items ?? []).map((u) => ({
       user: u.username,
-      'access hosts': (u.accessHosts ?? []).join(', ') || 'none',
-      databases: Object.keys(u.grants ?? {}).join(', ') || 'none',
-      auth: u.authPlugin,
+      accessHosts: u.accessHosts ?? [],
+      // The generated type renders the panel's open-ended map as `Record<string, never>`; the
+      // live payload is database name -> list of privileges (noted cast, convention 6). Keeping
+      // the map intact lets a caller read the privileges, which the table only summarises.
+      grants: (u.grants ?? {}) as Record<string, string[]>,
+      authPlugin: u.authPlugin,
+      ephemeral: u.isEphemeral ?? false,
     }));
-    return ok([s.identity, `users (${rows.length}):`, table(rows, ['user', 'access hosts', 'databases', 'auth'])].join('\n'), { total: rows.length, items: rows });
+    const rows = items.map((i) => ({
+      user: i.user,
+      'access hosts': i.accessHosts.join(', ') || 'none',
+      databases: Object.keys(i.grants).join(', ') || 'none',
+      auth: i.authPlugin,
+      ephemeral: i.ephemeral ? 'yes' : 'no',
+    }));
+    return ok([s.identity, `users (${items.length}):`, table(rows, ['user', 'access hosts', 'databases', 'auth', 'ephemeral'])].join('\n'), { total: items.length, items });
   },
 });
 
@@ -293,7 +306,6 @@ export const dbUserCreate = defineTool({
     await ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/mysql-users', () =>
       ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/mysql-users', { params: { path: { org_id: s.org, website_id: s.id } }, body: { username: short, password: pw } }),
     );
-    ctx.resolver.invalidate();
     return ok(
       [
         s.identity,
@@ -371,13 +383,13 @@ export const dbUserSetPrivileges = defineTool({
   },
 });
 
-export const dbUserAccessHostsSet = defineTool({
-  name: 'db_user_access_hosts_set',
+export const dbUserAccessHostsAdd = defineTool({
+  name: 'db_user_access_hosts_add',
   tier: 'customer',
   risk: 'write',
   description:
-    "Adds hosts a MySQL user may connect from. The panel's endpoint adds the hosts given rather than replacing the list, so read the result back with db_users_list. A new user already has the app tier's host, which is what a PHP app on this website connects from; only add a host when the user connects from somewhere else.",
-  input: z.object({ website: websiteArg, username: userArg, hosts: z.array(z.string().min(1)).min(1).describe('Host names or IPs the user may connect from') }),
+    "Adds hosts a MySQL user may connect from. The panel adds the hosts given rather than replacing the list, so the hosts the user already had stay; db_users_list shows the full list afterwards. A new user already has the app tier's host, which is what a PHP app on this website connects from; only add a host when the user connects from somewhere else. Remove one again with db_user_access_hosts_remove.",
+  input: z.object({ website: websiteArg, username: userArg, hosts: z.array(z.string().min(1)).min(1).describe('Host names or IPs to add to the hosts the user may connect from') }),
   async handler({ website, username, hosts }, ctx) {
     const s = await dbSite(ctx, website);
     const user = resolveDbUser(s.unixUser, username);
@@ -387,12 +399,36 @@ export const dbUserAccessHostsSet = defineTool({
         body: { accessHosts: hosts },
       }),
     );
-    return ok(`${s.identity}\naccess hosts [${hosts.map(safe).join(', ')}] added for ${safe(user)}; db_users_list shows the full list.`, { user, accessHosts: hosts });
+    return ok(`${s.identity}\nadded hosts [${hosts.map(safe).join(', ')}] for ${safe(user)}; db_users_list shows the full list.`, { user, added: hosts });
+  },
+});
+
+export const dbUserAccessHostsRemove = defineTool({
+  name: 'db_user_access_hosts_remove',
+  tier: 'customer',
+  // Reversible with db_user_access_hosts_add, so it is a write rather than a destructive tool:
+  // nothing is destroyed, the login and its grants stay, and the host can be put straight back.
+  risk: 'write',
+  description:
+    "Removes hosts a MySQL user may connect from, leaving every other host on the list alone; db_users_list shows the full list afterwards. WARNING: 10.169.0.1 is the app tier host a new user gets by default and is where this website's own PHP applications connect from — removing it locks them out of the database until it is added back with db_user_access_hosts_add. Check db_users_list first.",
+  input: z.object({ website: websiteArg, username: userArg, hosts: z.array(z.string().min(1)).min(1).describe('Host names or IPs to remove from the hosts the user may connect from') }),
+  async handler({ website, username, hosts }, ctx) {
+    const s = await dbSite(ctx, website);
+    const user = resolveDbUser(s.unixUser, username);
+    // Verified live 2026-09-06: the same path as the add, with the same body, removes exactly the
+    // hosts listed. The hosts travel in the DELETE body, not in the path or the query string.
+    await ctx.client.call('DELETE', '/orgs/{org_id}/websites/{website_id}/mysql-users/{username}/access-hosts', () =>
+      ctx.client.api.DELETE('/orgs/{org_id}/websites/{website_id}/mysql-users/{username}/access-hosts', {
+        params: { path: { org_id: s.org, website_id: s.id, username: user } },
+        body: { accessHosts: hosts },
+      }),
+    );
+    return ok(`${s.identity}\nremoved hosts [${hosts.map(safe).join(', ')}] for ${safe(user)}; db_users_list shows the full list.`, { user, removed: hosts });
   },
 });
 
 export const mysqlDatabaseTools: ToolDef[] = [dbList, dbCreate, dbDelete, dbExportSql, dbImportSql, dbPhpmyadminUrl];
-export const mysqlUserTools: ToolDef[] = [dbUsersList, dbUserCreate, dbUserUpdate, dbUserDelete, dbUserSetPrivileges, dbUserAccessHostsSet];
+export const mysqlUserTools: ToolDef[] = [dbUsersList, dbUserCreate, dbUserUpdate, dbUserDelete, dbUserSetPrivileges, dbUserAccessHostsAdd, dbUserAccessHostsRemove];
 
 /** What `src/tools/index.ts` registers (Task 8). */
 export const tools: ToolDef[] = [...mysqlDatabaseTools, ...mysqlUserTools];
