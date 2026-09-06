@@ -1,17 +1,64 @@
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { tools } from '../../src/tools/mysql.js';
-import { base, MYSQL_DB, mysqlDbs, ORG_ID, WEBSITE_ID, websiteDetail } from '../fixtures/panel.js';
+import { base, MYSQL_DB, mysqlDbs, ORG_ID, websiteDetail, WEBSITE_ID, websiteSummary, websitesList } from '../fixtures/panel.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
+import type { Route } from '../helpers/fakeFetch.js';
 
 const dbsPath = `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/mysql-dbs`;
+const websiteLine = `website: vahi.dev (${WEBSITE_ID})`;
+
+/** A second website that takes over the domain after `target()` has already resolved it. */
+const OTHER_WEBSITE_ID = 'a1b2c3d4-5566-4778-9900-aabbccddeeff';
+const otherSummary = { ...websiteSummary, id: OTHER_WEBSITE_ID };
+const otherDetail = { ...websiteDetail, id: OTHER_WEBSITE_ID, unixUser: 'other_dev1' };
+
+/** The routes for a panel where `GET /websites` answers with a different site the second time it
+ *  is asked, so a tool that re-resolves the user's `website` string lands on the wrong website. */
+function movingTargetRoutes(seen: string[]): Route[] {
+  let listCalls = 0;
+  return [
+    {
+      method: 'GET',
+      path: `/orgs/${ORG_ID}/websites`,
+      handler: async () => {
+        listCalls += 1;
+        const body = listCalls === 1 ? websitesList : { items: [otherSummary], total: 1 };
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      },
+    },
+    { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: websiteDetail },
+    { method: 'GET', path: `/orgs/${ORG_ID}/websites/${OTHER_WEBSITE_ID}`, body: otherDetail },
+    {
+      method: 'DELETE',
+      path: new RegExp(`^/orgs/${ORG_ID}/websites/[^/]+/mysql-dbs/`),
+      handler: async (_req, url) => {
+        seen.push(url.pathname.replace(/^\/api/, ''));
+        return new Response(null, { status: 204 });
+      },
+    },
+    {
+      method: 'POST',
+      path: new RegExp('^/v2/websites/[^/]+/mysql/[^/]+/sql$'),
+      handler: async (_req, url) => {
+        seen.push(url.pathname.replace(/^\/api/, ''));
+        return new Response(null, { status: 200 });
+      },
+    },
+  ];
+}
 
 describe('db_list', () => {
   it('lists databases with the full name, size and user count', async () => {
     const { ctx } = await makeContext([...base(), { method: 'GET', path: dbsPath, body: mysqlDbs }]);
     const r = await callTool(byName(tools, 'db_list'), { website: 'vahi.dev' }, ctx);
     expect(r.text).toContain(MYSQL_DB);
-    expect(r.text).toContain(`website: vahi.dev (${WEBSITE_ID})`);
-    expect(r.structured).toMatchObject({ total: 1, items: [{ database: MYSQL_DB, users: 1 }] });
+    expect(r.text).toContain(websiteLine);
+    // The table header stays human ("size (bytes)"); the structured item uses a plain key.
+    expect(r.text).toContain('size (bytes)');
+    expect(r.structured).toMatchObject({ total: 1, items: [{ database: MYSQL_DB, sizeBytes: 40960, users: 1 }] });
   });
 });
 
@@ -58,20 +105,108 @@ describe('db_delete', () => {
     expect(deleted).toBe(MYSQL_DB);
     expect(r.structured).toMatchObject({ database: MYSQL_DB, deleted: true });
   });
+
+  it('names the website in the preview, not just the org', async () => {
+    const { ctx } = await makeContext(base());
+    const del = byName(tools, 'db_delete');
+    const args = del.input.parse({ website: 'vahi.dev', name: 'demo' });
+    const preview = await del.preview!(args, ctx, await del.target!(args, ctx));
+    expect(preview).toContain(`org: Shaik Vahid (${ORG_ID})`);
+    expect(preview).toContain(websiteLine);
+    // The identity block comes first, then the warning.
+    expect(preview.indexOf(websiteLine)).toBeLessThan(preview.indexOf('permanently drop'));
+  });
+
+  it('acts on the website the target named, even if the domain now resolves elsewhere', async () => {
+    const seen: string[] = [];
+    const { ctx } = await makeContext(movingTargetRoutes(seen));
+    const del = byName(tools, 'db_delete');
+    const args = del.input.parse({ website: 'vahi.dev', name: 'demo' });
+    const target = await del.target!(args, ctx);
+    expect(target.id).toBe(`${WEBSITE_ID}:${MYSQL_DB}`);
+    // The panel changed under us: a different website now answers for vahi.dev.
+    ctx.resolver.invalidate();
+    const preview = await del.preview!(args, ctx, target);
+    expect(preview).toContain(WEBSITE_ID);
+    expect(preview).not.toContain(OTHER_WEBSITE_ID);
+    await del.handler(args, ctx, target);
+    expect(seen).toEqual([`/orgs/${ORG_ID}/websites/${WEBSITE_ID}/mysql-dbs/${MYSQL_DB}`]);
+  });
 });
 
 describe('db_export_sql', () => {
-  it('returns the dump the panel sends as a JSON string', async () => {
-    const sql = 'DROP TABLE IF EXISTS `t`;\nCREATE TABLE `t` (`id` int);\n';
-    const { ctx } = await makeContext([
-      ...base(),
-      { method: 'GET', path: `${dbsPath}/${MYSQL_DB}/sql`, handler: async () => new Response(JSON.stringify(sql), { status: 200, headers: { 'content-type': 'application/json' } }) },
-    ]);
+  const sqlWithMultibyte = "DROP TABLE IF EXISTS `t`;\nINSERT INTO `t` VALUES ('café');\n";
+  const exportRoute = (body: string): Route => ({
+    method: 'GET',
+    path: `${dbsPath}/${MYSQL_DB}/sql`,
+    handler: async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }),
+  });
+
+  it('returns the dump the panel sends as a JSON string, sized in bytes', async () => {
+    const { ctx } = await makeContext([...base(), exportRoute(sqlWithMultibyte)]);
     const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo' }, ctx);
-    expect(r.structured).toMatchObject({ database: MYSQL_DB, sql, bytes: sql.length });
+    expect(Buffer.byteLength(sqlWithMultibyte)).not.toBe(sqlWithMultibyte.length);
+    expect(r.structured).toMatchObject({ database: MYSQL_DB, sql: sqlWithMultibyte, bytes: Buffer.byteLength(sqlWithMultibyte) });
     expect(r.text).toContain(MYSQL_DB);
     // The dump itself must not be interpolated into the rendered text (convention 4).
-    expect(r.text).not.toContain('CREATE TABLE');
+    expect(r.text).not.toContain('INSERT INTO');
+  });
+
+  it('refuses to inline a dump over 256 KB and points at save_to', async () => {
+    const big = `-- big dump\n${'a'.repeat(262_200)}`;
+    const { ctx } = await makeContext([...base(), exportRoute(big)]);
+    const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.structured).toMatchObject({ database: MYSQL_DB, bytes: Buffer.byteLength(big), tooLarge: true });
+    expect(r.structured).not.toHaveProperty('sql');
+    expect(r.text).toContain('save_to');
+  });
+
+  it('writes the dump to save_to at mode 0600 and keeps it out of structuredContent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'enhance-mcp-export-'));
+    const path = join(dir, 'dump.sql');
+    const { ctx } = await makeContext([...base(), exportRoute(sqlWithMultibyte)]);
+    const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo', save_to: path }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(readFileSync(path, 'utf8')).toBe(sqlWithMultibyte);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(r.structured).toMatchObject({ database: MYSQL_DB, path, bytes: Buffer.byteLength(sqlWithMultibyte), saved: true });
+    expect(r.structured).not.toHaveProperty('sql');
+    expect(r.text).toContain(path);
+  });
+
+  it('refuses to overwrite an existing file unless overwrite is passed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'enhance-mcp-export-'));
+    const path = join(dir, 'dump.sql');
+    writeFileSync(path, 'keep me');
+    const { ctx } = await makeContext([...base(), exportRoute(sqlWithMultibyte)]);
+    const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo', save_to: path }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('overwrite');
+    expect(readFileSync(path, 'utf8')).toBe('keep me');
+    expect(r.structured).not.toHaveProperty('sql');
+
+    const r2 = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo', save_to: path, overwrite: true }, ctx);
+    expect(r2.isError).toBeFalsy();
+    expect(readFileSync(path, 'utf8')).toBe(sqlWithMultibyte);
+  });
+
+  it('fails clearly when the save_to directory does not exist, and never writes it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'enhance-mcp-export-'));
+    const path = join(dir, 'nope', 'dump.sql');
+    const { ctx } = await makeContext([...base(), exportRoute(sqlWithMultibyte)]);
+    const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo', save_to: path }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('directory');
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('refuses a relative save_to rather than writing next to whatever the cwd happens to be', async () => {
+    const { ctx } = await makeContext([...base(), exportRoute(sqlWithMultibyte)]);
+    const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo', save_to: 'dump.sql' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('absolute');
+    expect(existsSync('dump.sql')).toBe(false);
   });
 });
 
@@ -116,6 +251,36 @@ describe('db_import_sql', () => {
     await t.handler(args, ctx, await t.target!(args, ctx));
     expect(f.calls.at(-1)?.path).toContain('force=true');
   });
+
+  it('names the website in the preview and counts bytes, not characters', async () => {
+    const sql = "INSERT INTO `t` VALUES ('café');";
+    const { ctx } = await makeContext([
+      ...base(),
+      { method: 'POST', path: new RegExp(`^/v2/websites/${WEBSITE_ID}/mysql/[^/]+/sql$`), handler: async () => new Response(null, { status: 200 }) },
+    ]);
+    const t = byName(tools, 'db_import_sql');
+    const args = t.input.parse({ website: 'vahi.dev', name: 'demo', sql });
+    const target = await t.target!(args, ctx);
+    const preview = await t.preview!(args, ctx, target);
+    expect(preview).toContain(websiteLine);
+    expect(preview.indexOf(websiteLine)).toBeLessThan(preview.indexOf('This will run'));
+    expect(preview).toContain(`${Buffer.byteLength(sql)} bytes`);
+    expect(Buffer.byteLength(sql)).not.toBe(sql.length);
+    const r = await t.handler(args, ctx, target);
+    expect(r.structured).toMatchObject({ bytes: Buffer.byteLength(sql) });
+  });
+
+  it('acts on the website the target named, even if the domain now resolves elsewhere', async () => {
+    const seen: string[] = [];
+    const { ctx } = await makeContext(movingTargetRoutes(seen));
+    const t = byName(tools, 'db_import_sql');
+    const args = t.input.parse({ website: 'vahi.dev', name: 'demo', sql: 'SELECT 1;' });
+    const target = await t.target!(args, ctx);
+    ctx.resolver.invalidate();
+    expect(await t.preview!(args, ctx, target)).toContain(WEBSITE_ID);
+    await t.handler(args, ctx, target);
+    expect(seen).toEqual([`/v2/websites/${WEBSITE_ID}/mysql/${MYSQL_DB}/sql`]);
+  });
 });
 
 describe('db_phpmyadmin_url', () => {
@@ -132,6 +297,12 @@ describe('db_phpmyadmin_url', () => {
     const { ctx, f } = await makeContext([...base(), { method: 'GET', path: `${dbsPath}/${MYSQL_DB}/sso`, body: 'https://phpmyadmin.example/signon.php?sess=db' }]);
     const r = await callTool(byName(tools, 'db_phpmyadmin_url'), { website: 'vahi.dev', name: 'demo' }, ctx);
     expect(r.structured).toMatchObject({ url: 'https://phpmyadmin.example/signon.php?sess=db' });
+    expect(f.calls.at(-1)?.path).toContain(`${dbsPath}/${MYSQL_DB}/sso`);
+  });
+
+  it('accepts the full prefixed name for the optional database, like every other db tool', async () => {
+    const { ctx, f } = await makeContext([...base(), { method: 'GET', path: `${dbsPath}/${MYSQL_DB}/sso`, body: 'https://phpmyadmin.example/signon.php?sess=db' }]);
+    await callTool(byName(tools, 'db_phpmyadmin_url'), { website: 'vahi.dev', name: MYSQL_DB }, ctx);
     expect(f.calls.at(-1)?.path).toContain(`${dbsPath}/${MYSQL_DB}/sso`);
   });
 });

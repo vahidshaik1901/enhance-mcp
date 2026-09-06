@@ -41,3 +41,12 @@ export async function siteWebsite(ctx: ToolContext, ref: string): Promise<{ org:
   const w = await ctx.resolver.resolveWebsite(ref);
   return { org, w };
 }
+
+/** The by-id form, for convention 12: a destructive `preview()`/`handler()` re-reads the website
+ *  the `target()` already pinned instead of resolving the user's string a second time, so the
+ *  preview and the confirmed action cannot drift onto a different site. */
+export async function siteWebsiteById(ctx: ToolContext, id: string): Promise<{ org: string; w: Website }> {
+  const org = requireOrg(ctx.client);
+  const w = await ctx.resolver.getWebsite(id);
+  return { org, w };
+}
