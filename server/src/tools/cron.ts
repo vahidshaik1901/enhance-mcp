@@ -70,7 +70,7 @@ const jobArg = z
   .string()
   .trim()
   .min(1, 'a cron job line must not be empty')
-  .regex(CRON_LINE_RE, "a cron job must be a full crontab line: five schedule fields, or @reboot/@hourly/@daily/@weekly/@monthly/@yearly, then the command — e.g. '*/5 * * * * php /var/www/<website_id>/artisan schedule:run'")
+  .regex(CRON_LINE_RE, "a cron job must be a full crontab line: five schedule fields, or @reboot/@hourly/@daily/@weekly/@monthly/@yearly, then the command — e.g. '* * * * * php /var/www/<website_id>/app/artisan schedule:run'")
   // Verified live 2026-09-06: `* * * * * date +%s >> log` ran and wrote nothing, because cron
   // ends the command at the first unescaped %.
   .refine(
@@ -101,7 +101,7 @@ export const cronAdd = defineTool({
   name: 'cron_add',
   tier: 'customer',
   risk: 'write',
-  description: "Appends cron jobs to the website's crontab. Each job is a full crontab line ('<schedule> <command>', e.g. '*/5 * * * * php /var/www/<website_id>/artisan schedule:run'), and a % in a command must be escaped as \\% or cron ends the command there. Existing lines are never touched: the current crontab is read first and each job is appended past the highest line number in it. That read-then-append is not atomic — a job added from the panel in between would not be seen — so re-read cron_get afterwards if someone else may be editing. Environment variables cannot be set here, and the panel rejects MAILTO outright (it is blacklisted).",
+  description: "Appends cron jobs to the website's crontab. Each job is a full crontab line ('<schedule> <command>', e.g. '* * * * * php /var/www/<website_id>/app/artisan schedule:run'), and a % in a command must be escaped as \\% or cron ends the command there. Existing lines are never touched: the current crontab is read first and each job is appended past the highest line number in it. That read-then-append is not atomic — a job added from the panel in between would not be seen — so re-read cron_get afterwards if someone else may be editing. Environment variables cannot be set here, and the panel rejects MAILTO outright (it is blacklisted).",
   input: z.object({ website: websiteArg, jobs: z.array(jobArg).min(1, 'name at least one cron job to add') }),
   async handler({ website, jobs }, ctx) {
     const s = await cronSite(ctx, website);

@@ -24,9 +24,10 @@ access token). After they pass: `superpowers:finishing-a-development-branch`, th
 site from `~/enhance-e2e-site` is still deployed on vahi.dev (preview URL
 vahi-dev-ccyq.sgp1.mystaging.site; the domain has no DNS at Cloudflare yet).**
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
-Plan: `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD).
+Plans: milestone A `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD);
+milestone B `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` (10 tasks, TDD).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
-No code exists yet. Key library facts: MCP TypeScript SDK is v2 (`@modelcontextprotocol/server`
+Key library facts: MCP TypeScript SDK is v2 (`@modelcontextprotocol/server`
 2.0.0, `serveStdio`, `registerTool`, form elicitation via `ctx.mcpReq.elicitInput`), zod 4
 (`zod/v4`), openapi-fetch 0.17, openapi-typescript 7.13, npm name `enhance-mcp` is free.
 Claude Code supports MCP elicitation (>= 2.1.76) but advertises a bare `elicitation: {}`
@@ -34,9 +35,11 @@ capability and negotiates the legacy protocol era; the server uses the SDK's `in
 flow (not `elicitInput`) so the human prompt works on both eras (see docs/research.md).
 `outputSchema` has known issues so tools return `structuredContent` without declaring one;
 the Bash sandbox can never carry SSH (use `sandbox.excludedCommands` or run unsandboxed).
-Progress: Tasks 1-18 of the milestone A plan are done and reviewed (ledger in
-`.superpowers/sdd/progress.md`, git-ignored; `git log` is the recovery map). To run the
-live suite: put a working credential in `.env` as `ENHANCE_TOKEN` (or a session JWT as
+Progress: milestone A is merged to `main`; milestone B Tasks 1-9 are done and reviewed on
+`feat/milestone-b`, and Task 10 (the live e2e run plus the walkthrough with the user) is pending a
+fresh panel credential (ledger in `.superpowers/sdd/progress.md`, git-ignored; `git log` is the
+recovery map). To run the live suite: put a working credential in `.env` as `ENHANCE_TOKEN` (or a
+session JWT as
 `ENHANCE_SESSION_COOKIE`), then from `server/`:
 `set -a && source ../.env && set +a && ENHANCE_E2E=1 ENHANCE_E2E_SUBSCRIPTION_ID=664 npm run test:e2e`.
 

@@ -438,7 +438,9 @@ the `MySQLDBsFullListing` type.
 ### PHP settings, extensions, cache
 
 - Enabled extensions `GET /websites/{id}/php_extensions` -> string[] (was `["pgsql","pdo_pgsql"]`).
-  Available to enable `GET .../available_php_extensions`; compiled-in
+  Available to enable `GET .../available_php_extensions` — on this panel that list was
+  `["apcu","brotli","oauth","pdo_dblib","pdo_pgsql","pgsql","xmlrpc"]` (observed 2026-09-06), so
+  `apcu` is a valid `php_extension_enable` example. Compiled-in
   `GET .../built_in_php_extensions` (mysqli, pdo_mysql, redis, gd, intl, imagick, ... always on).
 - Enable `POST .../php_extensions` / disable `DELETE .../php_extensions`, body is a **bare JSON
   string** (the extension name), not an object.

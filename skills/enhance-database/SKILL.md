@@ -19,6 +19,10 @@ Call `website_get` and read the `canUse` block:
 - Databases live under the website's unix user. A website with no `unixUser` has no databases at
   all, and the tools fail loudly rather than guess.
 
+`website_get`'s text renders the MySQL kind on its own `mysql: …` line and splits the rest of
+`canUse` into a `can use` line and a `cannot use` line, so read those two lines rather than
+hunting for a flag; `structuredContent.website.canUse` still carries the raw block.
+
 `db_list` and `db_users_list` (or `pg_db_list` / `pg_users_list`) show what already exists. Read
 them before creating anything, so you do not add a second database for an app that has one.
 
@@ -33,9 +37,10 @@ name in a `.env` file will not connect.
 
 ## 3. Connect from an app (critical, verified live)
 
-The database host is always **`localhost`** — the unix socket. `127.0.0.1` is refused
-(`Connection refused`), and so is the `dbServerIps` value. This was verified live from a PHP page
-in the container against MariaDB.
+The database host is always **`localhost`** — the unix socket. `127.0.0.1` is **refused**
+(`Connection refused`): verified live from a PHP page in the container against MariaDB. Do not use
+the `dbServerIps` value either — that was never tested, and `localhost` is the host the container's
+own `~/.my.cnf` uses.
 
 ```
 DB_HOST=localhost          # never 127.0.0.1, never an IP
@@ -55,8 +60,9 @@ DB_PASSWORD=<the password shown once>
    the full database name, the full user name and that password. Never commit it, never repeat
    the password in later messages.
 
-To rotate a password later: `db_user_update` (every app on the old password stops connecting
-until you update its config).
+To rotate a password later: `db_user_update website=<site> username=<user> password=<new>` — it
+**requires** a `password` argument and does not generate one (only `db_user_create` and
+`pg_user_create` do). Every app on the old password stops connecting until you update its config.
 
 ## 5. Privileges are an enum, not SQL
 
