@@ -477,6 +477,14 @@ the `MySQLDBsFullListing` type.
 - `PATCH .../crontab {items: UpdateCrontabValue[]}`; `DELETE .../crontab`.
 - Container cron on/off `GET/PUT /websites/{id}/container_cron_enabled` boolean (was false). The
   PUT's spec summary is mislabeled "Set backups disabled status" -- ignore the label.
+- **Verified live 2026-09-06 (crontab):** `PATCH {items}` MERGES like htaccess. Line numbers in
+  responses are **0-based** (`lineNumber: 0` for the first line); on input a `lineNumber` beyond
+  the current count APPENDS (sending 1 to an empty crontab stored it at 0, sending 2 next stored
+  it at 1); an in-range number replaces that line. A bare `{cronCmd: {lineNumber: N}}` DELETES
+  line N (0-based) and the rest renumber. `DELETE .../crontab` clears everything. Variables:
+  `MAILTO` is blacklisted (400 `invalid_syntax` "Variable MAILTO is blacklisted"). `crontab -l`
+  inside the container answers "Command unavailable in website container": the panel manages
+  cron outside the container. `container_cron_enabled` PUT true/false round-trips (was false).
 
 ### Node and persistent apps (milestone C, probed now)
 
