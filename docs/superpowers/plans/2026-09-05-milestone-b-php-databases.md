@@ -456,7 +456,7 @@ git commit -m "feat(mysql): database list, create, delete, export, import, phpMy
   - `db_user_delete(website, username)` DESTRUCTIVE.
   - `db_user_set_privileges(website, username, database, grants[])`.
   - `db_user_access_hosts_add(website, username, hosts[])`.
-  - `export const tools: ToolDef[] = [dbList, dbCreate, dbDelete, dbExportSql, dbImportSql, dbPhpmyadminUrl, dbUsersList, dbUserCreate, dbUserUpdate, dbUserDelete, dbUserSetPrivileges, dbUserAccessHostsSet];`
+  - `export const tools: ToolDef[] = [dbList, dbCreate, dbDelete, dbExportSql, dbImportSql, dbPhpmyadminUrl, dbUsersList, dbUserCreate, dbUserUpdate, dbUserDelete, dbUserSetPrivileges, dbUserAccessHostsAdd, dbUserAccessHostsRemove];`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -616,7 +616,7 @@ export const dbUserSetPrivileges = defineTool({
   },
 });
 
-export const dbUserAccessHostsSet = defineTool({
+export const dbUserAccessHostsAdd, dbUserAccessHostsRemove = defineTool({
   name: 'db_user_access_hosts_add',
   tier: 'customer',
   risk: 'write',
@@ -630,7 +630,7 @@ export const dbUserAccessHostsSet = defineTool({
   },
 });
 
-export const tools: ToolDef[] = [dbList, dbCreate, dbDelete, dbExportSql, dbImportSql, dbPhpmyadminUrl, dbUsersList, dbUserCreate, dbUserUpdate, dbUserDelete, dbUserSetPrivileges, dbUserAccessHostsSet];
+export const tools: ToolDef[] = [dbList, dbCreate, dbDelete, dbExportSql, dbImportSql, dbPhpmyadminUrl, dbUsersList, dbUserCreate, dbUserUpdate, dbUserDelete, dbUserSetPrivileges, dbUserAccessHostsAdd, dbUserAccessHostsRemove];
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
