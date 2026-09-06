@@ -29,4 +29,8 @@ describe('respond', () => {
     expect(safe('a\u00a0b\u200bc')).toBe('a b c');
     expect(safe('left\u202eright')).toBe('left right');
   });
+  it('safe collapses soft hyphens and tag characters', () => {
+    // 'a', soft hyphen, 'b', TAG LATIN CAPITAL LETTER A, 'c' -> all-visible, single-spaced.
+    expect(safe('a\u00adb\u{e0041}c')).toBe('a b c');
+  });
 });

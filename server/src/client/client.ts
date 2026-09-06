@@ -1,5 +1,6 @@
 import createClient, { type Middleware } from 'openapi-fetch';
 import type { Config } from '../config.js';
+import { safe } from '../core/respond.js';
 import { authHeaders, detectAuthMode, type AuthMode, type LoginMembership } from './auth.js';
 import { EnhanceApiError, MAX_API_MESSAGE } from './errors.js';
 import type { paths } from './generated/types.js';
@@ -85,7 +86,7 @@ export async function createEnhanceClient(config: Config, deps: ClientDeps = {})
   let orgId: string | undefined;
   if (config.orgId) {
     if (!memberships.some((m) => m.orgId === config.orgId)) {
-      throw new Error(`ENHANCE_ORG_ID ${config.orgId} is set but this credential is not a member of that org. Memberships: ${memberships.map((m) => `${m.orgName} (${m.orgId})`).join(', ') || 'none'}`);
+      throw new Error(`ENHANCE_ORG_ID ${config.orgId} is set but this credential is not a member of that org. Memberships: ${memberships.map((m) => `${safe(m.orgName)} (${m.orgId})`).join(', ') || 'none'}`);
     }
     orgId = config.orgId;
   } else if (memberships.length === 1) {
