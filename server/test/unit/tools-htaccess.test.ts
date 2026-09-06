@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { EnhanceApiError } from '../../src/client/errors.js';
 import { tools } from '../../src/tools/htaccess.js';
 import { base, ORG_ID, WEBSITE_ID } from '../fixtures/panel.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
@@ -34,6 +35,22 @@ function captureBodies(route: Omit<Route, 'handler'>, sink: unknown[]): Route {
   };
 }
 
+/** Like `captureBodies`, but the `failOn`th PATCH (1-based) answers 400, so a failure that lands
+ *  after some lines have already been deleted can be asserted on. 400 is not retryable, so the
+ *  sequence stops exactly there. */
+function captureBodiesFailingAt(route: Omit<Route, 'handler'>, sink: unknown[], failOn: number): Route {
+  let patches = 0;
+  return {
+    ...route,
+    handler: async (req) => {
+      patches += 1;
+      sink.push(await req.json());
+      if (patches !== failOn) return new Response(null, { status: 204 });
+      return new Response(JSON.stringify({ code: 'invalid_syntax', message: 'panel refused the line' }), { status: 400, headers: { 'content-type': 'application/json' } });
+    },
+  };
+}
+
 const chain = { lineNumber: 1, rule: { pattern: '^old$', substitution: '/new', flags: ['R=301', 'L'] }, conds: [{ testString: '%{HTTP_HOST}', condPattern: '^www\\.', flags: ['NC'] }] };
 
 describe('htaccess_rewrites_get', () => {
@@ -53,6 +70,14 @@ describe('htaccess_rewrites_get', () => {
     const r = await callTool(byName(tools, 'htaccess_rewrites_get'), { website: 'vahi.dev' }, ctx);
     expect(r.text).toContain('managed rewrite chains (0)');
     expect(r.structured).toEqual({ total: 0, items: [] });
+  });
+
+  it('treats a 204 with no body as an empty listing rather than throwing', async () => {
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: htPath, status: 204 }]);
+    const r = await callTool(byName(tools, 'htaccess_rewrites_get'), { website: 'vahi.dev' }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toContain('managed rewrite chains (0)');
+    expect(r.structured).toMatchObject({ total: 0 });
   });
 });
 
@@ -115,6 +140,30 @@ describe('htaccess_rewrites_delete', () => {
     await expect(callTool(byName(tools, 'htaccess_rewrites_delete'), { website: 'vahi.dev', line_numbers: [0] }, ctx)).rejects.toThrow();
     expect(f.calls.some((c) => c.method === 'PATCH')).toBe(false);
   });
+
+  it('reports how many chains were already removed when a later PATCH fails', async () => {
+    const bodies: unknown[] = [];
+    const { ctx } = await makeContext([...base(), captureBodiesFailingAt({ method: 'PATCH', path: htPath }, bodies, 2)]);
+    // Highest first, so the second request is line 1: one chain is already gone when it fails.
+    const err = await callTool(byName(tools, 'htaccess_rewrites_delete'), { website: 'vahi.dev', line_numbers: [1, 3] }, ctx).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    expect(err?.message).toMatch(/removed 1 of 2 lines before line 1 failed/);
+    // The panel's own diagnosis survives, and the EnhanceApiError rides along as the cause, so
+    // its status is not lost to anything inspecting the failure.
+    expect(err?.message).toContain('panel refused the line');
+    expect(err?.cause).toBeInstanceOf(EnhanceApiError);
+    expect((err?.cause as EnhanceApiError).status).toBe(400);
+    // It stops at the failure rather than carrying on with the rest.
+    expect(bodies).toEqual([{ items: [{ lineNumber: 3 }] }, { items: [{ lineNumber: 1 }] }]);
+  });
+
+  it('warns in its description that a removed chain can break routing and that the rest renumber', () => {
+    const d = byName(tools, 'htaccess_rewrites_delete').description;
+    expect(d).toMatch(/routing/i);
+    expect(d).toContain('htaccess_rewrites_get');
+  });
 });
 
 describe('ip_rules_get', () => {
@@ -133,6 +182,15 @@ describe('ip_rules_get', () => {
     const r = await callTool(byName(tools, 'ip_rules_get'), { website: 'vahi.dev' }, ctx);
     expect(r.text).toContain('ips: none');
     expect(r.structured).toEqual({ kind: 'block', ips: [] });
+  });
+
+  it('treats a 204 with no body as no rule at all rather than throwing', async () => {
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: ipsPath, status: 204 }]);
+    const r = await callTool(byName(tools, 'ip_rules_get'), { website: 'vahi.dev' }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toContain(websiteLine);
+    expect(r.text).toContain('ips: none');
+    expect(r.structured).toMatchObject({ ips: [] });
   });
 
   it('warns in its description that LiteSpeed servers ignore the rule', async () => {

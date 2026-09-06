@@ -16,6 +16,13 @@ async function phpSite(ctx: ToolContext, website: string): Promise<DbSite & { w:
   return { ...siteOf(ctx, org, w), w };
 }
 
+/** One compact line for a failure that only degrades part of a response: the panel's method, path
+ *  and status, which is what `EnhanceApiError.message` already is. Rendered through `safe()` by
+ *  the caller, so nothing in it can forge extra output lines. */
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 /** The panel caps the error log at 256 KB; this caps what reaches the transcript at 64 KB. */
 const MAX_LOG_BYTES = 65_536;
 
@@ -43,16 +50,24 @@ export const phpExtensionsList = defineTool({
     const s = await phpSite(ctx, website);
     const path = { path: { website_id: s.id } };
     // `php_extensions` is the *enabled* set; the other two are what could be enabled and what is
-    // compiled in. All three are independent reads, so fetch them together.
-    const [enabled, available, builtIn] = await Promise.all([
+    // compiled in. All three are independent reads, so fetch them together — and `allSettled`, not
+    // `all`, because only the enabled set is load-bearing: convention 9, an optional enrichment
+    // that 403s degrades to a note in its own line rather than failing the whole listing.
+    const [enabled, available, builtIn] = await Promise.allSettled([
       ctx.client.call('GET', '/websites/{website_id}/php_extensions', () => ctx.client.api.GET('/websites/{website_id}/php_extensions', { params: path })),
       ctx.client.call('GET', '/websites/{website_id}/available_php_extensions', () => ctx.client.api.GET('/websites/{website_id}/available_php_extensions', { params: path })),
       ctx.client.call('GET', '/websites/{website_id}/built_in_php_extensions', () => ctx.client.api.GET('/websites/{website_id}/built_in_php_extensions', { params: path })),
     ]);
+    // The enabled set is what the tool is for, so a failure there is the tool's failure.
+    if (enabled.status === 'rejected') throw enabled.reason;
     const list = (xs: string[] | undefined): string => (xs ?? []).map(safe).join(', ') || 'none';
+    const optional = (r: PromiseSettledResult<string[] | undefined>): { value: string[] | null; text: string } =>
+      r.status === 'fulfilled' ? { value: r.value ?? [], text: list(r.value) } : { value: null, text: `(could not read: ${safe(errorText(r.reason))})` };
+    const av = optional(available);
+    const bi = optional(builtIn);
     return ok(
-      [s.identity, kv([['enabled', list(enabled)], ['available to enable', list(available)], ['built in (always on)', list(builtIn)]])].join('\n'),
-      { enabled: enabled ?? [], available: available ?? [], builtIn: builtIn ?? [] },
+      [s.identity, kv([['enabled', list(enabled.value)], ['available to enable', av.text], ['built in (always on)', bi.text]])].join('\n'),
+      { enabled: enabled.value ?? [], available: av.value, builtIn: bi.value },
     );
   },
 });

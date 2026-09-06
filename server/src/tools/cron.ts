@@ -1,10 +1,9 @@
 import * as z from 'zod/v4';
-import { EnhanceApiError } from '../client/errors.js';
 import type { components } from '../client/generated/types.js';
 import type { ToolContext } from '../core/context.js';
 import { defineTool, type Target, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
-import { siteOf, siteWebsite, siteWebsiteById, websiteArg, type DbSite } from './dbcommon.js';
+import { partialFailure, siteOf, siteWebsite, siteWebsiteById, websiteArg, type DbSite } from './dbcommon.js';
 
 async function cronSite(ctx: ToolContext, website: string): Promise<DbSite> {
   const { org, w } = await siteWebsite(ctx, website);
@@ -46,17 +45,6 @@ async function readCrontab(ctx: ToolContext, s: DbSite): Promise<CronItem[]> {
 }
 
 /**
- * A crontab edit is one PATCH per line, so a failure can land after some lines have already been
- * written. Rethrowing with the count stops the caller from reading it as "nothing happened" and
- * re-sending the whole batch, which would duplicate the lines that did apply. The panel's own
- * diagnosis is carried through verbatim.
- */
-function partialFailure(verb: string, done: number, total: number, line: number, e: unknown): Error {
-  const because = e instanceof EnhanceApiError ? e.toText() : e instanceof Error ? e.message : String(e);
-  return new Error(`${verb} ${done} of ${total} lines before line ${line} failed: ${because}`);
-}
-
-/**
  * A light shape check, not a cron parser: five whitespace-separated schedule fields (or one of
  * the `@` keywords the panel's cron accepts) followed by a command. The panel is the authority on
  * whether each field is a valid range or step — it answers 400 `invalid_syntax` when it is not —
@@ -64,13 +52,13 @@ function partialFailure(verb: string, done: number, total: number, line: number,
  * second entry into the crontab, is caught here before anything is sent. Tabs and spaces only:
  * `\s` would let a newline through as a field separator.
  */
-const CRON_LINE_RE = /^(?:@(?:reboot|hourly|daily|weekly|monthly|yearly)|\S+(?:[ \t]+\S+){4})[ \t]+\S(?:.*\S)?$/;
+const CRON_LINE_RE = /^(?:@(?:reboot|hourly|daily|midnight|weekly|monthly|yearly|annually)|\S+(?:[ \t]+\S+){4})[ \t]+\S(?:.*\S)?$/;
 
 const jobArg = z
   .string()
   .trim()
   .min(1, 'a cron job line must not be empty')
-  .regex(CRON_LINE_RE, "a cron job must be a full crontab line: five schedule fields, or @reboot/@hourly/@daily/@weekly/@monthly/@yearly, then the command — e.g. '* * * * * php /var/www/<website_id>/app/artisan schedule:run'")
+  .regex(CRON_LINE_RE, "a cron job must be a full crontab line: five schedule fields, or @reboot/@hourly/@daily/@midnight/@weekly/@monthly/@yearly/@annually, then the command — e.g. '* * * * * php /var/www/<website_id>/app/artisan schedule:run'")
   // Verified live 2026-09-06: `* * * * * date +%s >> log` ran and wrote nothing, because cron
   // ends the command at the first unescaped %.
   .refine(

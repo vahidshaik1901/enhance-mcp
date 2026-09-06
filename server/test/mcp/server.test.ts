@@ -272,8 +272,12 @@ describe('createServer', () => {
    * substrings so the legitimate `domain_cloudflare_nameservers` is not a false positive.
    */
   it('registers no platform, org or credential administration tool', () => {
-    const forbidden = /(^|_)(servers?|settings?|licences?|licenses?|members?|owners?)(_|$)|(token_create|org_delete|subscription_delete)/;
+    const forbidden = /(^|_)(servers?|settings?|licences?|licenses?|members?|owners?|purge|bulk)(_|$)|(token_create|org_delete|subscription_delete)|(^|_)(orgs?|subscriptions?|websites)_(delete|remove)(_|$)/;
     expect(allTools.filter((t) => forbidden.test(t.name)).map((t) => t.name)).toEqual([]);
+    // The plural is the bulk endpoint (`DELETE /orgs/{id}/websites` with a body of UUIDs) and the
+    // singular is the one gated tool this server does expose, so the guard must separate them.
+    expect(forbidden.test('websites_delete')).toBe(true);
+    expect(forbidden.test('website_delete')).toBe(false);
   });
 
   it('every destructive tool defines target() and preview()', () => {
@@ -342,13 +346,28 @@ describe('createServer', () => {
   ];
 
   /**
-   * The real invariant: the panel's purge (`DELETE …?force=true`, which wipes a website's data
-   * outright and needs a privileged master-org member) is never exposed, so no DELETE this server
-   * sends may carry a force flag. Deliberately not a ban on the substring everywhere — `force` does
-   * appear once in the codebase, as `db_import_sql`'s continue-on-error flag (the mysql CLI's
-   * --force), and that rides on the POST carrying the SQL, never on a DELETE.
+   * The real invariant, on every request rather than only on the DELETEs: the panel's purge
+   * (`?force=true`, which wipes a website's data outright and needs a privileged master-org
+   * member), its `?purge=` sibling and the master-org-only `?showDeleted=` are never sent at all,
+   * whatever the method. Deliberately not a ban on the `force` substring everywhere — it appears
+   * once in the codebase, as `db_import_sql`'s continue-on-error flag (the mysql CLI's --force),
+   * and that rides only on the POST carrying the SQL. Anything else carrying one of these flags,
+   * on any method, is a bug in a tool.
    */
-  const expectNoForcedDelete = (f: FakeFetch) => expect(f.calls.filter((x) => x.method === 'DELETE' && x.path.includes('force='))).toEqual([]);
+  const IMPORT_SQL_PATH = /^\/v2\/websites\/[^/]+\/mysql\/[^/]+\/sql/;
+  const expectNoDangerousFlags = (f: Pick<FakeFetch, 'calls'>) => {
+    expect(f.calls.filter((x) => /[?&](purge|showDeleted)=/.test(x.path)).map((x) => `${x.method} ${x.path}`)).toEqual([]);
+    expect(f.calls.filter((x) => /[?&]force=/.test(x.path) && !(x.method === 'POST' && IMPORT_SQL_PATH.test(x.path))).map((x) => `${x.method} ${x.path}`)).toEqual([]);
+  };
+
+  it('the dangerous-flag guard would catch a purge, a showDeleted listing and a forced delete', () => {
+    const call = (method: string, path: string) => ({ method, path, headers: new Headers() });
+    for (const bad of [call('DELETE', `/orgs/x/websites/y?force=true`), call('DELETE', '/orgs/x/websites/y?purge=true'), call('GET', '/orgs/x/websites?showDeleted=true')]) {
+      expect(() => expectNoDangerousFlags({ calls: [bad] })).toThrow();
+    }
+    // ...and still lets db_import_sql's own continue-on-error flag through.
+    expect(() => expectNoDangerousFlags({ calls: [call('POST', `/v2/websites/${WEBSITE_ID}/mysql/${MYSQL_DB}/sql?force=true`)] })).not.toThrow();
+  });
 
   it('drives every registered destructive tool through the cases below', () => {
     expect(destructiveCases.map((c) => c.tool).sort()).toEqual(allTools.filter((t) => t.risk === 'destructive').map((t) => t.name).sort());
@@ -374,7 +393,7 @@ describe('createServer', () => {
         expect(writes[0]?.headers.get('content-type')).toMatch(/^multipart\/form-data/);
         expect(writes[0]?.body).toContain(IMPORT_SQL);
       }
-      expectNoForcedDelete(f);
+      expectNoDangerousFlags(f);
       expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ tool: c.tool, gate: 'elicitation', outcome: 'ok' });
     });
   }
@@ -384,7 +403,7 @@ describe('createServer', () => {
     const r = await call('website_delete', { website: 'vahi.dev' });
     expect(r.isError).toBe(false);
     expect(f.calls.filter((x) => x.method === 'DELETE').map((x) => x.path)).toEqual([sitePath]);
-    expectNoForcedDelete(f);
+    expectNoDangerousFlags(f);
   });
 
   it("db_import_sql's own force flag rides on its POST, and the guard above still holds", async () => {
@@ -394,7 +413,7 @@ describe('createServer', () => {
     const writes = f.calls.filter((x) => x.method !== 'GET');
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({ method: 'POST', path: `/v2/websites/${WEBSITE_ID}/mysql/${MYSQL_DB}/sql?force=true` });
-    expectNoForcedDelete(f);
+    expectNoDangerousFlags(f);
   });
 
   it('db_delete with the wrong name typed drops nothing and audits a cancellation', async () => {

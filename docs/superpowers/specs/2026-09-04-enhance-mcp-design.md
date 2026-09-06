@@ -348,9 +348,16 @@ the gate.
 
 ### Milestone B: PHP and databases
 
-PHP: `php_extensions_get`, `php_extension_enable`, `php_extension_disable`,
-`php_ini_get`, `php_ini_set`, `php_error_log`, `redis_get`, `redis_set`, `cache_clear`,
-`htaccess_rewrites_get`, `htaccess_rewrites_update`, `ip_rules_get`, `ip_rules_set`.
+The names below are the ones that shipped: the 2026-09-06 live probes settled them, so a few
+differ from the first sketch (there is no editable `php.ini` at the customer tier, so
+`php_ini_get/set` became `php_workers_get/set`; the crontab and .htaccess endpoints merge by line
+number, which split `cron_update` into `cron_add`/`cron_remove` and `htaccess_rewrites_update`
+into `_set`/`_delete`).
+
+PHP: `php_extensions_list`, `php_extension_enable`, `php_extension_disable`,
+`php_workers_get`, `php_workers_set`, `php_error_log`, `redis_state_get`, `redis_state_set`,
+`cache_clear`, `htaccess_rewrites_get`, `htaccess_rewrites_set`, `htaccess_rewrites_delete`,
+`ip_rules_get`, `ip_rules_set`.
 
 MySQL: `db_list`, `db_create`, `db_delete` (D), `db_users_list`, `db_user_create`,
 `db_user_update`, `db_user_delete` (D), `db_user_set_privileges`,
@@ -360,7 +367,8 @@ PostgreSQL: `pg_db_list`, `pg_db_create`, `pg_db_delete` (D), `pg_users_list`,
 `pg_user_create`, `pg_user_update`, `pg_user_delete` (D), `pg_user_grant`,
 `pg_user_revoke` (D).
 
-Cron: `cron_get`, `cron_update`, `cron_delete` (D).
+Cron: `cron_get`, `cron_add`, `cron_remove`, `cron_delete` (D), `container_cron_get`,
+`container_cron_set`.
 
 `enhance-database` skill.
 

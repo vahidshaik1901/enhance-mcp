@@ -65,10 +65,10 @@ describe('the canUse.postgresql gate', () => {
     const { ctx, f } = await makeContext([...base()]);
     const r = await callTool(byName(tools, 'pg_db_list'), { website: 'vahi.dev' }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/postgresql.*not available/i);
+    expect(r.text).toMatch(/postgresql is not enabled for this website's plan/i);
     // The identity block leads, so the human sees which website was checked.
     expect(r.text).toContain(websiteLine);
-    expect(r.text.indexOf(websiteLine)).toBeLessThan(r.text.indexOf('PostgreSQL is not available'));
+    expect(r.text.indexOf(websiteLine)).toBeLessThan(r.text.indexOf('PostgreSQL is not enabled'));
     // It points at the MySQL tools, which this plan does have.
     expect(r.text).toContain('db_');
     expect(r.structured).toMatchObject({ available: false });
@@ -79,7 +79,7 @@ describe('the canUse.postgresql gate', () => {
     const { ctx, f } = await makeContext([...base()]);
     const del = byName(tools, 'pg_db_delete');
     const args = del.input.parse({ website: 'vahi.dev', name: 'shop' });
-    await expect(del.target!(args, ctx)).rejects.toThrow(/PostgreSQL is not available/);
+    await expect(del.target!(args, ctx)).rejects.toThrow(/PostgreSQL is not enabled/);
     expect(f.calls.some((c) => c.path.includes('postgresql'))).toBe(false);
   });
 });
@@ -171,7 +171,7 @@ describe('pg_db_delete', () => {
     const target = await del.target!(args, ctx);
     const r = await del.handler(args, ctx, target);
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/postgresql.*not available/i);
+    expect(r.text).toMatch(/postgresql is not enabled/i);
     expect(f.calls.some((c) => c.method === 'DELETE')).toBe(false);
   });
 });

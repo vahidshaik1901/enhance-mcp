@@ -3,7 +3,7 @@ import { parseScalarText } from '../client/client.js';
 import type { ToolContext } from '../core/context.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
-import { siteOf, siteWebsite, websiteArg, type DbSite } from './dbcommon.js';
+import { partialFailure, siteOf, siteWebsite, websiteArg, type DbSite } from './dbcommon.js';
 
 /** The site the htaccess tools act on, plus its primary domain: the IP tools quote the domain
  *  back in the undo call and the `curl` verification hint. */
@@ -85,8 +85,9 @@ export const htaccessRewritesGet = defineTool({
     );
     // `items`, `rule` and `conds` are all required in the spec but the panel is the one filling
     // them in, so all three are guarded the same way: a missing key should degrade to a readable
-    // listing (an empty table, a `-` cell), never to a TypeError.
-    const items = res.items ?? [];
+    // listing (an empty table, a `-` cell), never to a TypeError. `res` itself is optional for the
+    // same reason `readCrontab`'s is: a real 204 comes back from `client.call` as undefined.
+    const items = res?.items ?? [];
     const rows = items.map((c) => ({ line: c.lineNumber, pattern: c.rule?.pattern, substitution: c.rule?.substitution, flags: (c.rule?.flags ?? []).join(','), conds: (c.conds ?? []).length }));
     return ok([s.identity, `managed rewrite chains (${rows.length}):`, table(rows, ['line', 'pattern', 'substitution', 'flags', 'conds'])].join('\n'), { total: rows.length, items });
   },
@@ -112,7 +113,7 @@ export const htaccessRewritesDelete = defineTool({
   name: 'htaccess_rewrites_delete',
   tier: 'customer',
   risk: 'write',
-  description: 'Deletes the panel-managed mod_rewrite chains at the given line numbers. Only the chains the panel manages are touched; rules the app ships in its own .htaccess are left alone. The panel renumbers the remaining chains from 1 after every deletion, so this sends one request per line, highest line first, and you should re-read htaccess_rewrites_get before deleting more.',
+  description: "Deletes the panel-managed mod_rewrite chains at the given line numbers. Only the chains the panel manages are touched; rules the app ships in its own .htaccess are left alone. Removing a chain can break an app's routing (a front-controller rewrite is what makes its pretty URLs resolve at all), so read htaccess_rewrites_get first and keep a copy of what you remove. The panel renumbers the surviving chains from 1 after every deletion, so this sends one request per line, highest line first; if it reports a partial failure, re-read htaccess_rewrites_get before retrying, because the numbers it took have already moved.",
   input: z.object({ website: websiteArg, line_numbers: z.array(z.number().int().min(1, 'line numbers start at 1')).min(1, 'name at least one line number to delete') }),
   async handler({ website, line_numbers: lineNumbers }, ctx) {
     const s = await htSite(ctx, website);
@@ -120,10 +121,17 @@ export const htaccessRewritesDelete = defineTool({
     // delete, so a lower line number sent first would shift every later target up. Sending two
     // bare items in a single PATCH was never verified live, so it is not used.
     const removed = [...new Set(lineNumbers)].sort((a, b) => b - a);
-    for (const lineNumber of removed) {
-      await ctx.client.call('PATCH', '/orgs/{org_id}/websites/{website_id}/htaccess', () =>
-        ctx.client.api.PATCH('/orgs/{org_id}/websites/{website_id}/htaccess', { params: { path: { org_id: s.org, website_id: s.id } }, body: { items: [{ lineNumber }] } }),
-      );
+    for (const [i, lineNumber] of removed.entries()) {
+      try {
+        await ctx.client.call('PATCH', '/orgs/{org_id}/websites/{website_id}/htaccess', () =>
+          ctx.client.api.PATCH('/orgs/{org_id}/websites/{website_id}/htaccess', { params: { path: { org_id: s.org, website_id: s.id } }, body: { items: [{ lineNumber }] } }),
+        );
+      } catch (e) {
+        // One PATCH per line, so a failure lands mid-sequence: say how many chains are already
+        // gone. Reporting it as a flat failure would invite a retry with the same numbers, which
+        // the panel has renumbered under them.
+        throw partialFailure('removed', i, removed.length, lineNumber, e);
+      }
     }
     return ok(`${s.identity}\nremoved rewrite chain(s) at line(s) ${removed.join(', ')} (highest first, one request each). The remaining chains are renumbered from 1, so re-read htaccess_rewrites_get before deleting more.`, { removed });
   },
@@ -140,8 +148,10 @@ export const ipRulesGet = defineTool({
     const rule = await ctx.client.call('GET', '/orgs/{org_id}/websites/{website_id}/htaccess/ips', () =>
       ctx.client.api.GET('/orgs/{org_id}/websites/{website_id}/htaccess/ips', { params: { path: { org_id: s.org, website_id: s.id } } }),
     );
-    const ips = rule.ips ?? [];
-    return ok(`${s.identity}\n${kv([['mode', rule.kind], ['ips', ips.map(safe).join(', ') || 'none']])}`, { kind: rule.kind, ips });
+    // Optional for the same reason the crontab listing is: a real 204 comes back as undefined,
+    // and `kind`/`ips` are the panel's to fill in.
+    const ips = rule?.ips ?? [];
+    return ok(`${s.identity}\n${kv([['mode', rule?.kind], ['ips', ips.map(safe).join(', ') || 'none']])}`, { kind: rule?.kind, ips });
   },
 });
 

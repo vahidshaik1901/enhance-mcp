@@ -218,15 +218,25 @@ describe('db_import_sql', () => {
     expect(r.structured).toMatchObject({ database: MYSQL_DB, imported: true, bytes: 27 });
   });
 
-  it('passes the force flag through as a query parameter', async () => {
+  it('passes the force flag through as a query parameter, and says so in the preview', async () => {
     const { ctx, f } = await makeContext([
       ...base(),
       { method: 'POST', path: new RegExp(`^/v2/websites/${WEBSITE_ID}/mysql/[^/]+/sql$`), handler: async () => new Response(null, { status: 200 }) },
     ]);
     const t = byName(tools, 'db_import_sql');
     const args = t.input.parse({ website: 'vahi.dev', name: 'demo', sql: 'SELECT 1;', force: true });
-    await t.handler(args, ctx, await t.target!(args, ctx));
+    const target = await t.target!(args, ctx);
+    // The human confirming has to be told that a failing statement will not stop the run.
+    expect(await t.preview!(args, ctx, target)).toMatch(/continue|keeps going|past/i);
+    await t.handler(args, ctx, target);
     expect(f.calls.at(-1)?.path).toContain('force=true');
+  });
+
+  it('says nothing about continuing past failures when force is off', async () => {
+    const { ctx } = await makeContext(base());
+    const t = byName(tools, 'db_import_sql');
+    const args = t.input.parse({ website: 'vahi.dev', name: 'demo', sql: 'SELECT 1;' });
+    expect(await t.preview!(args, ctx, await t.target!(args, ctx))).not.toMatch(/continue/i);
   });
 
   it('names the website in the preview and counts bytes, not characters', async () => {
@@ -281,6 +291,14 @@ describe('db_phpmyadmin_url', () => {
     const { ctx, f } = await makeContext([...base(), { method: 'GET', path: `${dbsPath}/${MYSQL_DB}/sso`, body: 'https://phpmyadmin.example/signon.php?sess=db' }]);
     await callTool(byName(tools, 'db_phpmyadmin_url'), { website: 'vahi.dev', name: MYSQL_DB }, ctx);
     expect(f.calls.at(-1)?.path).toContain(`${dbsPath}/${MYSQL_DB}/sso`);
+  });
+
+  it('is a write tool, because minting the session makes the panel create a persistent MySQL user', () => {
+    const t = byName(tools, 'db_phpmyadmin_url');
+    expect(t.risk).toBe('write');
+    // The description has to say what the URL is worth and what it leaves behind.
+    expect(t.description).toMatch(/full[- ]privilege/i);
+    expect(t.description).toContain('_phpma');
   });
 });
 

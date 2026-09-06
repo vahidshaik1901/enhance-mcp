@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import * as z from 'zod/v4';
+import { EnhanceApiError } from '../client/errors.js';
 import { requireOrg, type ToolContext } from '../core/context.js';
 import { identityBlock } from '../core/identity.js';
 import type { Target } from '../core/registry.js';
@@ -85,6 +86,19 @@ export async function dbTargetSite(ctx: ToolContext, target: Target): Promise<{ 
   // No unix user is looked up here: the name is already the full prefixed one carried by
   // `target.id`, so only the create/user-facing paths need the prefix.
   return { site: siteOf(ctx, org, w), name: target.id.slice(cut + 1), website: w };
+}
+
+/**
+ * A crontab or .htaccess edit is one PATCH per line, so a failure can land after some lines have
+ * already been written. Rethrowing with the count stops the caller from reading it as "nothing
+ * happened" and re-sending the whole batch, which would duplicate the lines that did apply — or,
+ * on a file the panel renumbers after each edit, hit different lines the second time. The panel's
+ * own diagnosis is carried through verbatim, and the original error rides along as `cause` so the
+ * `EnhanceApiError` status is not lost to anything inspecting the failure.
+ */
+export function partialFailure(verb: string, done: number, total: number, line: number, e: unknown): Error {
+  const because = e instanceof EnhanceApiError ? e.toText() : e instanceof Error ? e.message : String(e);
+  return new Error(`${verb} ${done} of ${total} lines before line ${line} failed: ${because}`, { cause: e });
 }
 
 /**

@@ -165,9 +165,12 @@ export const dbImportSql = defineTool({
     const full = resolveDbName(s.unixUser, name);
     return { kind: 'mysql_db', id: `${s.id}:${full}`, name: full };
   },
-  async preview({ sql }, ctx, target) {
+  async preview({ sql, force }, ctx, target) {
     const { site, name: database } = await dbTargetSite(ctx, target);
-    return `${site.identity}\nThis will run ${Buffer.byteLength(sql)} bytes of SQL against MySQL database ${safe(database)}. Statements such as DROP TABLE and TRUNCATE destroy data and cannot be undone from the panel. Export first with db_export_sql.`;
+    // With force on, a statement that fails does not stop the run, so the database can be left
+    // half-migrated. The human confirming has to be told that before they type the name.
+    const forced = force ? ' force is on: execution continues past any statement that fails, so a broken script can leave the database half-changed.' : '';
+    return `${site.identity}\nThis will run ${Buffer.byteLength(sql)} bytes of SQL against MySQL database ${safe(database)}. Statements such as DROP TABLE and TRUNCATE destroy data and cannot be undone from the panel. Export first with db_export_sql.${forced}`;
   },
   async handler({ sql, force }, ctx, target) {
     const { site, name: database } = await dbTargetSite(ctx, target!);
@@ -194,8 +197,11 @@ export const dbImportSql = defineTool({
 export const dbPhpmyadminUrl = defineTool({
   name: 'db_phpmyadmin_url',
   tier: 'customer',
-  risk: 'read',
-  description: 'Returns a single-use phpMyAdmin sign-on URL for the website (or a specific database). The URL logs the user straight in; treat it like a password and do not post it anywhere.',
+  // A write, not a read: the first call makes the panel create a persistent `<unixUser>_phpma`
+  // MySQL user on the server (verified live), and the URL it mints is a full-privilege login — so
+  // it must be withheld under ENHANCE_READ_ONLY and must land in the audit log like any other write.
+  risk: 'write',
+  description: 'Returns a single-use phpMyAdmin sign-on URL for the website (or a specific database). The URL is a full-privilege login: whoever opens it is signed in with rights over every database on the site, so treat it like a password and do not post it anywhere. Minting one also makes the panel create a persistent `<unixUser>_phpma` MySQL user, which stays on the server afterwards and shows up in db_users_list.',
   input: z.object({ website: websiteArg, name: nameArg.optional().describe('Optional database name to open directly (short, or the full <unixUser>_ prefixed form)') }),
   async handler({ website, name }, ctx) {
     const s = await dbSite(ctx, website);

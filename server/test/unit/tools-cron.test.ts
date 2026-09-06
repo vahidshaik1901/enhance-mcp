@@ -150,6 +150,16 @@ describe('cron_add', () => {
     expect(f.calls.some((c) => c.method === 'PATCH')).toBe(false);
   });
 
+  it('accepts every @ keyword cron itself accepts, @annually and @midnight included', async () => {
+    for (const job of ['@annually /usr/bin/backup.sh', '@midnight /usr/bin/backup.sh', '@reboot /usr/bin/warm.sh']) {
+      const seen: Array<{ method: string; body?: unknown }> = [];
+      const { ctx } = await makeContext([...base(), ...crontabTrace(seen, { items: [] })]);
+      const r = await callTool(byName(tools, 'cron_add'), { website: 'vahi.dev', jobs: [job] }, ctx);
+      expect(r.isError).toBeUndefined();
+      expect(seen).toEqual([{ method: 'GET' }, { method: 'PATCH', body: { items: [{ cronCmd: { lineNumber: 0, expr: job } }] } }]);
+    }
+  });
+
   it('rejects an unescaped % and says to write \\% instead', async () => {
     const { ctx, f } = await makeContext([...base(), ...crontabTrace([])]);
     // crontab ends the command at a bare %, so `date +%s >> log` silently never wrote the file

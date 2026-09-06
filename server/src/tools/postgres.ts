@@ -17,7 +17,7 @@ const userArg = z.string().min(1).describe('Database user name (short, or the fu
 function pgGate(site: DbSite, w: Website): ToolResult | undefined {
   if (w.canUse?.postgresql === true) return undefined;
   return fail(
-    `${site.identity}\nPostgreSQL is not available on this website's plan (canUse.postgresql is false), so nothing was sent to the panel. Ask the hosting provider to add it to the plan, or use MySQL instead with the db_* tools (db_list, db_create, db_user_create).`,
+    `${site.identity}\nPostgreSQL is not enabled for this website's plan (canUse.postgresql is not true), so nothing was sent to the panel. Ask the hosting provider to add it to the plan, or use MySQL instead with the db_* tools (db_list, db_create, db_user_create).`,
     { available: false },
   );
 }
@@ -37,7 +37,7 @@ async function pgSite(ctx: ToolContext, website: string): Promise<PgSite> {
  *  without PostgreSQL refuses outright and the gate wrapper reports it. */
 async function pgTarget(ctx: ToolContext, website: string): Promise<DbSiteWithUser> {
   const s = await pgSite(ctx, website);
-  if (!s.ok) throw new Error("PostgreSQL is not available on this website's plan");
+  if (!s.ok) throw new Error("PostgreSQL is not enabled for this website's plan");
   return s;
 }
 

@@ -9,7 +9,7 @@ delete a site by accident.
 ## Current status (2026-09-06)
 
 **Phase: milestone B code-complete on branch `feat/milestone-b` (Tasks 1-9 of
-`docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done). 71 tools are registered:
+`docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done). 71 tools are registered (a client lists 72 with `confirm_action`):
 milestone A plus MySQL, PostgreSQL, PHP extensions/workers/error log, Redis, FastCGI cache,
 htaccess rewrites and IP rules, and cron. All unit- and MCP-tested; every endpoint was probed
 against the live panel while the tools were written (see "Live probe: milestone B and C
@@ -28,7 +28,7 @@ Plans: milestone A `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md`
 milestone B `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` (10 tasks, TDD).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
 Key library facts: MCP TypeScript SDK is v2 (`@modelcontextprotocol/server`
-2.0.0, `serveStdio`, `registerTool`, form elicitation via `ctx.mcpReq.elicitInput`), zod 4
+2.0.0, `serveStdio`, `registerTool`, elicitation via the SDK's `inputRequired` flow), zod 4
 (`zod/v4`), openapi-fetch 0.17, openapi-typescript 7.13, npm name `enhance-mcp` is free.
 Claude Code supports MCP elicitation (>= 2.1.76) but advertises a bare `elicitation: {}`
 capability and negotiates the legacy protocol era; the server uses the SDK's `inputRequired`
@@ -40,8 +40,10 @@ Progress: milestone A is merged to `main`; milestone B Tasks 1-9 are done and re
 fresh panel credential (ledger in `.superpowers/sdd/progress.md`, git-ignored; `git log` is the
 recovery map). To run the live suite: put a working credential in `.env` as `ENHANCE_TOKEN` (or a
 session JWT as
-`ENHANCE_SESSION_COOKIE`), then from `server/`:
-`set -a && source ../.env && set +a && ENHANCE_E2E=1 ENHANCE_E2E_SUBSCRIPTION_ID=664 npm run test:e2e`.
+`ENHANCE_SESSION_COOKIE`), then run the milestone B suite from the repo root:
+`cd server && set -a && source ../.env && set +a && ENHANCE_TOKEN="$ENHANCE_SESSION_COOKIE" ENHANCE_E2E=1 ENHANCE_E2E_SITE=vahi.dev npx vitest run --config vitest.e2e.config.ts test/e2e/milestone-b.e2e.test.ts`.
+(`npm run test:e2e` also runs the milestone A suite, which creates and deletes a throwaway
+website and additionally needs `ENHANCE_E2E_SUBSCRIPTION_ID=664`.)
 
 ### Decisions made
 
@@ -71,16 +73,6 @@ session JWT as
 7. **Destructive ops: two-step confirmation gate** (preview + confirmation token + the
    human typing the domain name). Never expose `force=true`, org delete, subscription
    delete, or bulk website delete. Assumed from my recommendation; confirm in design review.
-
-### Remaining before code
-
-- User reviews the spec. Then `superpowers:writing-plans` for milestone A, then implement
-  with TDD against the live panel.
-- Milestone ladder (each ends with a live test pass that feeds changes back):
-  A static site + preflight (domain check, DNS, SSL, SSH), B PHP + databases,
-  C Node.js + persistent apps, D advanced (WordPress, email, backups, DNS zone,
-  staging) + deploy modes B (GitHub Actions) and C (git push to server).
-- Deploy modes: A direct rsync (implemented first); B and C documented, built in D.
 
 ## Live test panel (verified 2026-09-04, read-only probes)
 

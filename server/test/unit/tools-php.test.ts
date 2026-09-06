@@ -40,6 +40,31 @@ describe('php_extensions_list', () => {
     expect(paths).toContain(`/websites/${WEBSITE_ID}/built_in_php_extensions`);
   });
 
+  it('still lists the enabled set when the available lookup is forbidden', async () => {
+    const { ctx } = await makeContext([
+      ...base(),
+      { method: 'GET', path: `/websites/${WEBSITE_ID}/php_extensions`, body: ['pgsql'] },
+      { method: 'GET', path: `/websites/${WEBSITE_ID}/available_php_extensions`, status: 403, body: { code: 'unauthorized' } },
+      { method: 'GET', path: `/websites/${WEBSITE_ID}/built_in_php_extensions`, body: ['mysqli'] },
+    ]);
+    const r = await callTool(byName(tools, 'php_extensions_list'), { website: 'vahi.dev' }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toContain('pgsql');
+    expect(r.text).toContain('could not read:');
+    // The optional half degrades to null; the required half is still there (convention 9).
+    expect(r.structured).toMatchObject({ enabled: ['pgsql'], available: null, builtIn: ['mysqli'] });
+  });
+
+  it('fails outright when the enabled lookup itself fails', async () => {
+    const { ctx } = await makeContext([
+      ...base(),
+      { method: 'GET', path: `/websites/${WEBSITE_ID}/php_extensions`, status: 403, body: { code: 'unauthorized' } },
+      { method: 'GET', path: `/websites/${WEBSITE_ID}/available_php_extensions`, body: ['apcu'] },
+      { method: 'GET', path: `/websites/${WEBSITE_ID}/built_in_php_extensions`, body: ['mysqli'] },
+    ]);
+    await expect(callTool(byName(tools, 'php_extensions_list'), { website: 'vahi.dev' }, ctx)).rejects.toThrow(/403/);
+  });
+
   it('says none rather than an empty line when nothing is enabled', async () => {
     const { ctx } = await makeContext([
       ...base(),
