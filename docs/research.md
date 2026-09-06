@@ -455,6 +455,20 @@ the `MySQLDBsFullListing` type.
   `GET/PUT .../htaccess/ips {kind: "allow"|"block", ips[]}` (was `{ips:[], kind:"block"}`).
   Domain-level `GET/PUT/DELETE /v2/domains/{id}/webserver_rewrites [{path, destinationFile}]`.
 
+  **Verified live 2026-09-06 (rewrites):** `PATCH .../htaccess {items}` MERGES by `lineNumber`
+  (posting line 2 alone kept line 1); a bare `{lineNumber: N}` DELETES that chain; after a delete
+  the remaining chains are RENUMBERED from 1, so deleting several must go highest-first (or
+  re-read between deletes); the rules take effect at once (`/old-a` answered 302). The chains are
+  written into `public_html/.htaccess` next to the panel's `<RequireAll>` block.
+  **Verified live 2026-09-06 (IP rules):** the panel writes `<RequireAny> Require ip … </RequireAny>`
+  (Apache 2.4 syntax) into `public_html/.htaccess`, but this server runs **LiteSpeed**
+  (`server: LiteSpeed`), which ignores it: with `allow [203.0.113.9]` every request from another
+  IP still got 200 (static, PHP, 404 paths, preview and primary domain), and `block [my ip]` did
+  not block me either. So `ip_rules_set` is a no-op on (Open)LiteSpeed servers and presumably
+  works only on Apache ones. Tools must say so and tell the user to verify with curl.
+  Open question for the walkthrough: how the panel-managed `.htaccess` block coexists with an
+  app's own `.htaccess` (Laravel, WordPress) after an rsync deploy.
+
 ### Cron
 
 - `GET /orgs/{org}/websites/{id}/crontab` -> `{items: CrontabValue[]}` where each item is
