@@ -410,7 +410,11 @@ Laravel `DB_HOST`) must use `localhost` (the unix socket), never `127.0.0.1` or 
   became `{"vahi_dev1_demo": ["all"]}`.
 - Access hosts `POST/DELETE .../mysql-users/{username}/access-hosts {accessHosts[]}`.
 - Password change `PUT .../mysql-users/{username} {password}`.
-- Export `GET .../mysql-dbs/{db_name}/sql` -> SQL as a JSON string.
+- Export `GET .../mysql-dbs/{db_name}/sql` -> a JSON string holding a **filename**, not the dump
+  (verified 2026-09-06: `"sql_backup_vahi_dev1_mcpxport_06-09-2026_01:29.sql.gz"`). The panel
+  writes a gzipped dump to the website HOME directory (`/var/www/<id>/<filename>`, mode 0600,
+  outside the docroot). Fetch it with scp over SSH or the panel file manager; old backups
+  accumulate until removed. An earlier note here wrongly said the body was the SQL itself.
 - Import `POST /v2/websites/{id}/mysql/{db_name}/sql` multipart `{sql}` with optional `?force`.
 - phpMyAdmin SSO `GET .../phpmyadmin?shouldRedirect=false` -> a signon URL string
   (`https://phpmyadmin.<panel>/signon.php?sess=...`); per-db variant `.../mysql-dbs/{db_name}/sso`.

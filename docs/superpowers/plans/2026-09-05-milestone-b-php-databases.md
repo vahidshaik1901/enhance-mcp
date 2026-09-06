@@ -45,6 +45,12 @@ The spec's milestone B tool list predates the live probe. These bindings are fix
 | `pg_*` (PostgreSQL) | `pg_*` | `/orgs/{org}/websites/{id}/postgresql-dbs`, `.../postgresql-users`, privileges |
 | `cron_*` | `cron_*` | `/orgs/{org}/websites/{id}/crontab`, `/websites/{id}/container_cron_enabled` |
 
+**Correction (2026-09-06, verified live):** `db_export_sql` does not receive the dump. The
+panel writes `sql_backup_<db>_<date>.sql.gz` into the website home directory and returns that
+filename. The tool reports the container path and the scp command, carries `risk: 'write'`
+(it creates a server-side file), and Task 10's e2e asserts a `.sql.gz` filename rather than SQL
+text. Task 2's original export/`save_to` text is superseded.
+
 There is no generic php.ini editor at customer tier; `php_settings_*` exposes `lsapiChildren` only, and the tool says so. PostgreSQL is off on the test plan (`canUse.postgresql=false`), so its live e2e is skipped with a note; unit and MCP tests still cover it.
 
 ## File Structure
