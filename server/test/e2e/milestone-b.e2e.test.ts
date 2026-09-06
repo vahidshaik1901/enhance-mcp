@@ -27,9 +27,10 @@ suite('milestone B against the live panel', () => {
   let tools: ToolDef[];
   /**
    * The site every tool here addresses. Unlike milestone A, this suite creates no website: it
-   * works inside an existing one, so `ENHANCE_E2E_DOMAIN` is required rather than optional and
-   * `beforeAll` refuses to run without it. Nothing that belongs to the site is touched — every
-   * write this suite makes is a randomly named `mcpb…` resource it created itself.
+   * works inside an existing one, so it takes its own `ENHANCE_E2E_SITE` ("an existing website")
+   * rather than milestone A's `ENHANCE_E2E_DOMAIN` ("a free domain to create"), and `beforeAll`
+   * refuses to run without it. Nothing that belongs to the site is touched — every write this
+   * suite makes is a randomly named `mcpb…` resource it created itself.
    */
   let site: string;
   // Exactly five hex characters, so the database and user names are the documented
@@ -69,8 +70,11 @@ suite('milestone B against the live panel', () => {
 
   beforeAll(async () => {
     ({ ctx, tools } = await bootstrap(process.env));
-    site = process.env['ENHANCE_E2E_DOMAIN'] ?? '';
-    expect(site, 'ENHANCE_E2E_DOMAIN must name an existing website (e.g. vahi.dev) for the milestone B live suite; it creates throwaway mcpb… databases, users and one cron line on that site').toBeTruthy();
+    site = process.env['ENHANCE_E2E_SITE'] ?? '';
+    expect(site, 'ENHANCE_E2E_SITE must name an existing website (e.g. vahi.dev) for the milestone B live suite; it creates throwaway mcpb… databases, users and one cron line on that site').toBeTruthy();
+    // A read-only registry never registers db_create and friends, so say why here instead of
+    // failing several lines later with a bare "tool db_create not registered".
+    expect(ctx.config.readOnly, 'ENHANCE_READ_ONLY is set: the milestone B live suite needs the write and destructive tools, which a read-only registry does not register').toBe(false);
   });
 
   afterAll(async () => {
@@ -80,23 +84,38 @@ suite('milestone B against the live panel', () => {
     // target()/handler() directly, and only ever for the exact full names this run recorded and
     // that the live listing still shows. A name that is already gone (the delete test ran) is
     // skipped rather than re-sent, so cleanup cannot turn a passing run red on a 404.
-    if (fullUser && (await listedUsers()).includes(fullUser)) {
-      const del = tool(tools, 'db_user_delete');
-      const args = del.input.parse({ website: site, username: fullUser });
-      const target = await del.target!(args, ctx).catch(() => undefined);
-      if (target?.name === fullUser) await del.handler(args, ctx, target);
+    // Each of the three steps is guarded on its own: a step that fails prints one line naming
+    // exactly what is left on the panel, and the next step still runs, so one error (an expired
+    // credential mid-run, say) cannot strand the other two resources as well.
+    try {
+      if (fullUser && (await listedUsers()).includes(fullUser)) {
+        const del = tool(tools, 'db_user_delete');
+        const args = del.input.parse({ website: site, username: fullUser });
+        const target = await del.target!(args, ctx).catch(() => undefined);
+        if (target?.name === fullUser) await del.handler(args, ctx, target);
+      }
+    } catch (e) {
+      console.error(`e2e cleanup: could not remove the MySQL user ${fullUser}; delete it by hand: ${(e as Error).message}`);
     }
-    if (fullDb && (await listedDatabases()).includes(fullDb)) {
-      const del = tool(tools, 'db_delete');
-      const args = del.input.parse({ website: site, name: fullDb });
-      const target = await del.target!(args, ctx).catch(() => undefined);
-      if (target?.name === fullDb) await del.handler(args, ctx, target);
+    try {
+      if (fullDb && (await listedDatabases()).includes(fullDb)) {
+        const del = tool(tools, 'db_delete');
+        const args = del.input.parse({ website: site, name: fullDb });
+        const target = await del.target!(args, ctx).catch(() => undefined);
+        if (target?.name === fullDb) await del.handler(args, ctx, target);
+      }
+    } catch (e) {
+      console.error(`e2e cleanup: could not remove the MySQL database ${fullDb}; delete it by hand: ${(e as Error).message}`);
     }
     // The cron line is found by this run's own marker, never by the number recorded earlier: the
     // panel renumbers the file after every removal, so a stale number could name someone else's
     // job. cron_delete is never used here — it would wipe the whole customer crontab.
-    const line = await markerLine();
-    if (line !== undefined) await call(tool(tools, 'cron_remove'), { website: site, line_numbers: [line] });
+    try {
+      const line = await markerLine();
+      if (line !== undefined) await call(tool(tools, 'cron_remove'), { website: site, line_numbers: [line] });
+    } catch (e) {
+      console.error(`e2e cleanup: could not remove the cron line marked ${cronMarker}; delete it by hand: ${(e as Error).message}`);
+    }
     // The gzipped dump db_export_sql wrote stays in the website's home directory on purpose:
     // removing it needs SSH, which this harness has no key for. It is 0600 and outside the
     // docroot; delete the `sql_backup_…mcpb….sql.gz` files by hand over SSH if they pile up.
@@ -231,7 +250,7 @@ suite('milestone B against the live panel', () => {
     const userPreview = await delUser.preview!(userArgs, ctx, userTarget);
     // The identity block leads the preview: the human confirming sees which site the login is on.
     // Only the `website:` label is asserted, because the block names the site's *primary* domain,
-    // which need not be the ENHANCE_E2E_DOMAIN alias the suite addressed it by.
+    // which need not be the ENHANCE_E2E_SITE alias the suite addressed it by.
     expect(userPreview).toContain('website: ');
     expect(userPreview).toContain(fullUser!);
     const userToken = ctx.gate.issue(delUser.name, userTarget, userArgs);
@@ -243,9 +262,13 @@ suite('milestone B against the live panel', () => {
     }
     expect(mistypedUser).toBeInstanceOf(GateError);
     expect((mistypedUser as GateError).reason).toBe('mismatch');
-    // The gate is proven above; the deletion itself runs the handler with the target that gate
-    // pinned, as milestone A's website_delete test does.
-    const deletedUser = await delUser.handler(userArgs, ctx, userTarget);
+    // The happy path on the same token: the full prefixed name the preview showed is what the
+    // gate's matcher accepts, and the deletion then runs the handler with the args the gate
+    // pinned, exactly as milestone A's website_delete test does.
+    const userPending = ctx.gate.verify(userToken, fullUser!);
+    expect(userPending.tool).toBe(delUser.name);
+    expect(userPending.target.name).toBe(fullUser);
+    const deletedUser = await delUser.handler(userPending.args, ctx, userTarget);
     expect(deletedUser.isError, deletedUser.text).toBeFalsy();
     expect(await listedUsers()).not.toContain(fullUser);
 
@@ -266,7 +289,10 @@ suite('milestone B against the live panel', () => {
     }
     expect(mistypedDb).toBeInstanceOf(GateError);
     expect((mistypedDb as GateError).reason).toBe('mismatch');
-    const deletedDb = await delDb.handler(dbArgs, ctx, dbTarget);
+    const dbPending = ctx.gate.verify(dbToken, fullDb!);
+    expect(dbPending.tool).toBe(delDb.name);
+    expect(dbPending.target.name).toBe(fullDb);
+    const deletedDb = await delDb.handler(dbPending.args, ctx, dbTarget);
     expect(deletedDb.isError, deletedDb.text).toBeFalsy();
     expect(await listedDatabases()).not.toContain(fullDb);
   });
