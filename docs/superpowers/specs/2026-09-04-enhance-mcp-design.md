@@ -354,7 +354,7 @@ PHP: `php_extensions_get`, `php_extension_enable`, `php_extension_disable`,
 
 MySQL: `db_list`, `db_create`, `db_delete` (D), `db_users_list`, `db_user_create`,
 `db_user_update`, `db_user_delete` (D), `db_user_set_privileges`,
-`db_user_access_hosts_set`, `db_phpmyadmin_url`, `db_export_sql`, `db_import_sql` (D).
+`db_user_access_hosts_add`, `db_user_access_hosts_remove`, `db_phpmyadmin_url`, `db_export_sql`, `db_import_sql` (D).
 
 PostgreSQL: `pg_db_list`, `pg_db_create`, `pg_db_delete` (D), `pg_users_list`,
 `pg_user_create`, `pg_user_update`, `pg_user_delete` (D), `pg_user_grant`,

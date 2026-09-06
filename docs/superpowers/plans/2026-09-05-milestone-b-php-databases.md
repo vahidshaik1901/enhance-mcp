@@ -45,7 +45,7 @@ The spec's milestone B tool list predates the live probe. These bindings are fix
 | `pg_*` (PostgreSQL) | `pg_*` | `/orgs/{org}/websites/{id}/postgresql-dbs`, `.../postgresql-users`, privileges |
 | `cron_*` | `cron_*` | `/orgs/{org}/websites/{id}/crontab`, `/websites/{id}/container_cron_enabled` |
 
-**Correction (2026-09-06, verified live):** `db_export_sql` does not receive the dump. The
+**Correction (2026-09-06, verified live):** the access-hosts POST adds hosts and DELETE removes them, so the tool is `db_user_access_hosts_add` plus `db_user_access_hosts_remove`, not `_set`. `db_export_sql` does not receive the dump. The
 panel writes `sql_backup_<db>_<date>.sql.gz` into the website home directory and returns that
 filename. The tool reports the container path and the scp command, carries `risk: 'write'`
 (it creates a server-side file), and Task 10's e2e asserts a `.sql.gz` filename rather than SQL
@@ -455,7 +455,7 @@ git commit -m "feat(mysql): database list, create, delete, export, import, phpMy
   - `db_user_update(website, username, password)` -> sets a new password.
   - `db_user_delete(website, username)` DESTRUCTIVE.
   - `db_user_set_privileges(website, username, database, grants[])`.
-  - `db_user_access_hosts_set(website, username, hosts[])`.
+  - `db_user_access_hosts_add(website, username, hosts[])`.
   - `export const tools: ToolDef[] = [dbList, dbCreate, dbDelete, dbExportSql, dbImportSql, dbPhpmyadminUrl, dbUsersList, dbUserCreate, dbUserUpdate, dbUserDelete, dbUserSetPrivileges, dbUserAccessHostsSet];`
 
 - [ ] **Step 1: Write the failing test**
@@ -617,7 +617,7 @@ export const dbUserSetPrivileges = defineTool({
 });
 
 export const dbUserAccessHostsSet = defineTool({
-  name: 'db_user_access_hosts_set',
+  name: 'db_user_access_hosts_add',
   tier: 'customer',
   risk: 'write',
   description: "Sets the hosts a MySQL user may connect from (replaces the list). The default host is the app tier; only change this if the user connects from elsewhere.",
