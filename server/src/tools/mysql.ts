@@ -1,52 +1,20 @@
-import { randomBytes } from 'node:crypto';
 import { defaultPathSerializer, type PathSerializer } from 'openapi-fetch';
 import * as z from 'zod/v4';
 import { parseScalarText } from '../client/client.js';
 import type { ToolContext } from '../core/context.js';
-import { identityBlock, websiteHome } from '../core/identity.js';
-import { defineTool, type Target, type ToolDef } from '../core/registry.js';
+import { websiteHome } from '../core/identity.js';
+import { defineTool, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
-import type { Website } from '../core/resolver.js';
-import { MYSQL_GRANTS, resolveDbName, resolveDbUser, siteWebsite, siteWebsiteById, unixUserOf, websiteArg } from './dbcommon.js';
+import { dbTargetSite, generatePassword, MYSQL_GRANTS, resolveDbName, resolveDbUser, siteOf, siteWebsite, unixUserOf, websiteArg, type DbSiteWithUser } from './dbcommon.js';
 
 const nameArg = z.string().min(1).describe('Database name (short, or the full <unixUser>_ prefixed form)');
 const userArg = z.string().min(1).describe('Database user name (short, or the full <unixUser>_ prefixed form)');
-
-export interface DbSite {
-  org: string;
-  id: string;
-  identity: string;
-}
-
-/** A site plus its unix user, for the tools that have to build a `<unixUser>_` prefixed name. */
-export interface DbSiteWithUser extends DbSite {
-  unixUser: string;
-}
-
-function siteOf(ctx: ToolContext, org: string, w: Website): DbSite {
-  return { org, id: w.id, identity: identityBlock({ name: ctx.client.orgName, id: org }, w) };
-}
 
 /** The site plus the unix user, for every tool that turns the name the user typed into the full
  *  prefixed one. Fails loudly on a website without a unix user (see `unixUserOf`). */
 export async function dbSite(ctx: ToolContext, website: string): Promise<DbSiteWithUser> {
   const { org, w } = await siteWebsite(ctx, website);
   return { ...siteOf(ctx, org, w), unixUser: unixUserOf(w) };
-}
-
-/**
- * Convention 12: a destructive `preview()`/`handler()` acts on the target it was handed. The
- * target id is `<websiteId>:<full db or user name>`, so split it and re-read that website by id
- * rather than resolving the user's `website` string again — otherwise the preview the human
- * confirmed and the drop that follows could land on different sites.
- */
-export async function dbTargetSite(ctx: ToolContext, target: Target): Promise<{ site: DbSite; name: string }> {
-  const cut = target.id.indexOf(':');
-  if (cut <= 0) throw new Error(`malformed database target "${safe(target.id)}"`);
-  const { org, w } = await siteWebsiteById(ctx, target.id.slice(0, cut));
-  // No unix user is looked up here: the name is already the full prefixed one carried by
-  // `target.id`, so only the create/user-facing paths need the prefix.
-  return { site: siteOf(ctx, org, w), name: target.id.slice(cut + 1) };
 }
 
 /**
@@ -246,18 +214,6 @@ export const dbPhpmyadminUrl = defineTool({
     return ok(`${s.identity}\nphpMyAdmin sign-on URL (single use, opens logged in) returned in structuredContent.url.`, { url });
   },
 });
-
-/**
- * A password for a database login the human never types: 24 random bytes (192 bits) as base64url,
- * which is always exactly 32 characters and, unlike base64, never contains `+`, `/` or `=` — so
- * nothing is stripped and the length is fixed rather than probabilistic. The `Db`/`9x` frame
- * guarantees an upper case letter, a lower case one and a digit for any password policy (the live
- * panel enforces none), and every character is safe unquoted in a `.env` file and inside shell
- * double quotes: no `!`, `$`, backtick or quote. Always 36 characters.
- */
-function generatePassword(): string {
-  return `Db${randomBytes(24).toString('base64url')}9x`;
-}
 
 export const dbUsersList = defineTool({
   name: 'db_users_list',
