@@ -1,9 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { tools } from '../../src/tools/mysql.js';
-import { base, MYSQL_DB, mysqlDbs, ORG_ID, websiteDetail, WEBSITE_ID, websiteSummary, websitesList } from '../fixtures/panel.js';
+import { base, MYSQL_DB, mysqlDbs, ORG_ID, SERVER_IP, websiteDetail, WEBSITE_ID, websiteSummary, websitesList } from '../fixtures/panel.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
 import type { Route } from '../helpers/fakeFetch.js';
 
@@ -135,78 +132,35 @@ describe('db_delete', () => {
 });
 
 describe('db_export_sql', () => {
-  const sqlWithMultibyte = "DROP TABLE IF EXISTS `t`;\nINSERT INTO `t` VALUES ('café');\n";
-  const exportRoute = (body: string): Route => ({
+  // Verified live 2026-09-06: the endpoint answers with the backup's *filename* as a JSON
+  // string, not with the SQL. The panel writes the gzipped dump into the website's home.
+  const FILE = 'sql_backup_x.sql.gz';
+  const SERVER_PATH = `/var/www/${WEBSITE_ID}/${FILE}`;
+  const exportRoute: Route = {
     method: 'GET',
     path: `${dbsPath}/${MYSQL_DB}/sql`,
-    handler: async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }),
-  });
+    handler: async () => new Response(JSON.stringify(FILE), { status: 200, headers: { 'content-type': 'application/json' } }),
+  };
 
-  it('returns the dump the panel sends as a JSON string, sized in bytes', async () => {
-    const { ctx } = await makeContext([...base(), exportRoute(sqlWithMultibyte)]);
+  it('returns the server-side path of the backup the panel wrote, and the scp line to fetch it', async () => {
+    const { ctx } = await makeContext([...base(), exportRoute]);
     const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo' }, ctx);
-    expect(Buffer.byteLength(sqlWithMultibyte)).not.toBe(sqlWithMultibyte.length);
-    expect(r.structured).toMatchObject({ database: MYSQL_DB, sql: sqlWithMultibyte, bytes: Buffer.byteLength(sqlWithMultibyte) });
-    expect(r.text).toContain(MYSQL_DB);
-    // The dump itself must not be interpolated into the rendered text (convention 4).
-    expect(r.text).not.toContain('INSERT INTO');
-  });
-
-  it('refuses to inline a dump over 256 KB and points at save_to', async () => {
-    const big = `-- big dump\n${'a'.repeat(262_200)}`;
-    const { ctx } = await makeContext([...base(), exportRoute(big)]);
-    const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo' }, ctx);
-    expect(r.isError).toBe(true);
-    expect(r.structured).toMatchObject({ database: MYSQL_DB, bytes: Buffer.byteLength(big), tooLarge: true });
-    expect(r.structured).not.toHaveProperty('sql');
-    expect(r.text).toContain('save_to');
-  });
-
-  it('writes the dump to save_to at mode 0600 and keeps it out of structuredContent', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'enhance-mcp-export-'));
-    const path = join(dir, 'dump.sql');
-    const { ctx } = await makeContext([...base(), exportRoute(sqlWithMultibyte)]);
-    const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo', save_to: path }, ctx);
     expect(r.isError).toBeFalsy();
-    expect(readFileSync(path, 'utf8')).toBe(sqlWithMultibyte);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-    expect(r.structured).toMatchObject({ database: MYSQL_DB, path, bytes: Buffer.byteLength(sqlWithMultibyte), saved: true });
+    expect(r.structured).toMatchObject({ database: MYSQL_DB, file: FILE, path: SERVER_PATH });
+    // Nothing of the dump itself comes back: the body was never the SQL.
     expect(r.structured).not.toHaveProperty('sql');
-    expect(r.text).toContain(path);
+    const scp = (r.structured as { scpCommand: string }).scpCommand;
+    expect(scp).toContain(`vahi_dev1@${SERVER_IP}`);
+    expect(scp).toContain(SERVER_PATH);
+    expect(r.text).toContain(websiteLine);
+    expect(r.text).toContain(SERVER_PATH);
+    expect(r.text).toContain('scp');
+    // The Bash sandbox cannot open SSH connections, so the caller has to be told.
+    expect(r.text).toContain('sandbox');
   });
 
-  it('refuses to overwrite an existing file unless overwrite is passed', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'enhance-mcp-export-'));
-    const path = join(dir, 'dump.sql');
-    writeFileSync(path, 'keep me');
-    const { ctx } = await makeContext([...base(), exportRoute(sqlWithMultibyte)]);
-    const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo', save_to: path }, ctx);
-    expect(r.isError).toBe(true);
-    expect(r.text).toContain('overwrite');
-    expect(readFileSync(path, 'utf8')).toBe('keep me');
-    expect(r.structured).not.toHaveProperty('sql');
-
-    const r2 = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo', save_to: path, overwrite: true }, ctx);
-    expect(r2.isError).toBeFalsy();
-    expect(readFileSync(path, 'utf8')).toBe(sqlWithMultibyte);
-  });
-
-  it('fails clearly when the save_to directory does not exist, and never writes it', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'enhance-mcp-export-'));
-    const path = join(dir, 'nope', 'dump.sql');
-    const { ctx } = await makeContext([...base(), exportRoute(sqlWithMultibyte)]);
-    const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo', save_to: path }, ctx);
-    expect(r.isError).toBe(true);
-    expect(r.text).toContain('directory');
-    expect(existsSync(path)).toBe(false);
-  });
-
-  it('refuses a relative save_to rather than writing next to whatever the cwd happens to be', async () => {
-    const { ctx } = await makeContext([...base(), exportRoute(sqlWithMultibyte)]);
-    const r = await callTool(byName(tools, 'db_export_sql'), { website: 'vahi.dev', name: 'demo', save_to: 'dump.sql' }, ctx);
-    expect(r.isError).toBe(true);
-    expect(r.text).toContain('absolute');
-    expect(existsSync('dump.sql')).toBe(false);
+  it('is a write tool, because it creates a file on the server', () => {
+    expect(byName(tools, 'db_export_sql').risk).toBe('write');
   });
 });
 

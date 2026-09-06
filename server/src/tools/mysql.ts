@@ -1,36 +1,35 @@
-import { chmodSync, writeFileSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
 import { defaultPathSerializer, type PathSerializer } from 'openapi-fetch';
 import * as z from 'zod/v4';
 import { parseScalarText } from '../client/client.js';
 import type { ToolContext } from '../core/context.js';
-import { identityBlock } from '../core/identity.js';
+import { identityBlock, websiteHome } from '../core/identity.js';
 import { defineTool, type Target, type ToolDef } from '../core/registry.js';
-import { fail, kv, ok, safe, table } from '../core/respond.js';
+import { kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
 import { resolveDbName, siteWebsite, siteWebsiteById, unixUserOf, websiteArg } from './dbcommon.js';
 
 const nameArg = z.string().min(1).describe('Database name (short, or the full <unixUser>_ prefixed form)');
 
-/** How much SQL may ride back inside a tool response before the caller must save it to a file
- *  instead. A dump past this fills the transcript with data nobody reads. */
-export const MAX_INLINE_SQL_BYTES = 262_144;
-
 export interface DbSite {
   org: string;
-  unixUser: string;
   id: string;
   identity: string;
 }
 
-function siteOf(ctx: ToolContext, org: string, w: Website): DbSite {
-  return { org, unixUser: unixUserOf(w), id: w.id, identity: identityBlock({ name: ctx.client.orgName, id: org }, w) };
+/** A site plus its unix user, for the tools that have to build a `<unixUser>_` prefixed name. */
+export interface DbSiteWithUser extends DbSite {
+  unixUser: string;
 }
 
-/** Every db tool needs the site (for the org, the unix user prefix and the identity block). */
-export async function dbSite(ctx: ToolContext, website: string): Promise<DbSite> {
+function siteOf(ctx: ToolContext, org: string, w: Website): DbSite {
+  return { org, id: w.id, identity: identityBlock({ name: ctx.client.orgName, id: org }, w) };
+}
+
+/** The site plus the unix user, for every tool that turns the name the user typed into the full
+ *  prefixed one. Fails loudly on a website without a unix user (see `unixUserOf`). */
+export async function dbSite(ctx: ToolContext, website: string): Promise<DbSiteWithUser> {
   const { org, w } = await siteWebsite(ctx, website);
-  return siteOf(ctx, org, w);
+  return { ...siteOf(ctx, org, w), unixUser: unixUserOf(w) };
 }
 
 /**
@@ -43,6 +42,8 @@ export async function dbTargetSite(ctx: ToolContext, target: Target): Promise<{ 
   const cut = target.id.indexOf(':');
   if (cut <= 0) throw new Error(`malformed database target "${safe(target.id)}"`);
   const { org, w } = await siteWebsiteById(ctx, target.id.slice(0, cut));
+  // No unix user is looked up here: the database name is already the full prefixed one carried
+  // by `target.id`, so only the create/user-facing paths need the prefix.
   return { site: siteOf(ctx, org, w), database: target.id.slice(cut + 1) };
 }
 
@@ -135,52 +136,38 @@ export const dbDelete = defineTool({
 export const dbExportSql = defineTool({
   name: 'db_export_sql',
   tier: 'customer',
-  risk: 'read',
-  description: `Exports a MySQL database as SQL. Use it to back up before db_delete or db_import_sql, or to move a database. Without save_to the dump comes back in structuredContent.sql, but only up to ${MAX_INLINE_SQL_BYTES} bytes (256 KB); a larger dump is refused with its size, and you must call again with save_to. With save_to the dump is written to that absolute local path at mode 0600 and kept out of the response.`,
-  input: z.object({
-    website: websiteArg,
-    name: nameArg,
-    save_to: z.string().min(1).optional().describe('Absolute local file path to write the dump to instead of returning it. The parent directory must already exist.'),
-    overwrite: z.boolean().default(false).describe('Allow save_to to replace a file that already exists'),
-  }),
-  async handler({ website, name, save_to, overwrite }, ctx) {
-    const s = await dbSite(ctx, website);
-    const full = resolveDbName(s.unixUser, name);
-    if (save_to !== undefined && !isAbsolute(save_to)) {
-      return fail(`${s.identity}\nsave_to must be an absolute path; ${safe(save_to)} is relative and nothing was written.`, { database: full, saved: false });
-    }
-    // The panel sends the dump as a JSON string, so read it as text and unquote it rather than
-    // letting the JSON parser hand back a value that is not the object the types promise.
+  // It writes a file on the server, so it is not a read-only tool.
+  risk: 'write',
+  description: "Creates a gzipped SQL backup of a MySQL database in the website's home directory on the server and returns its path. Fetch it with scp. Use before db_delete or db_import_sql.",
+  input: z.object({ website: websiteArg, name: nameArg }),
+  async handler({ website, name }, ctx) {
+    // Unlike the other database tools this one needs the whole website record — the home
+    // directory, the unix user and the server IP for the scp line — so it resolves the site here.
+    const { org, w } = await siteWebsite(ctx, website);
+    const s = siteOf(ctx, org, w);
+    const unixUser = unixUserOf(w);
+    const full = resolveDbName(unixUser, name);
+    // Verified live 2026-09-06: the body is not the dump. The panel writes a gzipped dump into
+    // the website's home directory and answers with that *filename* as a JSON string, so read it
+    // as text and unquote it rather than letting the JSON parser hand back a non-object.
     const raw = await ctx.client.call<string>('GET', '/orgs/{org_id}/websites/{website_id}/mysql-dbs/{db_name}/sql', () =>
       ctx.client.api.GET('/orgs/{org_id}/websites/{website_id}/mysql-dbs/{db_name}/sql', { params: { path: { org_id: s.org, website_id: s.id, db_name: full } }, parseAs: 'text' }),
     );
-    const sql = parseScalarText(raw);
-    const bytes = Buffer.byteLength(sql);
-    if (save_to === undefined) {
-      if (bytes > MAX_INLINE_SQL_BYTES) {
-        return fail(
-          `${s.identity}\nSQL export of ${safe(full)} is ${bytes} bytes, over the ${MAX_INLINE_SQL_BYTES}-byte inline limit. Call db_export_sql again with save_to=<absolute local file path> to write it to a file instead.`,
-          { database: full, bytes, tooLarge: true },
-        );
-      }
-      return ok(`${s.identity}\nSQL export of ${safe(full)} (${bytes} bytes) returned in structuredContent.sql.`, { database: full, bytes, sql });
-    }
-    try {
-      // `wx` makes "already there" an atomic refusal rather than a stat-then-clobber race; the
-      // explicit chmod matters on the overwrite path, where the mode option is not applied.
-      writeFileSync(save_to, sql, { mode: 0o600, flag: overwrite ? 'w' : 'wx' });
-      chmodSync(save_to, 0o600);
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') {
-        return fail(`${s.identity}\n${safe(save_to)} already exists and was left untouched. Pass overwrite=true to replace it, or choose another path.`, { database: full, bytes, saved: false });
-      }
-      if (code === 'ENOENT') {
-        return fail(`${s.identity}\nthe directory for ${safe(save_to)} does not exist, so nothing was written. Create it first, or choose a path under a directory that exists.`, { database: full, bytes, saved: false });
-      }
-      throw e;
-    }
-    return ok(`${s.identity}\nSQL export of ${safe(full)} written to ${safe(save_to)} (${bytes} bytes, mode 0600). It is not in structuredContent.`, { database: full, bytes, path: save_to, saved: true });
+    const file = parseScalarText(raw);
+    const path = `${websiteHome(w)}/${file}`;
+    const host = (w.serverIps?.find((ip) => ip.isPrimary) ?? w.serverIps?.[0])?.ip;
+    const scpCommand = host ? `scp -P 22 ${unixUser}@${host}:${path} .` : undefined;
+    const text = [
+      s.identity,
+      `gzipped SQL backup of ${safe(full)} written on the server, in the website's home directory (mode 0600, outside the docroot).`,
+      kv([
+        ['path', path],
+        ['fetch with', scpCommand ?? 'unavailable — this website has no server IP recorded'],
+      ]),
+      'old backups stay in the home directory and add up; remove the ones you no longer need over SSH.',
+      "sandbox: Claude Code's Bash sandbox cannot open SSH connections. Run scp with the sandbox disabled for that command, or add \"scp\" to sandbox.excludedCommands in settings.",
+    ].join('\n');
+    return ok(text, { database: full, file, path, scpCommand });
   },
 });
 
