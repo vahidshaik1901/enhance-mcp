@@ -408,7 +408,14 @@ Laravel `DB_HOST`) must use `localhost` (the unix socket), never `127.0.0.1` or 
   insert, lockTables, references, select, showView, trigger, update`. `["all"]` works;
   `"ALL PRIVILEGES"` is a 400 that lists the valid variants. After grant, the user's `grants`
   became `{"vahi_dev1_demo": ["all"]}`.
-- Access hosts `POST/DELETE .../mysql-users/{username}/access-hosts {accessHosts[]}`.
+- Access hosts `POST/DELETE .../mysql-users/{username}/access-hosts {accessHosts[]}`. Verified
+  2026-09-06: POST **adds** the listed hosts (the default `10.169.0.1` stays), DELETE with the
+  same body removes them; neither replaces the list.
+- No password policy: `abc12345` was accepted (201). The MCP's generated passwords are the
+  only strength guarantee.
+- Side effect: the first phpMyAdmin SSO call created a MySQL user `<unixUser>_phpma` with the
+  phpMyAdmin host in its accessHosts and no grants (`isEphemeral: false`). It persists; leave
+  it alone, it is the panel's own login for phpMyAdmin.
 - Password change `PUT .../mysql-users/{username} {password}`.
 - Export `GET .../mysql-dbs/{db_name}/sql` -> a JSON string holding a **filename**, not the dump
   (verified 2026-09-06: `"sql_backup_vahi_dev1_mcpxport_06-09-2026_01:29.sql.gz"`). The panel
