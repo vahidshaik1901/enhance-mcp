@@ -485,6 +485,15 @@ the `MySQLDBsFullListing` type.
   `MAILTO` is blacklisted (400 `invalid_syntax` "Variable MAILTO is blacklisted"). `crontab -l`
   inside the container answers "Command unavailable in website container": the panel manages
   cron outside the container. `container_cron_enabled` PUT true/false round-trips (was false).
+- **Verified live 2026-09-06 (what `container_cron_enabled` means):** it does NOT gate execution.
+  With the flag `false`, a panel-managed `* * * * * /bin/date >> <home>/cron-probe.log` job fired
+  on the next minute boundary (log written at 08:13:01 UTC). What the flag changes is the
+  container's own access to its crontab: with `false`, `crontab -l` inside the container says
+  "Command unavailable in website container"; with `true`, `crontab -l` lists the panel-managed
+  jobs. So the tools must describe it as "let the container read/edit its own crontab", never
+  as a scheduler switch. Also: `%` is special in crontab command text (it ends the command and
+  feeds the rest to stdin), so `date +%s >> file` never wrote the file; commands must escape it
+  as `\%`.
 
 ### Node and persistent apps (milestone C, probed now)
 
