@@ -35,7 +35,7 @@ The spec's milestone B tool list predates the live probe. These bindings are fix
 |---|---|---|
 | `php_extensions_get` | `php_extensions_list` | `GET /websites/{id}/php_extensions` + available + built_in |
 | `php_extension_enable/disable` | same | `POST`/`DELETE /websites/{id}/php_extensions` (bare-string body) |
-| `php_ini_get/set` | `php_settings_get/set` | `GET/PUT /websites/{id}/lsphp_settings` (`lsapiChildren` only) |
+| `php_ini_get/set` | `php_workers_get/set` (renamed from `php_settings_*` in Task 8: the never-exposed guard forbids a `settings` name segment) | `GET/PUT /websites/{id}/lsphp_settings` (`lsapiChildren` only) |
 | `php_error_log` | `php_error_log` | `GET /websites/{id}/php_error_log` |
 | `redis_get/set` | `redis_state_get/set` | `GET/PUT /v2/websites/{id}/redis` (boolean) |
 | `cache_clear` | `cache_clear` | `DELETE /v2/domains/{id}/nginx_fastcgi` + `website_restart_php` |
@@ -51,7 +51,7 @@ filename. The tool reports the container path and the scp command, carries `risk
 (it creates a server-side file), and Task 10's e2e asserts a `.sql.gz` filename rather than SQL
 text. Task 2's original export/`save_to` text is superseded.
 
-There is no generic php.ini editor at customer tier; `php_settings_*` exposes `lsapiChildren` only, and the tool says so. PostgreSQL is off on the test plan (`canUse.postgresql=false`), so its live e2e is skipped with a note; unit and MCP tests still cover it.
+There is no generic php.ini editor at customer tier; `php_workers_*` exposes `lsapiChildren` only, and the tool says so. PostgreSQL is off on the test plan (`canUse.postgresql=false`), so its live e2e is skipped with a note; unit and MCP tests still cover it.
 
 ## File Structure
 
@@ -893,7 +893,7 @@ git commit -m "feat(postgres): databases and users, gated on canUse.postgresql"
 
 **Interfaces:**
 - Consumes: `websiteArg`, `siteWebsite` (Task 1); `Resolver.resolveDomain` for `cache_clear`.
-- Produces `tools: ToolDef[]`: `php_extensions_list`, `php_extension_enable`, `php_extension_disable`, `php_settings_get`, `php_settings_set`, `php_error_log`, `redis_state_get`, `redis_state_set`, `cache_clear`.
+- Produces `tools: ToolDef[]`: `php_extensions_list`, `php_extension_enable`, `php_extension_disable`, `php_workers_get`, `php_workers_set`, `php_error_log`, `redis_state_get`, `redis_state_set`, `cache_clear`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1011,8 +1011,8 @@ export const phpExtensionDisable = defineTool({
   },
 });
 
-export const phpSettingsGet = defineTool({
-  name: 'php_settings_get', tier: 'customer', risk: 'read',
+export const phpWorkersGet = defineTool({
+  name: 'php_workers_get', tier: 'customer', risk: 'read',
   description: 'Shows the tunable PHP (LSPHP) settings for a website. At the customer tier this is the number of LSAPI child processes; arbitrary php.ini directives are not editable here.',
   input: z.object({ website: websiteArg }),
   async handler({ website }, ctx) {
@@ -1022,8 +1022,8 @@ export const phpSettingsGet = defineTool({
   },
 });
 
-export const phpSettingsSet = defineTool({
-  name: 'php_settings_set', tier: 'customer', risk: 'write',
+export const phpWorkersSet = defineTool({
+  name: 'php_workers_set', tier: 'customer', risk: 'write',
   description: 'Sets the number of LSPHP (LSAPI) child processes for a website. Raising it allows more concurrent PHP requests at the cost of memory.',
   input: z.object({ website: websiteArg, lsapi_children: z.number().int().min(1).max(200) }),
   async handler({ website, lsapi_children }, ctx) {
@@ -1081,7 +1081,7 @@ export const cacheClear = defineTool({
   },
 });
 
-export const tools: ToolDef[] = [phpExtensionsList, phpExtensionEnable, phpExtensionDisable, phpSettingsGet, phpSettingsSet, phpErrorLog, redisStateGet, redisStateSet, cacheClear];
+export const tools: ToolDef[] = [phpExtensionsList, phpExtensionEnable, phpExtensionDisable, phpWorkersGet, phpWorkersSet, phpErrorLog, redisStateGet, redisStateSet, cacheClear];
 ```
 
 Note: `resolveDomain` returns a `DomainMapping` whose id field is `domainId` (milestone A). Confirm the field name against `src/core/resolver.ts` and use it consistently.
@@ -1668,7 +1668,7 @@ git commit -m "test(e2e): live database round trip for milestone B"
 ## Self-review against the spec
 
 **Spec coverage (§6 Milestone B):**
-- PHP: `php_extensions_get/enable/disable` -> Task 5 (`php_extensions_list`, `php_extension_enable/disable`). `php_ini_get/set` -> Task 5 `php_settings_get/set` (lsphp; documented limitation). `php_error_log` -> Task 5. `redis_get/set` -> Task 5 `redis_state_get/set`. `cache_clear` -> Task 5. `htaccess_rewrites_get/update` -> Task 6 (`_get`/`_set`). `ip_rules_get/set` -> Task 6.
+- PHP: `php_extensions_get/enable/disable` -> Task 5 (`php_extensions_list`, `php_extension_enable/disable`). `php_ini_get/set` -> Task 5 `php_workers_get/set` (lsphp; documented limitation). `php_error_log` -> Task 5. `redis_get/set` -> Task 5 `redis_state_get/set`. `cache_clear` -> Task 5. `htaccess_rewrites_get/update` -> Task 6 (`_get`/`_set`). `ip_rules_get/set` -> Task 6.
 - MySQL: `db_list/create/delete/users_list/user_create/user_update/user_delete/user_set_privileges/user_access_hosts_set/phpmyadmin_url/export_sql/import_sql` -> Tasks 2-3, all present.
 - PostgreSQL: `pg_db_list/create/delete/users_list/user_create/user_update/user_delete/user_grant/user_revoke` -> Task 4, all present, `canUse` gated.
 - Cron: `cron_get/update/delete` -> Task 7 (`cron_get`/`cron_add`/`cron_remove`/`cron_delete`) plus `container_cron_get/set`.
