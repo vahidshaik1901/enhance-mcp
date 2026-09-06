@@ -6,18 +6,23 @@ provider or billing system. Lets a customer manage and deploy to their Enhance-h
 websites from Claude Code, with strong guardrails so an AI can never wipe a server or
 delete a site by accident.
 
-## Current status (2026-09-05)
+## Current status (2026-09-06)
 
-**Phase: milestone A MERGED to `main` on 2026-09-05 (PR #1, merge commit 7c0e4fa) in the
-public repo https://github.com/vahidshaik1901/enhance-mcp. Live-verified: e2e suite 8/8, the
-Task 19 walkthrough (fresh `.test` site, HTTPS preview URL, rsync deploy, DNS tree on vahi.dev,
-`website_delete` through the elicitation prompt), see "Live test A" in docs/research.md. The
-static test site from `~/enhance-e2e-site` is deployed on vahi.dev (preview URL
-vahi-dev-ccyq.sgp1.mystaging.site; the domain has no DNS at Cloudflare yet). Only unobserved:
-how Claude Code's terminal renders the elicitation prompt. NEXT: milestone B (PHP + MySQL on
-vahi.dev) on a new branch `feat/milestone-b`, starting with `superpowers:writing-plans` from the
-spec's milestone B section and the deferred Minor list in `.superpowers/sdd/progress.md`; then C
-(Node). Credential note: session JWTs expire within hours; the org still has no access token.**
+**Phase: milestone B code-complete on branch `feat/milestone-b` (Tasks 1-9 of
+`docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done). 71 tools are registered:
+milestone A plus MySQL, PostgreSQL, PHP extensions/workers/error log, Redis, FastCGI cache,
+htaccess rewrites and IP rules, and cron. All unit- and MCP-tested; every endpoint was probed
+against the live panel while the tools were written (see "Live probe: milestone B and C
+endpoints" in docs/research.md). Skills: `enhance-database` added, `enhance-deploy` extended with
+the PHP/Laravel build and post-deploy steps, PHP settings and cron, and access control. NOT
+merged yet. Remaining: Task 10 — the live database e2e run and the walkthrough with the user —
+both blocked on a fresh panel credential (session JWTs expire within hours; the org still has no
+access token). After they pass: `superpowers:finishing-a-development-branch`, then milestone C
+(Node + persistent apps). Milestone A is MERGED to `main` (2026-09-05, PR #1, merge commit
+7c0e4fa) in the public repo https://github.com/vahidshaik1901/enhance-mcp and was live-verified
+(e2e 8/8 plus the Task 19 walkthrough; see "Live test A" in docs/research.md). The static test
+site from `~/enhance-e2e-site` is still deployed on vahi.dev (preview URL
+vahi-dev-ccyq.sgp1.mystaging.site; the domain has no DNS at Cloudflare yet).**
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
 Plan: `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.

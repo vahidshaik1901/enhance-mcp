@@ -9,7 +9,9 @@
     "deploy",
     "wordpress",
     "php",
-    "node"
+    "node",
+    "mysql",
+    "database"
   ],
   "license": "MIT",
   "author": {

@@ -1,9 +1,10 @@
 <h1><img src="https://enhance.com/favicon.svg" alt="Enhance" width="36" height="36" align="absmiddle"> Enhance MCP for Claude Code</h1>
 
-Manage and deploy to your Enhance-hosted websites from Claude Code. One plugin gives you an MCP server with typed, safety-gated tools for the Enhance control panel API plus skills that walk Claude through connecting and deploying (the deploy skill includes the domain, DNS and SSL preflight).
+Manage and deploy to your Enhance-hosted websites from Claude Code. One plugin gives you an MCP server with 71 typed, safety-gated tools for the Enhance control panel API plus skills that walk Claude through connecting, deploying and setting up databases (the deploy skill includes the domain, DNS and SSL preflight).
 
-- **Safe by design.** Every tool carries a risk class. Destructive actions (delete a site (a soft delete the provider can restore), remove a domain or SSH key) require your confirmation: Claude Code shows a prompt where you type the domain name yourself, before anything happens; if a client cannot show prompts, the tool instead returns a preview and a single-use token, and the model must relay what you typed. Force deletes, org and subscription deletes, and server administration are not exposed at all. Never add `confirm_action`, `website_delete`, `domain_remove` or `ssh_key_remove` to an always-allow permission rule; they must prompt every time.
+- **Safe by design.** Every tool carries a risk class. Destructive actions (delete a site (a soft delete the provider can restore), remove a domain or SSH key) require your confirmation: Claude Code shows a prompt where you type the domain name yourself, before anything happens; if a client cannot show prompts, the tool instead returns a preview and a single-use token, and the model must relay what you typed. Force deletes, org and subscription deletes, and server administration are not exposed at all. Never add `confirm_action` or any destructive tool (`website_delete`, `domain_remove`, `ssh_key_remove`, `db_delete`, `db_user_delete`, `db_import_sql`, `pg_db_delete`, `pg_user_delete`, `pg_user_revoke`, `cron_delete`) to an always-allow permission rule; they must prompt every time.
 - **Fresh hosting to live site.** Domain check, site creation, DNS instructions built from your panel's own nameservers and zone, Let's Encrypt, SSH key setup, rsync deploy, verification on the preview URL.
+- **Databases and PHP.** MySQL databases and users with the panel's grant model, phpMyAdmin single sign-on, gzipped SQL export and import; PostgreSQL the same way where the plan allows it. PHP extensions, worker count and error log; the per-site Redis toggle; FastCGI cache clear and PHP restart; panel-managed `.htaccess` rewrites and IP rules; cron jobs.
 - **Tested at every layer.** Every tool has unit tests and MCP-level tests, the client was built against a live Enhance panel, and an opt-in live suite exercises the full flow on a throwaway site.
 
 Community project for the [Enhance](https://enhance.com) control panel; not affiliated with or endorsed by Enhance. The icon above is Enhance's own favicon, linked from enhance.com.
@@ -58,4 +59,8 @@ Claude Code's Bash sandbox cannot open SSH connections. For rsync/ssh deploy ste
 
 ## Status
 
-Milestone A (account, preflight, websites, domains, DNS, SSL, SSH, static-site deploy) is implemented and verified live against a real panel on 2026-09-05 (see "Live test A" in `docs/research.md`). See `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md` for the roadmap (PHP and databases, Node, WordPress, email, backups, staging, GitHub auto-deploy).
+Milestone A (account, preflight, websites, domains, DNS, SSL, SSH, static-site deploy) is implemented and verified live against a real panel on 2026-09-05 (see "Live test A" in `docs/research.md`).
+
+Milestone B (MySQL, PostgreSQL, PHP settings, Redis, cache, `.htaccess`, cron) is code-complete: every tool has unit and MCP-level tests, and each endpoint's behaviour was probed against the live panel while the tools were written (see "Live probe: milestone B and C endpoints" in `docs/research.md`). **The milestone B live end-to-end test is still pending.**
+
+See `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md` for the roadmap (Node, WordPress, email, backups, staging, GitHub auto-deploy).
