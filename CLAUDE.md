@@ -6,23 +6,26 @@ provider or billing system. Lets a customer manage and deploy to their Enhance-h
 websites from Claude Code, with strong guardrails so an AI can never wipe a server or
 delete a site by accident.
 
-## Current status (2026-09-06)
+## Current status (2026-09-11)
 
-**Phase: milestone B code-complete on branch `feat/milestone-b` (Tasks 1-9 of
-`docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done). 71 tools are registered (a client lists 72 with `confirm_action`):
-milestone A plus MySQL, PostgreSQL, PHP extensions/workers/error log, Redis, FastCGI cache,
-htaccess rewrites and IP rules, and cron. All unit- and MCP-tested; every endpoint was probed
-against the live panel while the tools were written (see "Live probe: milestone B and C
-endpoints" in docs/research.md). Skills: `enhance-database` added, `enhance-deploy` extended with
-the PHP/Laravel build and post-deploy steps, PHP settings and cron, and access control. NOT
-merged yet. Remaining: Task 10 — the live database e2e run and the walkthrough with the user —
-both blocked on a fresh panel credential (session JWTs expire within hours; the org still has no
-access token). After they pass: `superpowers:finishing-a-development-branch`, then milestone C
-(Node + persistent apps). Milestone A is MERGED to `main` (2026-09-05, PR #1, merge commit
-7c0e4fa) in the public repo https://github.com/vahidshaik1901/enhance-mcp and was live-verified
-(e2e 8/8 plus the Task 19 walkthrough; see "Live test A" in docs/research.md). The static test
-site from `~/enhance-e2e-site` is still deployed on vahi.dev (preview URL
-vahi-dev-ccyq.sgp1.mystaging.site; the domain has no DNS at Cloudflare yet).**
+**Phase: milestone B LIVE-VERIFIED on branch `feat/milestone-b` (all 10 tasks of
+`docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done except the walkthrough half
+of Task 10). 71 tools are registered (a client lists 72 with `confirm_action`): milestone A plus
+MySQL, PostgreSQL, PHP extensions/workers/error log, Redis, FastCGI cache, htaccess rewrites and IP
+rules, and cron. 313 unit tests; the milestone B live suite passed 4/4 against vahi.dev on
+2026-09-11 with a fresh session JWT (see "Live test B" in docs/research.md). That run found and
+fixed one live bug: `db_import_sql` must name the multipart field `<database>.sql` (commit
+910e494; the spec's `sql` name is rejected by the panel). Skills: `enhance-database` added,
+`enhance-deploy` extended with the PHP/Laravel build and post-deploy steps, PHP settings and cron,
+and access control. Draft PR #3 is open; NOT merged yet. Remaining: the Task 10 walkthrough with
+the user (a PHP page reading MySQL, Laravel `composer install` + `migrate` over SSH, and the
+typed-name prompt for `db_delete` inside Claude Code), then
+`superpowers:finishing-a-development-branch`, then milestone C (Node + persistent apps).
+Milestone A is MERGED to `main` (2026-09-05, PR #1, merge commit 7c0e4fa) in the public repo
+https://github.com/vahidshaik1901/enhance-mcp and was live-verified (e2e 8/8 plus the Task 19
+walkthrough; see "Live test A" in docs/research.md). The static test site from
+`~/enhance-e2e-site` is still deployed on vahi.dev (preview URL vahi-dev-ccyq.sgp1.mystaging.site;
+the domain has no DNS at Cloudflare yet).**
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
 Plans: milestone A `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD);
 milestone B `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` (10 tasks, TDD).
@@ -35,15 +38,18 @@ capability and negotiates the legacy protocol era; the server uses the SDK's `in
 flow (not `elicitInput`) so the human prompt works on both eras (see docs/research.md).
 `outputSchema` has known issues so tools return `structuredContent` without declaring one;
 the Bash sandbox can never carry SSH (use `sandbox.excludedCommands` or run unsandboxed).
-Progress: milestone A is merged to `main`; milestone B Tasks 1-9 are done and reviewed on
-`feat/milestone-b`, and Task 10 (the live e2e run plus the walkthrough with the user) is pending a
-fresh panel credential (ledger in `.superpowers/sdd/progress.md`, git-ignored; `git log` is the
-recovery map). To run the live suite: put a working credential in `.env` as `ENHANCE_TOKEN` (or a
-session JWT as
-`ENHANCE_SESSION_COOKIE`), then run the milestone B suite from the repo root:
-`cd server && set -a && source ../.env && set +a && ENHANCE_TOKEN="$ENHANCE_SESSION_COOKIE" ENHANCE_E2E=1 ENHANCE_E2E_SITE=vahi.dev npx vitest run --config vitest.e2e.config.ts test/e2e/milestone-b.e2e.test.ts`.
+Progress: milestone A is merged to `main`; milestone B is done and live-verified on
+`feat/milestone-b` (ledger in `.superpowers/sdd/progress.md`, git-ignored; `git log` is the
+recovery map). Session JWTs expire within hours and the org still has no access token, so ask for
+a fresh cookie before any live work. To run the live suite: put the credential in `.env`
+(`ENHANCE_TOKEN`, or a session JWT as `ENHANCE_SESSION_COOKIE`), then from the repo root:
+`cd server && set -a && source ../.env && set +a && ENHANCE_TOKEN="${ENHANCE_TOKEN:-$ENHANCE_SESSION_COOKIE}" ENHANCE_E2E=1 ENHANCE_E2E_SITE=vahi.dev npx vitest run --config vitest.e2e.config.ts test/e2e/milestone-b.e2e.test.ts`.
 (`npm run test:e2e` also runs the milestone A suite, which creates and deletes a throwaway
 website and additionally needs `ENHANCE_E2E_SUBSCRIPTION_ID=664`.)
+For Claude Code to load the server as a plugin (the walkthrough needs this), start it with
+`claude --plugin-dir /path/to/this/repo`; the project `.mcp.json` resolves `${CLAUDE_PLUGIN_ROOT}`
+and shell variables, so a plain session reports "Connection closed". The server reads
+`~/.enhance-mcp/config.json`; `node server/dist/index.js doctor` checks it.
 
 ### Decisions made
 

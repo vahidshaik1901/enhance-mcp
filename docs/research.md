@@ -392,7 +392,7 @@ Laravel `DB_HOST`) must use `localhost` (the unix socket), never `127.0.0.1` or 
 ### MySQL (all work)
 
 - List `GET /orgs/{org}/websites/{id}/mysql-dbs` -> `{items: MySQLDB[]}`,
-  `MySQLDB {name, size, createdAt, websiteId, serverId, userCount}` (no id; the name is the key).
+  `MySQLDB {name, size, createdAt, websiteId, serverId, userCount}` (no id; the name is the key). `size` is bytes: 0 for an empty database, 16384 after one InnoDB table (verified 2026-09-11).
 - Create `POST .../mysql-dbs {name}` -> 201. **Names are auto-prefixed with `<unixUser>_`.**
   Sending `name: "demo"` created `vahi_dev1_demo`. Every later call (delete, grant, sql) uses
   the FULL prefixed name. A tool must show the full name and accept either the short or full form.
@@ -534,3 +534,36 @@ the `MySQLDBsFullListing` type.
     deploys are verified on the primary domain (via `--resolve` until DNS resolves), unlike
     static and PHP which serve on the preview URL. Record this in the deploy skill for mode A.
   - A `persistent_app_<id>.log` file remains in the home directory after the app is deleted.
+
+## Live test B: databases, PHP, cron and the gate on vahi.dev (2026-09-11)
+
+Driver: the milestone B e2e suite (`server/test/e2e/milestone-b.e2e.test.ts`) calling the tool
+handlers directly against the live panel with a fresh session JWT as the `id0` cookie, inside the
+existing site vahi.dev (subscription 686, LiteSpeed, php84). Every write was a randomly named
+`mcpb…` resource the run created itself. 4/4 in 26 to 28 s, run twice (before and after the import
+fix); the panel was checked clean afterwards (no `mcpb*` database or user, empty crontab and
+rewrite chain; the one user left is `vahi_dev1_phpma`, created by the phpMyAdmin SSO probe of
+2026-09-05).
+
+| Step | Tools | Result |
+|---|---|---|
+| Database round trip | `db_create`, `db_user_create`, `db_user_set_privileges`, `db_list`, `db_users_list`, `db_export_sql`, `db_phpmyadmin_url` | created as `vahi_dev1_mcpb<5>`, listed, exported to `sql_backup_….sql.gz` in the home directory, SSO URL minted |
+| Reads | the PHP, Redis, htaccess, IP-rule, container-cron and PostgreSQL read tools | answered with the shapes the tools promise (PostgreSQL through its `canUse` gate) |
+| Cron | `cron_add`, `cron_get`, `cron_remove` | one job appended, shown, removed; nothing else on the crontab touched |
+| Gate | `db_user_delete`, `db_delete` | preview carries the site identity and the full name; a mistyped name is refused (`mismatch`); the typed full name deletes exactly that resource |
+| SQL import (extra probe, not in the suite) | `db_import_sql` | FAILED before the fix: 400 "Invalid file extension" on every call; PASSES after 910e494 (finding below) |
+
+Findings:
+
+- **`db_import_sql` was broken live.** The panel takes the file extension from the multipart
+  field name, not the filename, so the spec's `sql` part name is rejected. Fixed by naming the
+  field `<database>.sql` (details under "MySQL (all work)" above). A dependent statement in a
+  second import proved the first one executed; a duplicate key and a missing table came back as
+  400 `invalid_argument` with the mysql error text, which the tool surfaces verbatim.
+- **`MySQLDB.size` is bytes.** An empty database lists as 0; after one InnoDB table it lists as
+  16384. The tool's `sizeBytes` column is right.
+- **Session cookies keep expiring within hours.** The 2026-09-06 cookie was dead by the next
+  session; the one pasted on 2026-09-11 worked for the whole run. The org still has no access
+  token, so every live session starts with a fresh cookie.
+- **Not yet done:** the Task 10 walkthrough (PHP page reading MySQL, Laravel install + migrate
+  over SSH, and the typed-name prompt for `db_delete` inside Claude Code).
