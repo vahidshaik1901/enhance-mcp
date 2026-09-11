@@ -422,7 +422,17 @@ Laravel `DB_HOST`) must use `localhost` (the unix socket), never `127.0.0.1` or 
   writes a gzipped dump to the website HOME directory (`/var/www/<id>/<filename>`, mode 0600,
   outside the docroot). Fetch it with scp over SSH or the panel file manager; old backups
   accumulate until removed. An earlier note here wrongly said the body was the SQL itself.
-- Import `POST /v2/websites/{id}/mysql/{db_name}/sql` multipart `{sql}` with optional `?force`.
+- Import `POST /v2/websites/{id}/mysql/{db_name}/sql` is a multipart upload with optional `?force`.
+  **The spec's part name `sql` does not work** (verified live 2026-09-11, orchd 12.25.5): the panel
+  takes the file extension from the multipart *field* name (the `name="..."` in Content-Disposition),
+  not from `filename="..."`, so `sql` is rejected with 400
+  `{"code":"invalid_argument","detail":"mysql_db","message":"Invalid file extension"}` whatever the
+  filename and part Content-Type are. Name the field `<something>.sql` (or `.sql.gz` with a gzipped
+  body) and it is accepted; the MCP sends `<database>.sql`. A failing statement returns 400
+  `{"code":"invalid_argument","detail":"mysql_backup","message":"Unable to import mysql backup,
+  code 1, ... ERROR 1062 (23000) at line 1 ..."}` carrying the mysql CLI output, and the statements
+  before it have already run; `?force=true` is the documented way to continue past failures
+  (the mysql CLI `--force`).
 - phpMyAdmin SSO `GET .../phpmyadmin?shouldRedirect=false` -> a signon URL string
   (`https://phpmyadmin.<panel>/signon.php?sess=...`); per-db variant `.../mysql-dbs/{db_name}/sso`.
 

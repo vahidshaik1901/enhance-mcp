@@ -189,15 +189,15 @@ describe('db_export_sql', () => {
 
 describe('db_import_sql', () => {
   it('is destructive and uploads the sql as multipart to the v2 endpoint', async () => {
-    let seen: { contentType: string | null; filename: string; sql: string; path: string } | undefined;
+    let seen: { contentType: string | null; field: string; filename: string; sql: string; path: string } | undefined;
     const { ctx, f } = await makeContext([
       ...base(),
       {
         method: 'POST',
         path: new RegExp(`^/v2/websites/${WEBSITE_ID}/mysql/[^/]+/sql$`),
         handler: async (req, url) => {
-          const file = (await req.formData()).get('sql') as File;
-          seen = { contentType: req.headers.get('content-type'), filename: file.name, sql: await file.text(), path: url.pathname.replace(/^\/api/, '') };
+          const [field, file] = [...(await req.formData()).entries()][0] as [string, File];
+          seen = { contentType: req.headers.get('content-type'), field, filename: file.name, sql: await file.text(), path: url.pathname.replace(/^\/api/, '') };
           return new Response(null, { status: 200 });
         },
       },
@@ -210,12 +210,37 @@ describe('db_import_sql', () => {
     const r = await t.handler(args, ctx, target);
     expect(seen?.contentType).toMatch(/^multipart\/form-data/);
     expect(seen?.sql).toBe('INSERT INTO `t` VALUES (1);');
+    expect(seen?.field).toBe(`${MYSQL_DB}.sql`);
     expect(seen?.filename).toBe(`${MYSQL_DB}.sql`);
     // The spec's path template names its parameters differently from its own declaration; assert
     // the placeholders were actually substituted.
     expect(seen?.path).toBe(`/v2/websites/${WEBSITE_ID}/mysql/${MYSQL_DB}/sql`);
     expect(f.calls.at(-1)?.path).not.toContain('force');
     expect(r.structured).toMatchObject({ database: MYSQL_DB, imported: true, bytes: 27 });
+  });
+
+  // Verified live 2026-09-11 (orchd 12.25.5): the panel reads the upload's file extension from the
+  // multipart *field* name, not from the filename. The spec's `sql` field name is rejected with
+  // 400 invalid_argument, detail mysql_db, "Invalid file extension", whatever the filename says.
+  it('names the multipart part after the database so it carries the .sql extension, never `sql`', async () => {
+    let fields: string[] | undefined;
+    const { ctx } = await makeContext([
+      ...base(),
+      {
+        method: 'POST',
+        path: new RegExp(`^/v2/websites/${WEBSITE_ID}/mysql/[^/]+/sql$`),
+        handler: async (req) => {
+          fields = [...(await req.formData()).keys()];
+          return new Response(null, { status: 200 });
+        },
+      },
+    ]);
+    const t = byName(tools, 'db_import_sql');
+    const args = t.input.parse({ website: 'vahi.dev', name: 'demo', sql: 'SELECT 1;' });
+    await t.handler(args, ctx, await t.target!(args, ctx));
+    expect(fields).toEqual([`${MYSQL_DB}.sql`]);
+    expect(fields).not.toContain('sql');
+    expect(fields?.every((n) => n.endsWith('.sql'))).toBe(true);
   });
 
   it('passes the force flag through as a query parameter, and says so in the preview', async () => {

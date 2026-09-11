@@ -153,7 +153,7 @@ export const dbImportSql = defineTool({
   name: 'db_import_sql',
   tier: 'customer',
   risk: 'destructive',
-  description: 'DESTRUCTIVE. Runs a SQL file against a MySQL database, overwriting whatever the statements touch (DROP/CREATE/INSERT). Requires the user to confirm by typing the full database name. Export first with db_export_sql.',
+  description: 'DESTRUCTIVE. Runs a SQL file against a MySQL database, overwriting whatever the statements touch (DROP/CREATE/INSERT). Requires the user to confirm by typing the full database name. Export first with db_export_sql. A statement that fails stops the run and the error carries the mysql error text; the statements before it have already been applied, so the database is left half-imported unless force is set, which continues past failures.',
   input: z.object({
     website: websiteArg,
     name: nameArg,
@@ -182,9 +182,12 @@ export const dbImportSql = defineTool({
         // The endpoint takes a multipart upload, not a JSON body: build the form here so the
         // typed body stays the `{ sql }` the spec declares. The spec marks the request body
         // optional, so `b` is nullable to openapi-fetch even though it is always sent below.
+        // Verified live 2026-09-11: the panel reads the file extension from the multipart *field*
+        // name, so it must end in `.sql`; the spec's `sql` field name is rejected with 400
+        // invalid_argument "Invalid file extension" no matter what the filename says.
         bodySerializer: (b) => {
           const form = new FormData();
-          form.set('sql', new Blob([b!.sql]), `${database}.sql`);
+          form.set(`${database}.sql`, new Blob([b!.sql]), `${database}.sql`);
           return form;
         },
         body: { sql },
