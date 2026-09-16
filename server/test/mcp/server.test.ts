@@ -5,8 +5,8 @@ import { selectTools } from '../../src/core/registry.js';
 import { createServer } from '../../src/server.js';
 import { allTools } from '../../src/tools/index.js';
 import { makeContext } from '../helpers/context.js';
-import type { Route } from '../helpers/fakeFetch.js';
-import { domainMappings, ORG_ID, PREVIEW_DOMAIN_ID, sshKeys, WEBSITE_ID, websiteDetail, websitesList, websiteSummary } from '../fixtures/panel.js';
+import type { FakeFetch, Route } from '../helpers/fakeFetch.js';
+import { domainMappings, MYSQL_DB, ORG_ID, PREVIEW_DOMAIN_ID, sshKeys, WEBSITE_ID, websiteDetail, websitesList, websiteSummary } from '../fixtures/panel.js';
 
 /**
  * The SDK's `ElicitResult` (what an `elicitation/create` handler must return) types `content`
@@ -36,9 +36,11 @@ const base = () => [
   { method: 'DELETE', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, status: 204 },
 ];
 
-async function connect(opts: { readOnly?: boolean; elicit?: (msg: string) => ElicitAnswer; caps?: Caps; routes?: Route[] } = {}) {
-  const t = await makeContext(opts.routes ?? base());
-  const tools = selectTools(allTools, { tiers: ['customer'], readOnly: opts.readOnly ?? false });
+async function connect(opts: { readOnly?: boolean; env?: Record<string, string>; elicit?: (msg: string) => ElicitAnswer; caps?: Caps; routes?: Route[] } = {}) {
+  const t = await makeContext(opts.routes ?? base(), opts.env);
+  // `readOnly` unset falls through to the configuration, so a test can pass ENHANCE_READ_ONLY in
+  // `env` and exercise the same path bootstrap() takes rather than setting the flag by hand.
+  const tools = selectTools(allTools, { tiers: ['customer'], readOnly: opts.readOnly ?? t.ctx.config.readOnly });
   const server = createServer(t.ctx, tools);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'test', version: '0.0.0' }, capabilities(opts.caps ?? (opts.elicit ? 'form' : 'none')));
@@ -77,6 +79,23 @@ async function connectModern(elicit: (msg: string) => ElicitAnswer) {
   client.setRequestHandler('elicitation/create', async (req) => elicit(String((req.params as { message?: string }).message ?? '')));
   await client.connect(clientTransport);
   return { ...t, call: caller(client), close: () => handle.close() };
+}
+
+/** The database and user names the milestone B fixtures use, as the panel returns them: every one
+ *  is prefixed with the website's unix user, which is what the human has to type to confirm. */
+const MYSQL_USER = 'vahi_dev1_app';
+const PG_DB = 'vahi_dev1_shop';
+const PG_USER = 'vahi_dev1_app';
+const IMPORT_SQL = 'DROP TABLE `t`;';
+
+/** One destructive tool driven through the prompt: the args it takes, the name the human types,
+ *  and the single panel write it is allowed to make. `postgresql` picks the plan that has it. */
+interface DestructiveCase {
+  tool: string;
+  args: Record<string, unknown>;
+  typed: string;
+  postgresql?: boolean;
+  write: { method: string; path: string; multipart?: boolean };
 }
 
 describe('createServer', () => {
@@ -253,46 +272,160 @@ describe('createServer', () => {
    * substrings so the legitimate `domain_cloudflare_nameservers` is not a false positive.
    */
   it('registers no platform, org or credential administration tool', () => {
-    const forbidden = /(^|_)(servers?|settings?|licences?|licenses?|members?|owners?)(_|$)|(token_create|org_delete|subscription_delete)/;
+    const forbidden = /(^|_)(servers?|settings?|licences?|licenses?|members?|owners?|purge|bulk)(_|$)|(token_create|org_delete|subscription_delete)|(^|_)(orgs?|subscriptions?|websites)_(delete|remove)(_|$)/;
     expect(allTools.filter((t) => forbidden.test(t.name)).map((t) => t.name)).toEqual([]);
+    // The plural is the bulk endpoint (`DELETE /orgs/{id}/websites` with a body of UUIDs) and the
+    // singular is the one gated tool this server does expose, so the guard must separate them.
+    expect(forbidden.test('websites_delete')).toBe(true);
+    expect(forbidden.test('website_delete')).toBe(false);
+  });
+
+  it('every destructive tool defines target() and preview()', () => {
+    const destructive = allTools.filter((t) => t.risk === 'destructive');
+    expect(destructive).not.toHaveLength(0);
+    for (const t of destructive) {
+      expect(t.target, `${t.name} target`).toBeTypeOf('function');
+      expect(t.preview, `${t.name} preview`).toBeTypeOf('function');
+    }
+  });
+
+  it('with ENHANCE_READ_ONLY=1 no write or destructive tool is listed', async () => {
+    const ro = await connect({ env: { ENHANCE_READ_ONLY: '1' } });
+    const names = (await ro.client.listTools()).tools.map((t) => t.name);
+    const writes = new Set(allTools.filter((t) => t.risk !== 'read').map((t) => t.name));
+    expect(names.filter((n) => writes.has(n))).toEqual([]);
+    // With nothing destructive registered there is nothing to confirm either.
+    expect(names).not.toContain('confirm_action');
+    expect(names).toEqual(expect.arrayContaining(['db_list', 'php_extensions_list', 'cron_get', 'ip_rules_get']));
   });
 
   /**
    * Every destructive tool, driven end to end through the bare `{ elicitation: {} }` capability
-   * Claude Code declares: exactly one DELETE, on the path for the resolved target, never with a
-   * force flag, and one audit line recording that a human answered the prompt.
+   * Claude Code declares: exactly one panel write, on the method and path for the resolved target,
+   * never with a force flag, and one audit line recording that a human answered the prompt.
    */
-  const destructiveRoutes = (): Route[] => [
-    ...base(),
-    { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys`, body: sshKeys },
-    { method: 'DELETE', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${PREVIEW_DOMAIN_ID}`, status: 204 },
-    { method: 'DELETE', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys/0`, status: 204 },
+  const sitePath = `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`;
+
+  /** The fixture site is on a plan without PostgreSQL (`canUse.postgresql: false`), which is what
+   *  the live panel returns; the pg_* tools refuse outright on it, so those cases run against the
+   *  same site on a plan that includes it. */
+  const pgEnabled = { ...websiteDetail, canUse: { ...websiteDetail.canUse, postgresql: true } };
+
+  /** Spelled out rather than spreading `base()`: fakeFetch takes the *first* matching route, and
+   *  the site-detail GET here is the one overridden for the PostgreSQL cases, so a spread base()
+   *  ahead of it would shadow the override with the plan that has `canUse.postgresql: false`. */
+  const destructiveRoutes = (postgresql = false): Route[] => [
+    { method: 'GET', path: `/orgs/${ORG_ID}/websites`, body: websitesList },
+    { method: 'GET', path: sitePath, body: postgresql ? pgEnabled : websiteDetail },
+    { method: 'GET', path: `${sitePath}/domains`, body: domainMappings },
+    { method: 'GET', path: `${sitePath}/ssh/keys`, body: sshKeys },
+    { method: 'DELETE', path: sitePath, status: 204 },
+    { method: 'DELETE', path: `${sitePath}/domains/${PREVIEW_DOMAIN_ID}`, status: 204 },
+    { method: 'DELETE', path: `${sitePath}/ssh/keys/0`, status: 204 },
+    { method: 'DELETE', path: `${sitePath}/mysql-dbs/${MYSQL_DB}`, status: 204 },
+    { method: 'DELETE', path: `${sitePath}/mysql-users/${MYSQL_USER}`, status: 204 },
+    { method: 'POST', path: `/v2/websites/${WEBSITE_ID}/mysql/${MYSQL_DB}/sql`, status: 204 },
+    { method: 'DELETE', path: `${sitePath}/crontab`, status: 204 },
+    { method: 'DELETE', path: `${sitePath}/postgresql-dbs/${PG_DB}`, status: 204 },
+    { method: 'DELETE', path: `${sitePath}/postgresql-users/${PG_USER}`, status: 204 },
+    { method: 'DELETE', path: `${sitePath}/postgresql-users/${PG_USER}/privileges/${PG_DB}`, status: 204 },
   ];
 
-  const destructiveCases = [
-    { tool: 'website_delete', args: { website: 'vahi.dev' }, typed: 'vahi.dev', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}` },
-    { tool: 'domain_remove', args: { website: 'vahi.dev', domain: 'vahi-dev-ccyq.sgp1.mystaging.site' }, typed: 'vahi-dev-ccyq.sgp1.mystaging.site', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains/${PREVIEW_DOMAIN_ID}` },
-    { tool: 'ssh_key_remove', args: { website: 'vahi.dev', key: '0' }, typed: 'vahi.dev', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys/0` },
+  const destructiveCases: DestructiveCase[] = [
+    { tool: 'website_delete', args: { website: 'vahi.dev' }, typed: 'vahi.dev', write: { method: 'DELETE', path: sitePath } },
+    { tool: 'domain_remove', args: { website: 'vahi.dev', domain: 'vahi-dev-ccyq.sgp1.mystaging.site' }, typed: 'vahi-dev-ccyq.sgp1.mystaging.site', write: { method: 'DELETE', path: `${sitePath}/domains/${PREVIEW_DOMAIN_ID}` } },
+    { tool: 'ssh_key_remove', args: { website: 'vahi.dev', key: '0' }, typed: 'vahi.dev', write: { method: 'DELETE', path: `${sitePath}/ssh/keys/0` } },
+    { tool: 'db_delete', args: { website: 'vahi.dev', name: 'demo' }, typed: MYSQL_DB, write: { method: 'DELETE', path: `${sitePath}/mysql-dbs/${MYSQL_DB}` } },
+    { tool: 'db_user_delete', args: { website: 'vahi.dev', username: 'app' }, typed: MYSQL_USER, write: { method: 'DELETE', path: `${sitePath}/mysql-users/${MYSQL_USER}` } },
+    // The one destructive tool whose panel write is not a DELETE: a multipart POST carrying the SQL.
+    { tool: 'db_import_sql', args: { website: 'vahi.dev', name: 'demo', sql: IMPORT_SQL }, typed: MYSQL_DB, write: { method: 'POST', path: `/v2/websites/${WEBSITE_ID}/mysql/${MYSQL_DB}/sql`, multipart: true } },
+    { tool: 'cron_delete', args: { website: 'vahi.dev' }, typed: 'vahi.dev', write: { method: 'DELETE', path: `${sitePath}/crontab` } },
+    { tool: 'pg_db_delete', args: { website: 'vahi.dev', name: 'shop' }, typed: PG_DB, postgresql: true, write: { method: 'DELETE', path: `${sitePath}/postgresql-dbs/${PG_DB}` } },
+    { tool: 'pg_user_delete', args: { website: 'vahi.dev', username: 'app' }, typed: PG_USER, postgresql: true, write: { method: 'DELETE', path: `${sitePath}/postgresql-users/${PG_USER}` } },
+    { tool: 'pg_user_revoke', args: { website: 'vahi.dev', username: 'app', database: 'shop' }, typed: PG_USER, postgresql: true, write: { method: 'DELETE', path: `${sitePath}/postgresql-users/${PG_USER}/privileges/${PG_DB}` } },
   ];
+
+  /**
+   * The real invariant, on every request rather than only on the DELETEs: the panel's purge
+   * (`?force=true`, which wipes a website's data outright and needs a privileged master-org
+   * member), its `?purge=` sibling and the master-org-only `?showDeleted=` are never sent at all,
+   * whatever the method. Deliberately not a ban on the `force` substring everywhere — it appears
+   * once in the codebase, as `db_import_sql`'s continue-on-error flag (the mysql CLI's --force),
+   * and that rides only on the POST carrying the SQL. Anything else carrying one of these flags,
+   * on any method, is a bug in a tool.
+   */
+  const IMPORT_SQL_PATH = /^\/v2\/websites\/[^/]+\/mysql\/[^/]+\/sql/;
+  const expectNoDangerousFlags = (f: Pick<FakeFetch, 'calls'>) => {
+    expect(f.calls.filter((x) => /[?&](purge|showDeleted)=/.test(x.path)).map((x) => `${x.method} ${x.path}`)).toEqual([]);
+    expect(f.calls.filter((x) => /[?&]force=/.test(x.path) && !(x.method === 'POST' && IMPORT_SQL_PATH.test(x.path))).map((x) => `${x.method} ${x.path}`)).toEqual([]);
+  };
+
+  it('the dangerous-flag guard would catch a purge, a showDeleted listing and a forced delete', () => {
+    const call = (method: string, path: string) => ({ method, path, headers: new Headers() });
+    for (const bad of [call('DELETE', `/orgs/x/websites/y?force=true`), call('DELETE', '/orgs/x/websites/y?purge=true'), call('GET', '/orgs/x/websites?showDeleted=true')]) {
+      expect(() => expectNoDangerousFlags({ calls: [bad] })).toThrow();
+    }
+    // ...and still lets db_import_sql's own continue-on-error flag through.
+    expect(() => expectNoDangerousFlags({ calls: [call('POST', `/v2/websites/${WEBSITE_ID}/mysql/${MYSQL_DB}/sql?force=true`)] })).not.toThrow();
+  });
+
+  it('drives every registered destructive tool through the cases below', () => {
+    expect(destructiveCases.map((c) => c.tool).sort()).toEqual(allTools.filter((t) => t.risk === 'destructive').map((t) => t.name).sort());
+  });
 
   for (const c of destructiveCases) {
-    it(`${c.tool} runs one DELETE on the resolved target through the bare elicitation prompt`, async () => {
+    it(`${c.tool} runs one ${c.write.method} on the resolved target through the bare elicitation prompt`, async () => {
       const seen: string[] = [];
       const { call, f, auditLines } = await connect({
         caps: 'bare',
-        routes: destructiveRoutes(),
+        routes: destructiveRoutes(c.postgresql),
         elicit: (msg) => { seen.push(msg); return { action: 'accept', content: { confirm_name: c.typed } }; },
       });
       const r = await call(c.tool, c.args);
       expect(seen).toHaveLength(1);
       expect(seen[0]).toContain(`Type the name "${c.typed}"`);
       expect(r.isError).toBe(false);
-      const deletes = f.calls.filter((x) => x.method === 'DELETE');
-      expect(deletes).toHaveLength(1);
-      expect(deletes[0]?.path).toBe(c.path);
-      // No tool may ever reach for the panel's force/purge variants.
-      expect(f.calls.filter((x) => x.path.includes('force='))).toEqual([]);
+      // Everything the resolver and the previews read is a GET, so the writes are what is left.
+      const writes = f.calls.filter((x) => x.method !== 'GET');
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).toMatchObject({ method: c.write.method, path: c.write.path });
+      if (c.write.multipart) {
+        expect(writes[0]?.headers.get('content-type')).toMatch(/^multipart\/form-data/);
+        expect(writes[0]?.body).toContain(IMPORT_SQL);
+      }
+      expectNoDangerousFlags(f);
       expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ tool: c.tool, gate: 'elicitation', outcome: 'ok' });
     });
   }
+
+  it('website_delete through the gate sends one plain DELETE, never the panel purge', async () => {
+    const { call, f } = await connect({ caps: 'bare', routes: destructiveRoutes(), elicit: () => ({ action: 'accept', content: { confirm_name: 'vahi.dev' } }) });
+    const r = await call('website_delete', { website: 'vahi.dev' });
+    expect(r.isError).toBe(false);
+    expect(f.calls.filter((x) => x.method === 'DELETE').map((x) => x.path)).toEqual([sitePath]);
+    expectNoDangerousFlags(f);
+  });
+
+  it("db_import_sql's own force flag rides on its POST, and the guard above still holds", async () => {
+    const { call, f } = await connect({ caps: 'bare', routes: destructiveRoutes(), elicit: () => ({ action: 'accept', content: { confirm_name: MYSQL_DB } }) });
+    const r = await call('db_import_sql', { website: 'vahi.dev', name: 'demo', sql: IMPORT_SQL, force: true });
+    expect(r.isError).toBe(false);
+    const writes = f.calls.filter((x) => x.method !== 'GET');
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ method: 'POST', path: `/v2/websites/${WEBSITE_ID}/mysql/${MYSQL_DB}/sql?force=true` });
+    expectNoDangerousFlags(f);
+  });
+
+  it('db_delete with the wrong name typed drops nothing and audits a cancellation', async () => {
+    const { call, f, auditLines } = await connect({
+      caps: 'bare',
+      routes: destructiveRoutes(),
+      elicit: () => ({ action: 'accept', content: { confirm_name: 'wrong-name' } }),
+    });
+    const r = await call('db_delete', { website: 'vahi.dev', name: 'demo' });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain('did not match');
+    expect(f.calls.some((x) => x.method !== 'GET')).toBe(false);
+    expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ tool: 'db_delete', gate: 'elicitation', outcome: 'cancelled' });
+  });
 });

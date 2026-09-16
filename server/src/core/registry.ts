@@ -5,7 +5,7 @@ export type Tier = 'customer' | 'reseller' | 'platform';
 export type Risk = 'read' | 'write' | 'destructive';
 
 export interface Target {
-  kind: 'website' | 'domain' | 'ssh_key';
+  kind: 'website' | 'domain' | 'ssh_key' | 'mysql_db' | 'mysql_user' | 'pg_db' | 'pg_user' | 'crontab';
   id: string;
   /** Human name the user must type to confirm (domain name, never a UUID). */
   name: string;

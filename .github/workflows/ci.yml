@@ -58,6 +58,7 @@ jobs:
       ENHANCE_PANEL_URL: ${{ secrets.ENHANCE_PANEL_URL }}
       ENHANCE_TOKEN: ${{ secrets.ENHANCE_TOKEN }}
       ENHANCE_E2E_SUBSCRIPTION_ID: ${{ secrets.ENHANCE_E2E_SUBSCRIPTION_ID }}
+      ENHANCE_E2E_SITE: ${{ secrets.ENHANCE_E2E_SITE }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

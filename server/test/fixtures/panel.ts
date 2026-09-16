@@ -1,4 +1,5 @@
 import type { components } from '../../src/client/generated/types.js';
+import type { Route } from '../helpers/fakeFetch.js';
 
 type DnsZone = components['schemas']['DnsZone'];
 
@@ -133,3 +134,17 @@ export const activities = {
 export const accessTokens = [
   { id: 'd2314fff-4aec-4ebc-833d-7cf758a60809', firstFive: 'testt', roles: ['SuperAdmin'], tokenExpires: '2026-12-31T00:00:00Z', friendlyName: 'claude-mcp-test', allowedIps: [], ipRestricted: false },
 ];
+
+/** The three routes every website-scoped tool needs: the list and detail the resolver walks, and
+ *  the domain mappings. Spread it into `makeContext` and add the routes under test. */
+export const base = (): Route[] => [
+  { method: 'GET', path: `/orgs/${ORG_ID}/websites`, body: websitesList },
+  { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: websiteDetail },
+  { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains`, body: domainMappings },
+];
+
+export const MYSQL_DB = 'vahi_dev1_demo';
+
+export const mysqlDbs = {
+  items: [{ name: MYSQL_DB, size: 40960, createdAt: '2026-09-05T15:00:34.000100Z', websiteId: WEBSITE_ID, serverId: '4b5f6a1e-2c3d-4e5f-8a9b-0c1d2e3f4a5b', userCount: 1 }],
+};

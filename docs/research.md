@@ -374,3 +374,243 @@ Findings and what changed because of them:
   email account (mailbox or forwarder) on that domain; `include_mail=yes` still forces them, and the text says which rule
   applied.
 - The demo site was soft-deleted through the elicitation gate at 12:44; only vahi.dev remains.
+
+## Live probe: milestone B and C endpoints (2026-09-05)
+
+All verified on vahi.dev (website 6106382b-143f-4d24-9bea-0e9368ad2a1f, unix user vahi_dev1,
+plan DMax, subscription 686, php84) with a panel session cookie. Every resource created was
+deleted again; the site is back to the static page plus an installed Node runtime.
+
+### PHP connects to MySQL over `localhost` only (critical)
+
+A PHP page deployed to the docroot connected to MySQL with `new mysqli('localhost', ...)`:
+created a table, inserted and read back a row on MariaDB 11.4.13. The same page against
+`127.0.0.1` got `Connection refused`. So generated app config (`.env`, `wp-config.php`,
+Laravel `DB_HOST`) must use `localhost` (the unix socket), never `127.0.0.1` or the
+`dbServerIps` value. The admin `~/.my.cnf` also uses `host=localhost`.
+
+### MySQL (all work)
+
+- List `GET /orgs/{org}/websites/{id}/mysql-dbs` -> `{items: MySQLDB[]}`,
+  `MySQLDB {name, size, createdAt, websiteId, serverId, userCount}` (no id; the name is the key). `size` is bytes: 0 for an empty database, 16384 after one InnoDB table (verified 2026-09-11).
+- Create `POST .../mysql-dbs {name}` -> 201. **Names are auto-prefixed with `<unixUser>_`.**
+  Sending `name: "demo"` created `vahi_dev1_demo`. Every later call (delete, grant, sql) uses
+  the FULL prefixed name. A tool must show the full name and accept either the short or full form.
+- Delete `DELETE .../mysql-dbs/{db_name}` -> 204 (uses the full name).
+- Users: `GET/POST .../mysql-users`, `DELETE/PUT .../mysql-users/{username}`.
+  `NewMySQLUser {username, password, authPlugin?}`; `authPlugin` is
+  `mysql_native_password` (default) or `caching_sha2_password`. Username is prefixed the same way.
+  `MySQLUser {username, accessHosts[], authPlugin, grants: {dbName: grant[]}, createdAt, isEphemeral}`.
+  A new user's default `accessHosts` is `["10.169.0.1"]` (the app tier source IP).
+- Privileges `PUT .../mysql-users/{username}/privileges {dbName, grants[]}` -> 201. **grants are a
+  lowercase enum**, not SQL text: `all, alter, alterRoutine, create, createRoutine,
+  createTablespace, createTemporaryTables, createView, delete, drop, event, execute, index,
+  insert, lockTables, references, select, showView, trigger, update`. `["all"]` works;
+  `"ALL PRIVILEGES"` is a 400 that lists the valid variants. After grant, the user's `grants`
+  became `{"vahi_dev1_demo": ["all"]}`.
+- Access hosts `POST/DELETE .../mysql-users/{username}/access-hosts {accessHosts[]}`. Verified
+  2026-09-06: POST **adds** the listed hosts (the default `10.169.0.1` stays), DELETE with the
+  same body removes them; neither replaces the list.
+- No password policy: `abc12345` was accepted (201). The MCP's generated passwords are the
+  only strength guarantee.
+- Side effect: the first phpMyAdmin SSO call created a MySQL user `<unixUser>_phpma` with the
+  phpMyAdmin host in its accessHosts and no grants (`isEphemeral: false`). It persists; leave
+  it alone, it is the panel's own login for phpMyAdmin.
+- Password change `PUT .../mysql-users/{username} {password}`.
+- Export `GET .../mysql-dbs/{db_name}/sql` -> a JSON string holding a **filename**, not the dump
+  (verified 2026-09-06: `"sql_backup_vahi_dev1_mcpxport_06-09-2026_01:29.sql.gz"`). The panel
+  writes a gzipped dump to the website HOME directory (`/var/www/<id>/<filename>`, mode 0600,
+  outside the docroot). Fetch it with scp over SSH or the panel file manager; old backups
+  accumulate until removed. An earlier note here wrongly said the body was the SQL itself.
+- Import `POST /v2/websites/{id}/mysql/{db_name}/sql` is a multipart upload with optional `?force`.
+  **The spec's part name `sql` does not work** (verified live 2026-09-11, orchd 12.25.5): the panel
+  takes the file extension from the multipart *field* name (the `name="..."` in Content-Disposition),
+  not from `filename="..."`, so `sql` is rejected with 400
+  `{"code":"invalid_argument","detail":"mysql_db","message":"Invalid file extension"}` whatever the
+  filename and part Content-Type are. Name the field `<something>.sql` (or `.sql.gz` with a gzipped
+  body) and it is accepted; the MCP sends `<database>.sql`. A failing statement returns 400
+  `{"code":"invalid_argument","detail":"mysql_backup","message":"Unable to import mysql backup,
+  code 1, ... ERROR 1062 (23000) at line 1 ..."}` carrying the mysql CLI output, and the statements
+  before it have already run; `?force=true` is the documented way to continue past failures
+  (the mysql CLI `--force`).
+- phpMyAdmin SSO `GET .../phpmyadmin?shouldRedirect=false` -> a signon URL string
+  (`https://phpmyadmin.<panel>/signon.php?sess=...`); per-db variant `.../mysql-dbs/{db_name}/sso`.
+
+### PostgreSQL
+
+Endpoints mirror MySQL (`/postgresql-dbs`, `/postgresql-users`, grant/revoke). On this plan
+`canUse.postgresql` is `false` and `php_extensions` shows `pgsql` enabled but the DB feature is
+off, so PG tools must gate on `canUse.postgresql` and report unavailable rather than call.
+`PostgresqlUser {username, privs[], createdAt}`; grant body is a bare db-name string, revoke is
+`DELETE .../postgresql-users/{username}/privileges/{db_name}`. `getWebsitePostgresqlDbs` reuses
+the `MySQLDBsFullListing` type.
+
+### PHP settings, extensions, cache
+
+- Enabled extensions `GET /websites/{id}/php_extensions` -> string[] (was `["pgsql","pdo_pgsql"]`).
+  Available to enable `GET .../available_php_extensions` — on this panel that list was
+  `["apcu","brotli","oauth","pdo_dblib","pdo_pgsql","pgsql","xmlrpc"]` (observed 2026-09-06), so
+  `apcu` is a valid `php_extension_enable` example. Compiled-in
+  `GET .../built_in_php_extensions` (mysqli, pdo_mysql, redis, gd, intl, imagick, ... always on).
+- Enable `POST .../php_extensions` / disable `DELETE .../php_extensions`, body is a **bare JSON
+  string** (the extension name), not an object.
+- PHP error log `GET .../php_error_log` -> string, last 256KB (empty `""` when none).
+- The only php.ini-style knob at customer tier is `GET/PUT /websites/{id}/lsphp_settings`
+  `{lsapiChildren: number}` (was 100). There is **no generic php.ini get/set endpoint**; the
+  spec's `php_ini_get/set` must map to lsphp settings, not arbitrary directives.
+- Redis is a feature toggle, not a KV API: `GET/PUT /v2/websites/{id}/redis` boolean (was false).
+  The spec's `redis_get/set` means this on/off state.
+- Cache: `DELETE /v2/domains/{domain_id}/nginx_fastcgi` clears the FastCGI cache (per domain);
+  OPcache is cleared by `website_restart_php`. That pair is the spec's `cache_clear`.
+- htaccess rewrites `GET/PATCH /orgs/{org}/websites/{id}/htaccess`
+  (`RewriteChain {lineNumber, rule{pattern, substitution, flags[]}, conds[]}`), and IP rules
+  `GET/PUT .../htaccess/ips {kind: "allow"|"block", ips[]}` (was `{ips:[], kind:"block"}`).
+  Domain-level `GET/PUT/DELETE /v2/domains/{id}/webserver_rewrites [{path, destinationFile}]`.
+
+  **Verified live 2026-09-06 (rewrites):** `PATCH .../htaccess {items}` MERGES by `lineNumber`
+  (posting line 2 alone kept line 1); a bare `{lineNumber: N}` DELETES that chain; after a delete
+  the remaining chains are RENUMBERED from 1, so deleting several must go highest-first (or
+  re-read between deletes); the rules take effect at once (`/old-a` answered 302). The chains are
+  written into `public_html/.htaccess` next to the panel's `<RequireAll>` block.
+  **Verified live 2026-09-06 (IP rules):** the panel writes `<RequireAny> Require ip … </RequireAny>`
+  (Apache 2.4 syntax) into `public_html/.htaccess`, but this server runs **LiteSpeed**
+  (`server: LiteSpeed`), which ignores it: with `allow [203.0.113.9]` every request from another
+  IP still got 200 (static, PHP, 404 paths, preview and primary domain), and `block [my ip]` did
+  not block me either. So `ip_rules_set` is a no-op on (Open)LiteSpeed servers and presumably
+  works only on Apache ones. Tools must say so and tell the user to verify with curl.
+  Open question for the walkthrough: how the panel-managed `.htaccess` block coexists with an
+  app's own `.htaccess` (Laravel, WordPress) after an rsync deploy.
+
+### Cron
+
+- `GET /orgs/{org}/websites/{id}/crontab` -> `{items: CrontabValue[]}` where each item is
+  `{variable:{lineNumber,key,val}}` or `{cronCmd:{lineNumber,expr}}` (was empty). The spec marks
+  the response 204 but it is 200 with a body.
+- `PATCH .../crontab {items: UpdateCrontabValue[]}`; `DELETE .../crontab`.
+- Container cron on/off `GET/PUT /websites/{id}/container_cron_enabled` boolean (was false). The
+  PUT's spec summary is mislabeled "Set backups disabled status" -- ignore the label.
+- **Verified live 2026-09-06 (crontab):** `PATCH {items}` MERGES like htaccess. Line numbers in
+  responses are **0-based** (`lineNumber: 0` for the first line); on input a `lineNumber` beyond
+  the current count APPENDS (sending 1 to an empty crontab stored it at 0, sending 2 next stored
+  it at 1); an in-range number replaces that line. A bare `{cronCmd: {lineNumber: N}}` DELETES
+  line N (0-based) and the rest renumber. `DELETE .../crontab` clears everything. Variables:
+  `MAILTO` is blacklisted (400 `invalid_syntax` "Variable MAILTO is blacklisted"). `crontab -l`
+  inside the container answers "Command unavailable in website container": the panel manages
+  cron outside the container. `container_cron_enabled` PUT true/false round-trips (was false).
+- **Verified live 2026-09-06 (what `container_cron_enabled` means):** it does NOT gate execution.
+  With the flag `false`, a panel-managed `* * * * * /bin/date >> <home>/cron-probe.log` job fired
+  on the next minute boundary (log written at 08:13:01 UTC). What the flag changes is the
+  container's own access to its crontab: with `false`, `crontab -l` inside the container says
+  "Command unavailable in website container"; with `true`, `crontab -l` lists the panel-managed
+  jobs. So the tools must describe it as "let the container read/edit its own crontab", never
+  as a scheduler switch. Also: `%` is special in crontab command text (it ends the command and
+  feeds the rest to stdin), so `date +%s >> file` never wrote the file; commands must escape it
+  as `\%`.
+
+### Node and persistent apps (milestone C, probed now)
+
+- `POST /websites/{id}/apps/node` installs nvm **and the stable node** (26.8.1); 200. Before this
+  the container has no node and no `~/.nvm`.
+- `GET .../apps/node/possible_versions` -> string[] (0.12 through 26.8.1).
+- `POST .../apps/node/versions` body bare string `"22.23.2"` installs it; 200.
+  `PUT .../apps/node/versions/default` body bare string sets the nvm `default` alias; 200. SSH
+  confirmed `node -v` = v22.23.2, npm 10.9.8.
+- **Bug: `GET .../apps/node/versions` is out of sync.** After installing 22.23.2 via the API and
+  setting it default, the list returned only `["26.8.1"]`, omitting 22.23.2, though `nvm ls`
+  shows both and default -> 22.23.2. A tool must not present this list as authoritative.
+- Persistent apps `GET/POST /websites/{id}/apps/persistent`,
+  `PATCH/DELETE .../apps/persistent/{app_id}`, `GET .../apps/persistent/{app_id}` returns the
+  **startup+stdout log** (nvm load, node version, app output) as a string.
+  `PersistentApp {proxyDetails{path, port, allowWebSocketUpgrade?}, startMode: automatic|manual,
+  command, workingDirectory?, nodeVersion?}`.
+  - `proxyDetails.path` **must not start with `/`**: alphanumeric and underscore, with hyphens,
+    dots and slashes allowed only in the middle. `"node"` works, `"/node"` is a 400.
+  - `workingDirectory` **must be relative to home**; an absolute path is silently stored as
+    `null` (so `node server.js` ran from home and failed with "Cannot find module"). `"nodeapp"`
+    worked and the app started ("listening on 3000").
+  - **The app proxy binds to the PRIMARY domain, not the preview/staging alias.** With the app
+    listening on 3000, `/node/` returned 200 with the app's JSON on `vahi.dev` (via
+    `curl --resolve` to the app server), but 404 on the `*.mystaging.site` preview URL. So Node
+    deploys are verified on the primary domain (via `--resolve` until DNS resolves), unlike
+    static and PHP which serve on the preview URL. Record this in the deploy skill for mode A.
+  - A `persistent_app_<id>.log` file remains in the home directory after the app is deleted.
+
+## Live test B: databases, PHP, cron and the gate on vahi.dev (2026-09-11)
+
+Driver: the milestone B e2e suite (`server/test/e2e/milestone-b.e2e.test.ts`) calling the tool
+handlers directly against the live panel with a fresh session JWT as the `id0` cookie, inside the
+existing site vahi.dev (subscription 686, LiteSpeed, php84). Every write was a randomly named
+`mcpb…` resource the run created itself. 4/4 in 26 to 28 s, run twice (before and after the import
+fix); the panel was checked clean afterwards (no `mcpb*` database or user, empty crontab and
+rewrite chain; the one user left is `vahi_dev1_phpma`, created by the phpMyAdmin SSO probe of
+2026-09-05).
+
+| Step | Tools | Result |
+|---|---|---|
+| Database round trip | `db_create`, `db_user_create`, `db_user_set_privileges`, `db_list`, `db_users_list`, `db_export_sql`, `db_phpmyadmin_url` | created as `vahi_dev1_mcpb<5>`, listed, exported to `sql_backup_….sql.gz` in the home directory, SSO URL minted |
+| Reads | the PHP, Redis, htaccess, IP-rule, container-cron and PostgreSQL read tools | answered with the shapes the tools promise (PostgreSQL through its `canUse` gate) |
+| Cron | `cron_add`, `cron_get`, `cron_remove` | one job appended, shown, removed; nothing else on the crontab touched |
+| Gate | `db_user_delete`, `db_delete` | preview carries the site identity and the full name; a mistyped name is refused (`mismatch`); the typed full name deletes exactly that resource |
+| SQL import (extra probe, not in the suite) | `db_import_sql` | FAILED before the fix: 400 "Invalid file extension" on every call; PASSES after 910e494 (finding below) |
+
+Findings:
+
+- **`db_import_sql` was broken live.** The panel takes the file extension from the multipart
+  field name, not the filename, so the spec's `sql` part name is rejected. Fixed by naming the
+  field `<database>.sql` (details under "MySQL (all work)" above). A dependent statement in a
+  second import proved the first one executed; a duplicate key and a missing table came back as
+  400 `invalid_argument` with the mysql error text, which the tool surfaces verbatim.
+- **`MySQLDB.size` is bytes.** An empty database lists as 0; after one InnoDB table it lists as
+  16384. The tool's `sizeBytes` column is right.
+- **Session cookies keep expiring within hours.** The 2026-09-06 cookie was dead by the next
+  session; the one pasted on 2026-09-11 worked for the whole run. The org still has no access
+  token, so every live session starts with a fresh cookie.
+- The Task 10 walkthrough was done on 2026-09-16 (next section).
+
+### Task 10 walkthrough: PHP + MySQL page, Laravel over SSH, the typed-name prompt (2026-09-16)
+
+Run inside Claude Code with the plugin installed permanently from the repo as a local marketplace
+(`enhance@enhance-mcp`, user scope), a fresh session cookie, and ssh/rsync/scp run with the
+sandbox disabled. Everything below went through the MCP tools and the `enhance-database` /
+`enhance-deploy` skills; nothing through the panel UI. The panel was left clean (no databases, only
+`vahi_dev1_phpma`; the static test site is back in `public_html`).
+
+| Step | Tools / commands | Result |
+|---|---|---|
+| Database for the app | `db_create walk`, `db_user_create walk`, `db_user_set_privileges grants=[all]` | `vahi_dev1_walk` / `vahi_dev1_walk`, password shown once |
+| Seed data | `db_import_sql` (CREATE TABLE + INSERT) | typed-name prompt shown in Claude Code; `imported: true`, 250 bytes |
+| PHP page | `db.php` rsynced to `public_html/`, config file scp'd to the home dir (mode 600, outside the docroot), PDO on `localhost` | `https://<preview>/db.php` → 200 and the seeded row |
+| Laravel | `composer create-project laravel/laravel` locally (13.32), rsync to `<home>/app` excluding vendor/node_modules/.env, `composer install --no-dev --optimize-autoloader` over SSH, `.env` written on the server, `key:generate`, `db_export_sql`, `migrate --force`, `config:cache`, `route:cache`, `view:cache`, `public/` rsynced to `public_html/`, `index.php` requires repointed to `../app/` | `/` → 200 (welcome page, 70 KB), `/up` → 200, the three default migrations created their tables next to `greetings` |
+| Post-deploy | `website_restart_php`, `cache_clear`, `php_error_log` | restarted, cleared, log empty; pages still 200 |
+| htaccess probe | `htaccess_rewrites_get`, `ip_rules_get`, `ip_rules_set block [203.0.113.1]`, `ip_rules_set block []` | see finding below |
+| Gate | `db_delete walk`, `db_user_delete walk` | first attempt: the user typed `vahid_dev1_walk` and `vahi_dev1_walk2`, both cancelled with the mismatch reason; second attempt with the exact names deleted both |
+
+Findings:
+
+- **The typed-name prompt works inside Claude Code** through the SDK `inputRequired` flow: the
+  prompt appeared for `db_import_sql`, `db_delete` and `db_user_delete`; a mismatched name cancels
+  the call with `{"cancelled": true, "reason": "Confirmation text … did not match …"}` and nothing
+  is sent to the panel; the exact name goes through.
+- **App `.htaccess` vs the panel's block, settled.** An rsync of Laravel's `public/` replaces
+  `public_html/.htaccess` outright: the panel's `<RequireAll> Require all granted </RequireAll>`
+  block is gone and the site keeps serving (200 on static, PHP and Laravel routes). When the panel
+  next writes the file (`ip_rules_set`), it **re-parses and merges**: Laravel's whole rewrite block
+  is kept (indentation stripped) and the panel's `<RequireAll>` block is appended after it; clearing
+  the rule leaves `Require all granted` in that block. `htaccess_rewrites_get` reports 0 chains
+  before and after, so the panel tracks its own rules separately and never shows the app's, even
+  once it has rewritten the file around them. Deploying an app `.htaccess` is therefore safe on
+  this server, and a later panel write does not destroy it.
+- **Laravel 13 `public/index.php` has three `__DIR__.'/../'` paths** (maintenance file, autoload,
+  bootstrap); `sed 's#__DIR__\.'"'"'/\.\./#…/../app/#g'` covers all of them and the page renders.
+  `storage/` and `bootstrap/cache` were writable as uploaded (owner `vahi_dev1`, 755); no chmod
+  needed because PHP runs as the same unix user.
+- **`db_export_sql` before `migrate`** wrote `sql_backup_vahi_dev1_walk_<date>.sql.gz` into the
+  home directory as documented; removed afterwards. The five `sql_backup_vahi_dev1_mcpb*` files
+  from the 2026-09-11 e2e runs are still there.
+- **The authorized key is `~/.ssh/enhance_vahi_dev_ed25519`** (panel name `claude-mcp-test`), not
+  the default `id_ed25519`; the default key is refused. The skill's "add `-e "ssh -i <key>"`" note
+  is the right advice.
+- **Plugin install copies the checkout.** `claude plugin install enhance@enhance-mcp` from a
+  local-directory marketplace copied the whole repo (164 MB, including `.env`) into
+  `~/.claude/plugins/cache/enhance-mcp/enhance/0.1.0/`; the copied `.env` was deleted by hand.
+  After a rebuild: `claude plugin marketplace update enhance-mcp && claude plugin update enhance@enhance-mcp`.

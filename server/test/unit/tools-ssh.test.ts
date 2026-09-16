@@ -112,10 +112,13 @@ describe('allTools', () => {
   it('contains every milestone A tool exactly once', () => {
     const names = allTools.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(29);
-    for (const n of ['auth_status', 'subscriptions_list', 'activity_log', 'platform_info', 'domain_check', 'websites_list', 'website_get', 'website_create', 'website_set_php_version', 'website_restart_php', 'website_preview_domain', 'website_delete', 'domains_list', 'domain_add', 'domain_set_primary', 'domain_remove', 'domain_dns_status', 'domain_dns_query', 'domain_dns_records', 'domain_ssl_get', 'domain_ssl_issue', 'domain_set_force_ssl', 'cloudflare_keys_list', 'domain_cloudflare_connect', 'domain_cloudflare_nameservers', 'ssh_connection_info', 'ssh_keys_list', 'ssh_key_add', 'ssh_key_remove']) {
+    const milestoneA = ['auth_status', 'subscriptions_list', 'activity_log', 'platform_info', 'domain_check', 'websites_list', 'website_get', 'website_create', 'website_set_php_version', 'website_restart_php', 'website_preview_domain', 'website_delete', 'domains_list', 'domain_add', 'domain_set_primary', 'domain_remove', 'domain_dns_status', 'domain_dns_query', 'domain_dns_records', 'domain_ssl_get', 'domain_ssl_issue', 'domain_set_force_ssl', 'cloudflare_keys_list', 'domain_cloudflare_connect', 'domain_cloudflare_nameservers', 'ssh_connection_info', 'ssh_keys_list', 'ssh_key_add', 'ssh_key_remove'];
+    expect(milestoneA).toHaveLength(29);
+    for (const n of milestoneA) {
       expect(names).toContain(n);
     }
-    expect(allTools.filter((t) => t.risk === 'destructive').map((t) => t.name).sort()).toEqual(['domain_remove', 'ssh_key_remove', 'website_delete']);
+    // The total across every registered milestone is asserted in test/unit/smoke.test.ts; this
+    // one stays about milestone A, so the destructive check is scoped to its own tools.
+    expect(allTools.filter((t) => t.risk === 'destructive' && milestoneA.includes(t.name)).map((t) => t.name).sort()).toEqual(['domain_remove', 'ssh_key_remove', 'website_delete']);
   });
 });

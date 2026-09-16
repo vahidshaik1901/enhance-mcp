@@ -6,34 +6,55 @@ provider or billing system. Lets a customer manage and deploy to their Enhance-h
 websites from Claude Code, with strong guardrails so an AI can never wipe a server or
 delete a site by accident.
 
-## Current status (2026-09-05)
+## Current status (2026-09-16)
 
-**Phase: milestone A MERGED to `main` on 2026-09-05 (PR #1, merge commit 7c0e4fa) in the
-public repo https://github.com/vahidshaik1901/enhance-mcp. Live-verified: e2e suite 8/8, the
-Task 19 walkthrough (fresh `.test` site, HTTPS preview URL, rsync deploy, DNS tree on vahi.dev,
-`website_delete` through the elicitation prompt), see "Live test A" in docs/research.md. The
-static test site from `~/enhance-e2e-site` is deployed on vahi.dev (preview URL
-vahi-dev-ccyq.sgp1.mystaging.site; the domain has no DNS at Cloudflare yet). Only unobserved:
-how Claude Code's terminal renders the elicitation prompt. NEXT: milestone B (PHP + MySQL on
-vahi.dev) on a new branch `feat/milestone-b`, starting with `superpowers:writing-plans` from the
-spec's milestone B section and the deferred Minor list in `.superpowers/sdd/progress.md`; then C
-(Node). Credential note: session JWTs expire within hours; the org still has no access token.**
+**Phase: milestone B COMPLETE and LIVE-VERIFIED on branch `feat/milestone-b` (all 10 tasks of
+`docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done, including the Task 10
+walkthrough on 2026-09-16: PHP page reading MySQL, Laravel 13 `composer install` + `migrate` over
+SSH, and the typed-name prompt for `db_import_sql`/`db_delete`/`db_user_delete` inside Claude Code;
+see "Task 10 walkthrough" in docs/research.md). 71 tools are registered (a client lists 72 with `confirm_action`): milestone A plus
+MySQL, PostgreSQL, PHP extensions/workers/error log, Redis, FastCGI cache, htaccess rewrites and IP
+rules, and cron. 313 unit tests; the milestone B live suite passed 4/4 against vahi.dev on
+2026-09-11 with a fresh session JWT (see "Live test B" in docs/research.md). That run found and
+fixed one live bug: `db_import_sql` must name the multipart field `<database>.sql` (commit
+910e494; the spec's `sql` name is rejected by the panel). Skills: `enhance-database` added,
+`enhance-deploy` extended with the PHP/Laravel build and post-deploy steps, PHP settings and cron,
+and access control. Draft PR #3 is open; NOT merged yet. Remaining:
+`superpowers:finishing-a-development-branch` (mark PR #3 ready and merge), then milestone C
+(Node + persistent apps).
+Milestone A is MERGED to `main` (2026-09-05, PR #1, merge commit 7c0e4fa) in the public repo
+https://github.com/vahidshaik1901/enhance-mcp and was live-verified (e2e 8/8 plus the Task 19
+walkthrough; see "Live test A" in docs/research.md). The static test site from
+`~/enhance-e2e-site` is still deployed on vahi.dev (preview URL vahi-dev-ccyq.sgp1.mystaging.site;
+the domain has no DNS at Cloudflare yet).**
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
-Plan: `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD).
+Plans: milestone A `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD);
+milestone B `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` (10 tasks, TDD).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
-No code exists yet. Key library facts: MCP TypeScript SDK is v2 (`@modelcontextprotocol/server`
-2.0.0, `serveStdio`, `registerTool`, form elicitation via `ctx.mcpReq.elicitInput`), zod 4
+Key library facts: MCP TypeScript SDK is v2 (`@modelcontextprotocol/server`
+2.0.0, `serveStdio`, `registerTool`, elicitation via the SDK's `inputRequired` flow), zod 4
 (`zod/v4`), openapi-fetch 0.17, openapi-typescript 7.13, npm name `enhance-mcp` is free.
 Claude Code supports MCP elicitation (>= 2.1.76) but advertises a bare `elicitation: {}`
 capability and negotiates the legacy protocol era; the server uses the SDK's `inputRequired`
 flow (not `elicitInput`) so the human prompt works on both eras (see docs/research.md).
 `outputSchema` has known issues so tools return `structuredContent` without declaring one;
 the Bash sandbox can never carry SSH (use `sandbox.excludedCommands` or run unsandboxed).
-Progress: Tasks 1-18 of the milestone A plan are done and reviewed (ledger in
-`.superpowers/sdd/progress.md`, git-ignored; `git log` is the recovery map). To run the
-live suite: put a working credential in `.env` as `ENHANCE_TOKEN` (or a session JWT as
-`ENHANCE_SESSION_COOKIE`), then from `server/`:
-`set -a && source ../.env && set +a && ENHANCE_E2E=1 ENHANCE_E2E_SUBSCRIPTION_ID=664 npm run test:e2e`.
+Progress: milestone A is merged to `main`; milestone B is done and live-verified on
+`feat/milestone-b` (ledger in `.superpowers/sdd/progress.md`, git-ignored; `git log` is the
+recovery map). Session JWTs expire within hours and the org still has no access token, so ask for
+a fresh cookie before any live work. To run the live suite: put the credential in `.env`
+(`ENHANCE_TOKEN`, or a session JWT as `ENHANCE_SESSION_COOKIE`), then from the repo root:
+`cd server && set -a && source ../.env && set +a && ENHANCE_TOKEN="${ENHANCE_TOKEN:-$ENHANCE_SESSION_COOKIE}" ENHANCE_E2E=1 ENHANCE_E2E_SITE=vahi.dev npx vitest run --config vitest.e2e.config.ts test/e2e/milestone-b.e2e.test.ts`.
+(`npm run test:e2e` also runs the milestone A suite, which creates and deletes a throwaway
+website and additionally needs `ENHANCE_E2E_SUBSCRIPTION_ID=664`.)
+The plugin is installed permanently at user scope from this repo as a local marketplace
+(`.claude-plugin/marketplace.json`; installed 2026-09-16 via `claude plugin marketplace add <repo>`
++ `claude plugin install enhance@enhance-mcp`). Claude Code COPIES the checkout into
+`~/.claude/plugins/cache/enhance-mcp/enhance/0.1.0/`, so after a rebuild run
+`claude plugin marketplace update enhance-mcp && claude plugin update enhance@enhance-mcp`.
+The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) still shows
+"Connection closed" inside this repo; the plugin copy is the one that works. The server reads
+`~/.enhance-mcp/config.json`; `node server/dist/index.js doctor` checks it.
 
 ### Decisions made
 
@@ -63,16 +84,6 @@ live suite: put a working credential in `.env` as `ENHANCE_TOKEN` (or a session 
 7. **Destructive ops: two-step confirmation gate** (preview + confirmation token + the
    human typing the domain name). Never expose `force=true`, org delete, subscription
    delete, or bulk website delete. Assumed from my recommendation; confirm in design review.
-
-### Remaining before code
-
-- User reviews the spec. Then `superpowers:writing-plans` for milestone A, then implement
-  with TDD against the live panel.
-- Milestone ladder (each ends with a live test pass that feeds changes back):
-  A static site + preflight (domain check, DNS, SSL, SSH), B PHP + databases,
-  C Node.js + persistent apps, D advanced (WordPress, email, backups, DNS zone,
-  staging) + deploy modes B (GitHub Actions) and C (git push to server).
-- Deploy modes: A direct rsync (implemented first); B and C documented, built in D.
 
 ## Live test panel (verified 2026-09-04, read-only probes)
 

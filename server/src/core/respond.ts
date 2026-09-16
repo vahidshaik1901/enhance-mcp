@@ -11,10 +11,14 @@ export function fail(text: string, structured?: Record<string, unknown>): ToolRe
 /**
  * Characters that must never survive into rendered panel text: C0 and C1 controls (newlines,
  * tabs, escape), the non-ASCII spaces that read as a space but are not one, the zero-width
- * characters that hide text outright, and the bidi embedding/override/isolate controls that can
- * reorder a line so what is displayed differs from what is there.
+ * characters that hide text outright, the bidi embedding/override/isolate controls that can
+ * reorder a line so what is displayed differs from what is there, the invisible formatting
+ * characters that render as nothing (soft hyphen, Mongolian vowel separator, the interlinear
+ * annotation marks), and the tag block, whose characters are invisible everywhere yet carry a
+ * full ASCII alphabet: the cleanest way to smuggle text past a reader.
+ * The `u` flag is required for the astral tag range; every other member is unaffected by it.
  */
-const COLLAPSE_RE = /[\x00-\x1f\x7f-\x9f\u00a0\u1680\u2000-\u200f\u2028\u2029\u202a-\u202e\u205f\u2060-\u2064\u2066-\u2069\u3000\ufeff]+/g;
+const COLLAPSE_RE = /[\x00-\x1f\x7f-\x9f\u00a0\u00ad\u061c\u1680\u180e\u2000-\u200f\u2028\u2029\u202a-\u202e\u202f\u205f\u2060-\u2064\u2066-\u2069\u3000\ufeff\ufff9-\ufffb\u{e0000}-\u{e007f}]+/gu;
 
 function cell(v: unknown): string {
   if (v === undefined || v === null || v === '') return '-';

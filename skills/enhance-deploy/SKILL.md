@@ -57,9 +57,32 @@ Work through the steps in order. Say which step you are on. Stop and report when
 ### 7. Build locally
 Detect the project type and build here, never on the server for PHP:
 - **Static** (index.html at the root or a `dist/`/`build/` output): nothing to build, or run the project's build script.
-- **PHP / Laravel**: `composer install --no-dev --optimize-autoloader` locally is not required; Composer exists in the container. Do not upload `vendor/` if `composer.json` exists; install remotely in step 9.
+- **PHP**: never upload `vendor/` when `composer.json` is present. Composer exists in the container and runs there in step 9; a locally built `vendor/` carries this machine's platform and absolute paths. Exclude it from the rsync.
+- **Laravel**: use the two-directory layout below. There is **no MCP tool that repoints an existing domain's document root** — that is a panel-UI action today (a future milestone may add one) — so the served directory stays `<home>/public_html` and the app lives beside it.
+- **Database**: create the database and user first with the `enhance-database` skill, then write the app config with `DB_HOST=localhost` and the full `<unixUser>_` prefixed names.
 - **WordPress theme or plugin**: deploy into `public_html/wp-content/themes/<name>` or `plugins/<name>`, never the docroot root.
-- **Node**: handled by a later milestone; for now stop and say so.
+- **Node**: handled by a later milestone; for now stop and say so. Forward note: a Node persistent app's proxy path is served on the **primary domain**, not the `*.mystaging.site` preview URL (verified live), so its verification step will not match static and PHP.
+
+#### Laravel layout (the supported path)
+
+`<home>` is `/var/www/<website_id>` — where the SSH login lands. The served document root is
+`<home>/public_html` (mode 750, group `www-data`); you may create sibling directories in `<home>`.
+
+1. **Deploy the application to `<home>/app`**, never into the docroot, so `.env`, `vendor/` and
+   `storage/` are never web-served. rsync target `app/`, excluding `vendor`, `node_modules` and
+   `.env`. Build front-end assets locally (`npm run build`) and upload the built output.
+2. **Make `public_html` serve Laravel's `public/`**: rsync `app/public/` into `public_html/`, then
+   edit `public_html/index.php` so its two requires point one level up into the app directory:
+   ```php
+   require __DIR__.'/../app/vendor/autoload.php';
+   $app = require_once __DIR__.'/../app/bootstrap/app.php';
+   ```
+   Any other `__DIR__.'/../…'` path in that file (Laravel's maintenance-mode check, for example)
+   needs the same `/app` prefix; Laravel 13 has three such lines and
+   `sed -i "s#__DIR__\.'/\.\./#__DIR__.'/../app/#g" public_html/index.php` over SSH covers them
+   (verified live 2026-09-16). Re-apply the edit whenever step 2's rsync overwrites `index.php`.
+
+Everything below calls `<home>/app` the **`<app dir>`**.
 
 ### 8. Deploy with rsync
 - Always dry-run first and show the summary:
@@ -67,20 +90,47 @@ Detect the project type and build here, never on the server for PHP:
 - Use `-rltvz`, not `-a`. With a trailing-slash source, `-a` copies the local folder's owner, group and mode onto the document root, which the panel keeps at `750` with the web server's group (verified live 2026-09-05).
 - Add `-e "ssh -i <key>"` when the authorized key is not the user's default one.
 - Then run it for real. Use `--delete` only if the user explicitly asked to remove files not in the source.
-- Target is the document root or a named subdirectory. Never the home directory root.
+- Target is the document root, a directory under it, or a named directory in the home (`app/` for the Laravel layout in step 7 — that one runs twice, once into `app/` and once into `public_html/`). Never the home directory root itself.
 - **Sandbox**: this command needs the sandbox disabled (or `ssh`/`rsync` in `sandbox.excludedCommands`). Say so before running.
 
 ### 9. Post-deploy (over the same SSH)
-- PHP with Composer: `ssh <user>@<host> 'cd <docroot> && composer install --no-dev --optimize-autoloader'`.
-- Laravel: `php artisan migrate --force` only when the user confirms; `php artisan config:cache`.
+`<app dir>` is where the application code lives: the document root for a plain PHP app, and
+`<home>/app` (`/var/www/<website_id>/app`) for the Laravel layout in step 7.
+- PHP with Composer: `ssh <user>@<host> 'cd <app dir> && composer install --no-dev --optimize-autoloader'`.
+- **Laravel**, in this order:
+  1. `composer install --no-dev --optimize-autoloader` over SSH, in the `<app dir>`. Every `php artisan` command below runs there too.
+  2. Write `.env` on the server from the database tool output: `DB_HOST=localhost` (never `127.0.0.1`), the full `<unixUser>_` prefixed database and user names, and the password `db_user_create` showed once, plus `APP_ENV=production`, `APP_DEBUG=false` and an `APP_KEY` (`php artisan key:generate` when there is none). Never rsync a local `.env` up, never commit it, and do not repeat the password afterwards.
+  3. `php artisan migrate --force` **only when the user explicitly confirms it** — it changes the schema and can drop columns. Take `db_export_sql` first.
+  4. `php artisan config:cache` (and `route:cache` / `view:cache` if the app uses them). Re-run it after any later `.env` change, or the cached config keeps winning.
 - WordPress: `wp cache flush` if WP-CLI reports a site.
-- Then `website_restart_php` if OPcache might hold old code (PHP projects), and `cache_clear` when it becomes available (later milestone).
+- Then both caches, which are different things: `website_restart_php` for PHP OPcache, which otherwise keeps serving the previous code, and `cache_clear` for the domain's FastCGI (page) cache.
 
 ### 10. Verify
 - Request a file you just deployed, not just `/`: an empty docroot returns 404 on every hostname.
   `curl -sS -o /dev/null -w '%{http_code}' https://<preview-domain>/index.html` (or `curl -k --resolve …` when there is no preview domain).
 - `curl: (6) Could not resolve host` on a preview domain created minutes ago is DNS propagation, not a failed deploy (about five minutes live). Verify the vhost meanwhile with `curl -k --resolve <preview-domain>:443:<app-server-ip> https://<preview-domain>/index.html`, then retry the plain URL.
 - Report: preview URL, primary URL and its DNS status, SSL state, what was uploaded (from the rsync summary), and what the user still has to do (DNS at the registrar, if anything).
+
+## PHP settings and cron
+
+Only once the deploy works; none of this is part of the happy path.
+
+- **Extensions**: `php_extensions_list` shows enabled, available to enable, and built in (mysqli, pdo_mysql, redis, gd, intl, imagick among others are always on). `php_extension_enable website=<site> extension=apcu` turns on one of the available ones and `php_extension_disable` reverses it; run `website_restart_php` afterwards if a running app needs it.
+- **Workers**: `php_workers_get` and `php_workers_set website=<site> lsapi_children=<n>` set how many PHP requests the site runs at once. That count is the only php.ini-style knob at customer tier — arbitrary directives are not editable here, so never promise a `memory_limit` change. Raising it costs memory.
+- **Debugging a 500**: `php_error_log` returns the newest 64 KB of the panel's log. Read it before guessing. An empty log means PHP never errored — look at the document root and the rewrite rules instead.
+- **Redis**: `redis_state_get` / `redis_state_set` is an on/off toggle for the per-site instance, not a key-value API; enabling it needs `canUse.redis`.
+- **Cron**: `cron_add website=<site> jobs=["* * * * * php /var/www/<website_id>/app/artisan schedule:run"]` for the Laravel scheduler — it wants to run **every minute** and dispatches the due tasks itself, and `artisan` sits in the `<app dir>` from step 7, not in the docroot. The rules that bite:
+  - A job is a full crontab line: five schedule fields (or `@reboot`/`@daily`/...) then the command.
+  - **Escape every `%` as `\%`.** Cron ends the command at the first unescaped one and feeds the rest to the command's stdin, so `date +%s >> out.log` runs and writes nothing (verified live).
+  - `cron_get` numbers lines from 0. `cron_remove` takes those numbers and the panel renumbers what is left after each removal, so re-read `cron_get` before removing more. `cron_delete` wipes the whole crontab and is destructive.
+  - `container_cron_get` / `container_cron_set` only control whether `crontab -l` and `crontab -e` work **inside** the container over SSH. They do not schedule or stop anything: panel-managed jobs run either way (verified live). Turn it on only for a deploy script that installs its own jobs.
+
+## Access control and rewrites
+
+- Read `htaccess_rewrites_get` first, always: it lists the panel-managed `RewriteRule`/`RewriteCond` chains with their line numbers. `htaccess_rewrites_set` upserts by `lineNumber` — chains you do not list are kept exactly as they are — and `htaccess_rewrites_delete` removes by line number, after which the panel **renumbers the rest from 1**. Re-read before deleting more.
+- Rules an app ships in its own `.htaccess` (Laravel's `public/.htaccess`, WordPress's permalink block) are never shown by these tools, even after the panel has rewritten the file around them. **Verified live 2026-09-16:** an rsync that brings an app `.htaccess` replaces the panel's `<RequireAll>` block outright and the site keeps serving; the next panel write (`ip_rules_set`, `htaccess_rewrites_set`) re-parses the file, keeps the app's rules and appends the panel's block after them. So deploying an app `.htaccess` is safe, and a later panel write does not destroy it. Still read the file over SSH after a deploy when something behaves oddly.
+- `ip_rules_get` / `ip_rules_set` write an Apache 2.4 `Require ip` block. **Verified live: (Open)LiteSpeed servers ignore it** — an allow list naming a single address still answered 200 to every other IP, on static, PHP and 404 paths alike. Never present it as a security control. If the user asks for one, set it and then verify from an address that should be blocked with `curl -o /dev/null -w '%{http_code}' https://<domain>/`; when that returns 200, say plainly that this server does not enforce the rule and that access control belongs in the application or at the CDN.
+- An allow list that leaves out the user's own IP locks them out wherever the rule *is* enforced. `ip_rules_set website=<site> kind=block ips=[]` clears the rule.
 
 ## Rollback
 The panel keeps automatic backups (`backups_list` arrives in a later milestone). For now: keep the previous build locally; re-run rsync from it to roll back.
