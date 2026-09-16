@@ -35,6 +35,10 @@ git checkout and point Claude Code at that same directory.
    For a one-off session without installing: `claude --plugin-dir /path/to/enhance-mcp`.
 
 3. Create a credential: in your panel, Settings → Access Tokens → Create (name it, choose an expiry).
+   A panel session credential works too and is auto-detected, but it expires within hours.
+   **OAuth is coming:** the Enhance team is building OAuth sign-in for the panel API. Once it
+   ships, this plugin will add it as a third credential mode (sign in from the browser, nothing to
+   copy or store by hand) alongside access tokens; the tools and skills stay the same.
 4. Save it where the server reads it:
    ```json
    // ~/.enhance-mcp/config.json
@@ -61,6 +65,10 @@ check, neither of which needs a local checkout.
 
 Environment variables win over the profile file.
 
+Credential modes today: a Bearer access token (recommended) or a panel session credential; the
+server probes `/login/memberships` to tell them apart. OAuth will become the third mode when the
+Enhance team releases it (see the note in Install).
+
 ## Sandbox note
 
 Claude Code's Bash sandbox cannot open SSH connections. For rsync/ssh deploy steps, add `ssh` and `rsync` to `sandbox.excludedCommands` in your Claude Code settings, or approve the command with the sandbox disabled when asked.
@@ -69,6 +77,8 @@ Claude Code's Bash sandbox cannot open SSH connections. For rsync/ssh deploy ste
 
 Milestone A (account, preflight, websites, domains, DNS, SSL, SSH, static-site deploy) is implemented and verified live against a real panel on 2026-09-05 (see "Live test A" in `docs/research.md`).
 
-Milestone B (MySQL, PostgreSQL, PHP settings, Redis, cache, `.htaccess`, cron) is code-complete: every tool has unit and MCP-level tests, and each endpoint's behaviour was probed against the live panel while the tools were written (see "Live probe: milestone B and C endpoints" in `docs/research.md`). **The milestone B live end-to-end test is still pending.**
+Milestone B (MySQL, PostgreSQL, PHP settings, Redis, cache, `.htaccess`, cron, the `enhance-database` skill and the PHP/Laravel deploy path) is merged and verified live: the milestone B end-to-end suite passed against a real panel on 2026-09-11, and the PHP + MySQL page, a Laravel 13 deploy over SSH and the typed-name confirmation prompt were walked through inside Claude Code on 2026-09-16 (see "Live test B" and "Task 10 walkthrough" in `docs/research.md`).
+
+Next: Node.js and persistent apps (milestone C), then email, backups, DNS zone editing, WordPress, staging and the other deploy modes (milestone D). OAuth support lands as soon as the panel offers it.
 
 See `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md` for the roadmap (Node, WordPress, email, backups, staging, GitHub auto-deploy).
