@@ -7,9 +7,12 @@ import { siteOf, siteWebsite, websiteArg, type DbSite } from './dbcommon.js';
 
 /** A Node version the way nvm names it: `22.23.2`, with optional pre-release and build parts. */
 export const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-export const semverArg = z.string().regex(SEMVER_RE, 'a Node version like 22.23.2');
+export const semverArg = z.string().regex(SEMVER_RE, 'a Node version like 22.23.2').describe('a Node version like 22.23.2');
 /** The API's `NodeVersion` selector: a semver, or the nvm aliases `stable` / `default`. */
-export const nodeSelectorArg = z.string().refine((v) => v === 'stable' || v === 'default' || SEMVER_RE.test(v), 'a Node version like 22.23.2, or "stable" or "default"');
+export const nodeSelectorArg = z
+  .string()
+  .refine((v) => v === 'stable' || v === 'default' || SEMVER_RE.test(v), 'a Node version like 22.23.2, or "stable" or "default"')
+  .describe('a Node version like 22.23.2, or "stable" or "default"');
 
 /**
  * Node and persistent apps are one plan feature: the panel reports it in `canUse.persistentApps`
@@ -40,7 +43,12 @@ export function compareSemverDesc(a: string, b: string): number {
   const num = (v: string) => v.split(/[-+]/)[0]!.split('.').map((n) => Number.parseInt(n, 10));
   const [x, y] = [num(a), num(b)];
   for (let i = 0; i < 3; i += 1) {
-    if ((y[i] ?? 0) !== (x[i] ?? 0)) return (y[i] ?? 0) - (x[i] ?? 0);
+    const [xi, yi] = [x[i] ?? 0, y[i] ?? 0];
+    // A segment the panel returns in some other shape (`v22.1.0`, say) parses to NaN, and every
+    // NaN comparison is false — which would make the sort order depend on the input order. Fall
+    // back to a plain string compare so the result stays deterministic.
+    if (Number.isNaN(xi) || Number.isNaN(yi)) return a < b ? -1 : a > b ? 1 : 0;
+    if (yi !== xi) return yi - xi;
   }
   return a.includes('-') === b.includes('-') ? 0 : a.includes('-') ? 1 : -1;
 }
@@ -68,7 +76,7 @@ export const nodeVersionsAvailable = defineTool({
   name: 'node_versions_available',
   tier: 'customer',
   risk: 'read',
-  description: 'Lists the Node.js versions nvm can install on this website, newest first. The text shows the newest release of each major; structuredContent.versions has every one.',
+  description: 'Lists the Node.js versions nvm can install on this website, newest first. The text shows the newest release of up to the eight most recent majors and says how many majors it left out; structuredContent.versions has every one.',
   input: z.object({ website: websiteArg }),
   async handler({ website }, ctx) {
     const s = await appsSite(ctx, website);
@@ -86,8 +94,13 @@ export const nodeVersionsAvailable = defineTool({
       }
     }
     const shown = newestPerMajor.slice(0, 8);
+    const omitted = newestPerMajor.length - shown.length;
     return ok(
-      [s.identity, `${versions.length} versions available (newest of each major shown; the full list is in structuredContent.versions):`, shown.map(safe).join(', ') || 'none'].join('\n'),
+      [
+        s.identity,
+        `${versions.length} versions available across ${newestPerMajor.length} majors; newest release of the ${shown.length} most recent majors shown${omitted > 0 ? `, ${omitted} older majors omitted from the text` : ''}. The full list is in structuredContent.versions.`,
+        shown.map(safe).join(', ') || 'none',
+      ].join('\n'),
       { total: versions.length, versions, newestPerMajor },
     );
   },
@@ -141,7 +154,7 @@ export const nodeVersionSetDefault = defineTool({
     const s = await appsSite(ctx, website);
     if (!s.ok) return s.result;
     await ctx.client.call('PUT', '/websites/{website_id}/apps/node/versions/default', () => ctx.client.api.PUT('/websites/{website_id}/apps/node/versions/default', { ...nodePath(s.id), body: version }));
-    return ok(`${s.identity}\ndefault Node.js version set to ${safe(version)}. Apps that pin nodeVersion are unaffected; others pick it up when they next start.`, { version, default: true });
+    return ok(`${s.identity}\ndefault Node.js version set to ${safe(version)}. Apps that pin nodeVersion are unaffected; apps created with node_version "default" pick it up when they next start.`, { version, default: true });
   },
 });
 

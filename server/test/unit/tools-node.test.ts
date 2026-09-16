@@ -43,6 +43,22 @@ describe('the persistent-apps gate', () => {
       expect(f.calls.some((c) => c.path.includes('/apps/node'))).toBe(false);
     });
   }
+
+  /** The block is optional, so the gate must also refuse when the panel omits it entirely. */
+  const noCanUse = (): Route[] => [
+    { method: 'GET', path: `/orgs/${ORG_ID}/websites`, body: { items: [websiteDetail], total: 1 } },
+    { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: { ...websiteDetail, canUse: undefined } },
+    { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/domains`, body: { items: [] } },
+  ];
+
+  it('refuses when the site detail has no canUse block at all', async () => {
+    const { ctx, f } = await makeContext(noCanUse());
+    const r = await callTool(byName(tools, 'node_install'), { website: 'vahi.dev' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('not enabled');
+    expect(r.text).toContain(websiteLine);
+    expect(f.calls.some((c) => c.path.includes('/apps/node'))).toBe(false);
+  });
 });
 
 describe('node_install', () => {
@@ -61,6 +77,14 @@ describe('compareSemverDesc', () => {
   it('orders newest first, numerically per segment', () => {
     expect(['0.12.18', '22.23.2', '26.8.1', '4.9.1', '22.3.0'].sort(compareSemverDesc)).toEqual(['26.8.1', '22.23.2', '22.3.0', '4.9.1', '0.12.18']);
   });
+
+  it('stays deterministic when a string is not plain semver, and still orders the plain ones by number', () => {
+    const odd = ['22.23.2', 'v22.1.0', '4.9.1', '26.8.1'];
+    const first = [...odd].sort(compareSemverDesc);
+    const second = [...odd].sort(compareSemverDesc);
+    expect(first).toEqual(second);
+    expect(first.filter((v) => !v.startsWith('v'))).toEqual(['26.8.1', '22.23.2', '4.9.1']);
+  });
 });
 
 describe('node_versions_available', () => {
@@ -73,6 +97,20 @@ describe('node_versions_available', () => {
     expect(r.text).toContain('22.23.2');
     expect(r.text).not.toContain('22.3.0'); // only the newest of each major is rendered
     expect(r.text).toMatch(/6 versions/);
+  });
+
+  it('caps the text at the eight newest majors and says how many it left out', async () => {
+    // Twelve majors, the shape real panel data has: nvm knows far more majors than fit in a line.
+    const all = ['0.12.18', '4.9.1', '6.17.1', '8.17.0', '10.24.1', '12.22.12', '14.21.3', '16.20.2', '18.20.4', '20.19.0', '22.23.2', '26.8.1'];
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: `${nodeBase}/possible_versions`, body: all }]);
+    const r = await callTool(byName(tools, 'node_versions_available'), { website: 'vahi.dev' }, ctx);
+    for (const v of ['26.8.1', '22.23.2', '20.19.0', '18.20.4', '16.20.2', '14.21.3', '12.22.12', '10.24.1']) {
+      expect(r.text).toContain(v);
+    }
+    expect(r.text).not.toContain('0.12.18'); // the oldest major is past the cap
+    expect(r.text).toContain('12 versions available across 12 majors');
+    expect(r.text).toContain('4 older majors omitted');
+    expect(r.structured).toMatchObject({ total: 12, versions: [...all].reverse() });
   });
 });
 
@@ -128,10 +166,16 @@ describe('node_version_set_default', () => {
     const { ctx } = await makeContext([...base(), captureRaw({ method: 'PUT', path: `${nodeBase}/versions/default` }, sink)]);
     await callTool(byName(tools, 'node_version_set_default'), { website: 'vahi.dev', version: 'stable' }, ctx);
     expect(sink.raw).toBe('"stable"');
+    await callTool(byName(tools, 'node_version_set_default'), { website: 'vahi.dev', version: 'default' }, ctx);
+    expect(sink.raw).toBe('"default"');
   });
 
-  it('rejects anything else', async () => {
-    const { ctx } = await makeContext([...base()]);
+  it('rejects anything else, before any request', async () => {
+    const { ctx, f } = await makeContext([...base()]);
+    // makeContext has already spent one call on the /login/memberships auth probe, so what must
+    // hold at zero is the count the tool itself adds — same idiom as tools-php.test.ts.
+    const before = f.calls.length;
     await expect(callTool(byName(tools, 'node_version_set_default'), { website: 'vahi.dev', version: 'latest' }, ctx)).rejects.toThrow();
+    expect(f.calls.length).toBe(before);
   });
 });
