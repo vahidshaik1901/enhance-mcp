@@ -535,6 +535,73 @@ the `MySQLDBsFullListing` type.
     static and PHP which serve on the preview URL. Record this in the deploy skill for mode A.
   - A `persistent_app_<id>.log` file remains in the home directory after the app is deleted.
 
+#### Milestone C Task 1 probe (2026-09-16)
+
+Probed live on vahi.dev with a session JWT. Every app created here was deleted again, the
+`persistent_app_*.log` files were removed, the app listing is back to `[]` and
+`https://vahi.dev/demo-login/` answers 200 from PHP. nvm was left installed.
+
+1. Second `installNvm`: HTTP 200 in ~0.5 s with an empty body, and a **no-op** — `nvm ls` and the
+   mtimes of `~/.nvm` and `~/.nvm/nvm.sh` were unchanged (still 2026-09-05). The panel's
+   `/usr/bin/install_nvm_and_node.sh` prints "NVM already installed" and exits 0 when
+   `~/.nvm/nvm.sh` exists, so a repeat call never reinstalls nvm and never installs a node
+   version. It is safe to call again. `GET .../apps/node/versions` after it: still disagrees with
+   `nvm ls`, and the rule is now known — **it lists the installed versions except the one nvm's
+   `default` alias points at**. With default -> 22.23.2 and v22.23.2, v26.8.1, v26.8.2 installed
+   it returned `["26.8.1","26.8.2"]`; after `nvm alias default 26.8.1` the same set returned
+   `["22.23.2","26.8.2"]` (the alias was restored afterwards). The version actually in use is
+   exactly the one missing from the list, so the list must never be presented as authoritative.
+2. Restart: **every `PATCH` restarts the app, even a no-change one**, and it restarts the whole
+   website container with it. `PATCH {"startMode":"automatic"}` on an app already `automatic`
+   returned HTTP 200, and one second later both the container's PID 1 (`appinit ... lsphp`) and
+   the `node server.js` process showed fresh start times (16:53:13 and 16:53:14 for a PATCH issued
+   at 16:53:13; before it they had started at 16:51:56 and 16:51:57). **The pid is not a restart
+   signal**: the app lands on pid 5 in every fresh container, so the probe page printed the same
+   `probe-5` before and after; only `ps -eo pid,lstart,etimes` tells the truth. `startMode:
+   "manual"` stops the process — the proxy path answered HTTP 503 at 5 s and at 20 s. Back to
+   `"automatic"` starts a new process (200 again within 8 s, new start time). Create and delete
+   bounce the container the same way, so the site's PHP process (PID 1 is `appinit` running
+   `lsphp`) is restarted on every persistent-app write, not just the app.
+3. Duplicate port: **accepted**, HTTP 201 — a second app on port 3077 while a live app already
+   used 3077 was created without complaint, so the panel does not validate ports and a real clash
+   only shows up at runtime as the second process failing to bind. Proxy path colliding with a
+   docroot directory (`demo-login`, a live PHP page): **accepted, HTTP 201, and the proxy wins.**
+   With the app merely registered and `startMode: "manual"` (nothing listening),
+   `https://vahi.dev/demo-login/` went from 200 to **503**; the PHP page returned to 200 within
+   seconds of deleting the app. So a proxy path silently shadows a real directory under
+   `public_html`, and an app that is not running turns that URL into a 503. A path that collides
+   with **another app** is the one case the panel refuses: HTTP 409
+   `{"code":"already_exists","detail":"website","message":"An app already exists with this path"}`.
+4. Log endpoint: **capped tail of 262144 bytes (256 KiB)**, cut mid-line. A 5,100,608-byte log file
+   came back as exactly 262144 decoded bytes (267287 bytes on the wire as a JSON string), starting
+   in the middle of a line and ending at the file's last line. A small log comes back whole (a
+   608-byte file returned a 608-byte string). The file is also **truncated on every app restart**,
+   so it only ever holds the current run, and it outlives the app's deletion.
+5. `appKind`: `generic` on our app — the panel returns the field, it is not sent on create.
+   `openclaw` is a panel-provided app kind the tools display but never create.
+6. `nodeVersion: "stable"` on create: **accepted**, HTTP 201, stored and echoed back as
+   `"stable"`. At start the runner does `nvm install stable; nvm use stable`, which resolved to
+   v26.8.2 and installed it on the fly (nvm held 22.23.2 and 26.8.1 before). POST body: **empty** —
+   HTTP 201 with `content-length: 0` and no `Location` header, so the new id must come from a
+   follow-up `GET .../apps/persistent`. `workingDirectory` may be omitted entirely (stored as
+   `null`).
+
+Two further behaviours this probe uncovered, both of which the tools must guard:
+
+- **`command` is word-split, not shell-parsed.** The runner seen in `ps` is
+  `bash -l -c 'date; install_nvm_and_node.sh; ... nvm install stable; nvm use stable; exec "$@"' -- ` followed
+  by the command words, so quoting inside `command` does not survive. `node -e "const s=require(...)"`
+  reached node as the argv `node`, `-e`, `"const`, `s=require(...)` and crash-looped every few
+  seconds with `[eval]:1 / "const / Unterminated string constant / SyntaxError: Invalid or
+  unexpected token`. The same app written as `node server.js` with `workingDirectory:
+  "mcpprobe-app"` started and served on the first try. The tools and the skill must point
+  `command` at a script or an npm script, never at an inline one-liner with quoted arguments.
+- **`workingDirectory: ""` is accepted (HTTP 201) but the app never starts.** Its log stopped
+  after the `Starting app with params ... working_directory: Some(RelativePathBuf(""))` header —
+  not even the runner's first `date` ran — and the proxy path was still 503 on every check over
+  the three minutes it was left up. Omit the field or send a real relative directory; the create tool should reject an
+  empty string rather than pass it through.
+
 ## Live test B: databases, PHP, cron and the gate on vahi.dev (2026-09-11)
 
 Driver: the milestone B e2e suite (`server/test/e2e/milestone-b.e2e.test.ts`) calling the tool
