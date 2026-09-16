@@ -51,8 +51,10 @@ website and additionally needs `ENHANCE_E2E_SUBSCRIPTION_ID=664`.)
 The plugin is installed permanently at user scope from this repo as a local marketplace
 (`.claude-plugin/marketplace.json`; installed 2026-09-16 via `claude plugin marketplace add <repo>`
 + `claude plugin install enhance@enhance-mcp`). Claude Code COPIES the checkout into
-`~/.claude/plugins/cache/enhance-mcp/enhance/0.1.0/`, so after a rebuild run
-`claude plugin marketplace update enhance-mcp && claude plugin update enhance@enhance-mcp`.
+`~/.claude/plugins/cache/enhance-mcp/enhance/0.1.0/`, and `claude plugin update` is version-gated
+(a no-op while plugin.json stays 0.1.0), so after a rebuild or pull refresh it with
+`claude plugin uninstall enhance@enhance-mcp && claude plugin install enhance@enhance-mcp`
+(verified 2026-09-16), then delete the copied `.env` from the cache dir.
 The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) still shows
 "Connection closed" inside this repo; the plugin copy is the one that works. The server reads
 `~/.enhance-mcp/config.json`; `node server/dist/index.js doctor` checks it.

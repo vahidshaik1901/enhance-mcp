@@ -28,8 +28,10 @@ git checkout and point Claude Code at that same directory.
    Claude Code copies the checkout into `~/.claude/plugins/cache/enhance-mcp/enhance/<version>/`,
    so **build first**: `server/dist` and `server/node_modules` must exist when you install
    (the build bundles our own code but not the runtime dependencies, and neither is committed).
-   After you rebuild or pull, refresh the copy with
-   `claude plugin marketplace update enhance-mcp && claude plugin update enhance@enhance-mcp`.
+   `claude plugin update` is version-gated and does nothing while `plugin.json` still says the
+   same version, so after you rebuild or pull refresh the copy with
+   `claude plugin uninstall enhance@enhance-mcp && claude plugin install enhance@enhance-mcp`
+   (or bump `version` in `.claude-plugin/plugin.json` first, then `claude plugin update`).
    For a one-off session without installing: `claude --plugin-dir /path/to/enhance-mcp`.
 
 3. Create a credential: in your panel, Settings → Access Tokens → Create (name it, choose an expiry).

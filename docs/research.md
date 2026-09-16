@@ -613,4 +613,7 @@ Findings:
 - **Plugin install copies the checkout.** `claude plugin install enhance@enhance-mcp` from a
   local-directory marketplace copied the whole repo (164 MB, including `.env`) into
   `~/.claude/plugins/cache/enhance-mcp/enhance/0.1.0/`; the copied `.env` was deleted by hand.
-  After a rebuild: `claude plugin marketplace update enhance-mcp && claude plugin update enhance@enhance-mcp`.
+  `claude plugin update` is version-gated (it reported "already at the latest version" and left the
+  copy at the old commit), so a rebuild or pull needs
+  `claude plugin uninstall enhance@enhance-mcp && claude plugin install enhance@enhance-mcp`
+  (verified: the cache's recorded commit moved to the checkout's HEAD) or a version bump first.
