@@ -56,11 +56,16 @@ const ENV_PREFIX_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const SHELL_OPERATORS: Array<readonly [RegExp, string]> = [
   [/\|/, '|'],
   [/&&/, '&&'],
+  // A bare `&` would background the process for a shell; here it is a literal argv word, and an
+  // app the panel cannot supervise is worse than a refusal.
+  [/&/, '&'],
   [/;/, ';'],
   [/(?<!=)>/, '>'],
   [/</, '<'],
   [/`/, '`'],
   [/\$\(/, '$('],
+  // Any `$`: no shell expands it, so `$PORT` and `${HOME}` reach the program as literal words.
+  [/\$/, '$'],
 ];
 
 /** A `"…"` or `'…'` segment holding whitespace: the runner keeps the quotes and splits inside
@@ -108,6 +113,11 @@ const PROXY_SHADOWS_DOCROOT = 'the proxy path takes precedence over any public_h
 
 /** Verified live: create, update and delete all bounce the container, not just the app process. */
 const CREATE_RESTART_NOTE = 'registering the app restarted the website container; PHP and static pages were interrupted for a second or two';
+/** Arguments that describe a proxy the caller did not ask for, and arguments a clear_* flag
+ *  overrode: both are silently dropped by the panel, so the tool says so instead. */
+const IGNORED_PROXY_ARGS_NOTE = 'port/allow_websocket ignored: no proxy_path was given, so the app is not exposed';
+const CLEAR_PROXY_WON_NOTE = 'clear_proxy won: proxy_path/port/allow_websocket were ignored and the app is no longer exposed';
+const CLEAR_NODE_VERSION_WON_NOTE = 'clear_node_version won: node_version was ignored and the app is back on nvm\'s default alias';
 const UPDATE_RESTART_NOTE = 'An update restarts the app and, verified live, the whole website container, so the site\'s PHP and static pages are interrupted for a second or two.';
 
 const appIdArg = z.string().uuid().describe('Persistent app id from persistent_apps_list');
@@ -154,7 +164,9 @@ export const persistentAppsList = defineTool({
     if (items.length === 0) {
       return ok(`${s.identity}\nno persistent apps on this website. Create one with persistent_app_create (install Node first with node_install if the container has none).`, { total: 0, items });
     }
-    const rows = items.map((i) => ({ id: i.id, kind: i.kind, command: i.command, 'working dir': i.workingDirectory ?? '(home)', node: i.nodeVersion ?? 'default', start: i.startMode, proxy: i.proxy ? `${i.proxy.path} → :${i.proxy.port}${i.proxy.websocket ? ' (ws)' : ''}` : 'none', url: i.url ?? '-' }));
+    // Verified live: an app with no nodeVersion never starts ("exec: node: not found"), so the
+    // node cell says that outright instead of the reassuring "default".
+    const rows = items.map((i) => ({ id: i.id, kind: i.kind, command: i.command, 'working dir': i.workingDirectory ?? '(home)', node: i.nodeVersion ?? '(none: will not start; set node_version)', start: i.startMode, proxy: i.proxy ? `${i.proxy.path} → :${i.proxy.port}${i.proxy.websocket ? ' (ws)' : ''}` : 'none', url: i.url ?? '-' }));
     return ok([s.identity, `persistent apps (${items.length}):`, table(rows, ['id', 'kind', 'command', 'working dir', 'node', 'start', 'proxy', 'url']), PREVIEW_NOTE].join('\n'), { total: items.length, items });
   },
 });
@@ -184,10 +196,11 @@ export const persistentAppCreate = defineTool({
       command = validateCommand(args.command);
       if (args.working_directory !== undefined) workingDirectory = validateWorkingDirectory(args.working_directory);
       if (args.proxy_path !== undefined) proxy = validateProxyPath(args.proxy_path);
+      // Refused like any other bad input, in the same shape: nothing reaches the panel.
+      if (proxy && args.port === undefined) throw new Error('port is required when proxy_path is given: it is the port the app listens on');
     } catch (e) {
       return fail(`${s.identity}\n${(e as Error).message}. Nothing was sent to the panel.`, { created: false });
     }
-    if (proxy && args.port === undefined) throw new Error('port is required when proxy_path is given: it is the port the app listens on');
     // nodeVersion is always sent: verified live, an app created without one never starts.
     const body: NewApp = { command, startMode: args.start_mode, nodeVersion: args.node_version };
     if (workingDirectory !== undefined) body.workingDirectory = workingDirectory;
@@ -209,11 +222,16 @@ export const persistentAppCreate = defineTool({
         ['url', url ?? '-'],
       ]),
     ];
+    const notes: string[] = [];
+    if (proxy?.note) notes.push(proxy.note);
+    // Arguments that only mean something with a proxy path: say they were dropped rather than
+    // letting the caller believe the app is exposed on that port.
+    if (!proxy && (args.port !== undefined || args.allow_websocket)) notes.push(IGNORED_PROXY_ARGS_NOTE);
     if (proxy) lines.push(PROXY_SHADOWS_DOCROOT);
-    if (proxy?.note) lines.push(proxy.note);
+    lines.push(...notes);
     if (!match) lines.push('the panel accepted it but the listing did not show a matching app yet; run persistent_apps_list to find its id.');
     lines.push(`next: persistent_app_log${match ? ` app_id=${match.id}` : ''} until it reports listening, then persistent_app_probe. ${PREVIEW_NOTE}`);
-    return ok(lines.join('\n'), { id: match?.id ?? null, url, created: true, ...(proxy?.note ? { note: proxy.note } : {}) });
+    return ok(lines.join('\n'), { id: match?.id ?? null, url, created: true, ...(notes.length > 0 ? { note: notes.join(' ') } : {}) });
   },
 });
 
@@ -246,10 +264,13 @@ export const persistentAppUpdate = defineTool({
       if (args.command !== undefined) patch.command = validateCommand(args.command);
       if (args.working_directory !== undefined) patch.workingDirectory = validateWorkingDirectory(args.working_directory);
       if (args.start_mode !== undefined) patch.startMode = args.start_mode;
-      if (args.clear_node_version) patch.nodeVersion = { unset: true };
-      else if (args.node_version !== undefined) patch.nodeVersion = args.node_version;
+      if (args.clear_node_version) {
+        patch.nodeVersion = { unset: true };
+        if (args.node_version !== undefined) notes.push(CLEAR_NODE_VERSION_WON_NOTE);
+      } else if (args.node_version !== undefined) patch.nodeVersion = args.node_version;
       if (args.clear_proxy) {
         patch.proxyDetails = { unset: true };
+        if (args.proxy_path !== undefined || args.port !== undefined || args.allow_websocket !== undefined) notes.push(CLEAR_PROXY_WON_NOTE);
       } else if (args.proxy_path !== undefined || args.port !== undefined || args.allow_websocket !== undefined) {
         const path = args.proxy_path !== undefined ? validateProxyPath(args.proxy_path) : undefined;
         if (path?.note) notes.push(path.note);
@@ -271,7 +292,12 @@ export const persistentAppUpdate = defineTool({
     const proxyAfter = args.clear_proxy ? undefined : patch.proxyDetails && 'path' in patch.proxyDetails ? patch.proxyDetails.path : current.proxyDetails?.path;
     const url = appUrl(s.w, proxyAfter);
     const changed = Object.keys(patch).map((k) => (k === 'proxyDetails' ? 'proxy' : k === 'nodeVersion' ? 'node version' : k === 'workingDirectory' ? 'working directory' : k === 'startMode' ? 'start mode' : k));
-    return ok([s.identity, `persistent app ${safe(args.app_id)} updated (${changed.join(', ')}).`, kv([['url', url ?? '-']]), ...notes, UPDATE_RESTART_NOTE].join('\n'), { id: args.app_id, updated: true, changed, url });
+    const lines = [s.identity, `persistent app ${safe(args.app_id)} updated (${changed.join(', ')}).`, kv([['url', url ?? '-']]), ...notes];
+    // Only when the app is still exposed: the URL named above is the primary domain, and the
+    // preview alias does not proxy it.
+    if (url !== null) lines.push(PREVIEW_NOTE);
+    lines.push(UPDATE_RESTART_NOTE);
+    return ok(lines.join('\n'), { id: args.app_id, updated: true, changed, url });
   },
 });
 

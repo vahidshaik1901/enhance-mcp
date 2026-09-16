@@ -69,6 +69,9 @@ describe('validateCommand', () => {
     expect(() => validateCommand('node -e "const x = 1"')).toThrow(/quoted/);
     expect(() => validateCommand('npm start | tee log')).toThrow(/shell operator/);
     expect(() => validateCommand('sh -c "npm start"')).toThrow(/quoted/);
+    // A bare `&` would background the app and `$PORT` expands in no shell: both are literal argv.
+    expect(() => validateCommand('npm start &')).toThrow(/shell operator/);
+    expect(() => validateCommand('node server.js $PORT')).toThrow(/shell operator/);
   });
 
   it('always names the way out: an npm script or a wrapper script', () => {
@@ -124,6 +127,15 @@ describe('persistent_apps_list', () => {
     expect(r.text).toContain('persistent_app_create');
     expect(r.structured).toMatchObject({ total: 0, items: [] });
   });
+
+  it('says an app with no Node version will not start rather than calling it the default', async () => {
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: [{ ...persistentApp, nodeVersion: undefined }] }]);
+    const r = await callTool(byName(tools, 'persistent_apps_list'), { website: 'vahi.dev' }, ctx);
+    // Verified live: no nodeVersion means "exec: node: not found", not nvm's default alias.
+    expect(r.text).toContain('will not start');
+    expect(r.text).toContain('node_version');
+    expect(r.structured).toMatchObject({ total: 1, items: [{ id: APP_ID, nodeVersion: null }] });
+  });
 });
 
 describe('persistent_app_create', () => {
@@ -149,12 +161,30 @@ describe('persistent_app_create', () => {
 
   it('always sends a node version and omits proxyDetails when no proxy path is given; requires a port when one is', async () => {
     const sink: { body?: unknown } = {};
-    const { ctx } = await makeContext([...base(), captureBody({ method: 'POST', path: appsPath }, sink, 201), { method: 'GET', path: appsPath, body: [{ ...persistentApp, proxyDetails: undefined, command: 'node worker.js' }] }]);
+    const { ctx, f } = await makeContext([...base(), captureBody({ method: 'POST', path: appsPath }, sink, 201), { method: 'GET', path: appsPath, body: [{ ...persistentApp, proxyDetails: undefined, command: 'node worker.js' }] }]);
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node worker.js' }, ctx);
     // Verified live: an app created without a nodeVersion never starts ("exec: node: not found").
     expect(sink.body).toEqual({ command: 'node worker.js', startMode: 'automatic', nodeVersion: 'default' });
     expect(r.structured).toMatchObject({ created: true, url: null });
-    await expect(callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node server.js', proxy_path: 'node' }, ctx)).rejects.toThrow(/port/);
+    // The missing port is bad input like any other: a refusal the caller can read, not a throw.
+    const before = f.calls.length;
+    const bad = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node server.js', proxy_path: 'node' }, ctx);
+    expect(bad.isError).toBe(true);
+    expect(bad.text).toMatch(/port/);
+    expect(bad.text).toContain(websiteLine);
+    expect(bad.text).toMatch(/Nothing was sent to the panel/);
+    expect(f.calls.slice(before).some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('says so when port or allow_websocket is given without a proxy path', async () => {
+    const sink: { body?: unknown } = {};
+    const { ctx } = await makeContext([...base(), captureBody({ method: 'POST', path: appsPath }, sink, 201), { method: 'GET', path: appsPath, body: [{ ...persistentApp, proxyDetails: undefined, command: 'node worker.js' }] }]);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node worker.js', port: 3000, allow_websocket: true }, ctx);
+    // Nothing exposes the app, so the port and the WebSocket flag were dropped: say it.
+    expect(sink.body).toEqual({ command: 'node worker.js', startMode: 'automatic', nodeVersion: 'default' });
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toMatch(/port\/allow_websocket ignored/);
+    expect(r.structured).toMatchObject({ created: true, url: null, note: expect.stringContaining('not exposed') });
   });
 
   it('strips one leading slash from the proxy path and says so; rejects an absolute working directory', async () => {
@@ -207,14 +237,21 @@ describe('persistent_app_update', () => {
     expect(sink.body).toEqual({ proxyDetails: { path: 'node', port: 3100, allowWebSocketUpgrade: false } });
     expect(r.structured).toMatchObject({ id: APP_ID, updated: true, url: 'https://vahi.dev/node/' });
     expect(r.text).toMatch(/restarts the app and, verified live, the whole website container/);
+    // The URL above is the primary domain; the preview alias never proxies an app.
+    expect(r.text).toContain('primary domain');
   });
 
   it('sends the Unset shape for clear_proxy and clear_node_version', async () => {
     const sink: { body?: unknown } = {};
     const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }, captureBody({ method: 'PATCH', path: appPath }, sink)]);
-    const r = await callTool(byName(tools, 'persistent_app_update'), { website: 'vahi.dev', app_id: APP_ID, clear_proxy: true, clear_node_version: true, start_mode: 'manual' }, ctx);
+    const r = await callTool(byName(tools, 'persistent_app_update'), { website: 'vahi.dev', app_id: APP_ID, clear_proxy: true, clear_node_version: true, start_mode: 'manual', port: 3100, node_version: '22.23.2' }, ctx);
     expect(sink.body).toEqual({ proxyDetails: { unset: true }, nodeVersion: { unset: true }, startMode: 'manual' });
+    // The clear flags win over the contradictory arguments, and the text says which were dropped.
+    expect(r.text).toMatch(/clear_proxy won/);
+    expect(r.text).toMatch(/clear_node_version won/);
     expect(r.structured).toMatchObject({ url: null });
+    // Nothing is exposed any more, so there is no URL the preview note could be about.
+    expect(r.text).not.toContain('primary domain');
   });
 
   it('refuses an unknown app id without patching, and refuses an empty update', async () => {
