@@ -8,20 +8,22 @@ delete a site by accident.
 
 ## Current status (2026-09-16)
 
-**Phase: milestone B COMPLETE and LIVE-VERIFIED on branch `feat/milestone-b` (all 10 tasks of
+**Phase: milestone B MERGED to `main` (2026-09-16, PR #3, merge commit ecb0d96); all 10 tasks of
 `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done, including the Task 10
 walkthrough on 2026-09-16: PHP page reading MySQL, Laravel 13 `composer install` + `migrate` over
 SSH, and the typed-name prompt for `db_import_sql`/`db_delete`/`db_user_delete` inside Claude Code;
-see "Task 10 walkthrough" in docs/research.md). 71 tools are registered (a client lists 72 with `confirm_action`): milestone A plus
+see "Task 10 walkthrough" in docs/research.md. 71 tools are registered (a client lists 72 with `confirm_action`): milestone A plus
 MySQL, PostgreSQL, PHP extensions/workers/error log, Redis, FastCGI cache, htaccess rewrites and IP
 rules, and cron. 313 unit tests; the milestone B live suite passed 4/4 against vahi.dev on
 2026-09-11 with a fresh session JWT (see "Live test B" in docs/research.md). That run found and
 fixed one live bug: `db_import_sql` must name the multipart field `<database>.sql` (commit
 910e494; the spec's `sql` name is rejected by the panel). Skills: `enhance-database` added,
 `enhance-deploy` extended with the PHP/Laravel build and post-deploy steps, PHP settings and cron,
-and access control. Draft PR #3 is open; NOT merged yet. Remaining:
-`superpowers:finishing-a-development-branch` (mark PR #3 ready and merge), then milestone C
-(Node + persistent apps).
+and access control. Remaining: milestone C (Node + persistent apps): brainstorm, spec section, plan, then
+`superpowers:subagent-driven-development`. Before it, re-vendor the upstream spec (the advisory
+`spec-drift` CI job fails: upstream is 12.25.11, `server/spec/oas3-api.yaml` is 12.25.8; run
+`npm run check:spec`, re-vendor, `gen:types`, review the diff). After-merge minors from the B
+reviews are in `.superpowers/sdd/milestone-b-minors.md` (git-ignored).
 Milestone A is MERGED to `main` (2026-09-05, PR #1, merge commit 7c0e4fa) in the public repo
 https://github.com/vahidshaik1901/enhance-mcp and was live-verified (e2e 8/8 plus the Task 19
 walkthrough; see "Live test A" in docs/research.md). The static test site from
@@ -39,9 +41,8 @@ capability and negotiates the legacy protocol era; the server uses the SDK's `in
 flow (not `elicitInput`) so the human prompt works on both eras (see docs/research.md).
 `outputSchema` has known issues so tools return `structuredContent` without declaring one;
 the Bash sandbox can never carry SSH (use `sandbox.excludedCommands` or run unsandboxed).
-Progress: milestone A is merged to `main`; milestone B is done and live-verified on
-`feat/milestone-b` (ledger in `.superpowers/sdd/progress.md`, git-ignored; `git log` is the
-recovery map). Session JWTs expire within hours and the org still has no access token, so ask for
+Progress: milestones A and B are merged to `main` (ledger in `.superpowers/sdd/progress.md`,
+git-ignored; `git log` is the recovery map). Session JWTs expire within hours and the org still has no access token, so ask for
 a fresh cookie before any live work. To run the live suite: put the credential in `.env`
 (`ENHANCE_TOKEN`, or a session JWT as `ENHANCE_SESSION_COOKIE`), then from the repo root:
 `cd server && set -a && source ../.env && set +a && ENHANCE_TOKEN="${ENHANCE_TOKEN:-$ENHANCE_SESSION_COOKIE}" ENHANCE_E2E=1 ENHANCE_E2E_SITE=vahi.dev npx vitest run --config vitest.e2e.config.ts test/e2e/milestone-b.e2e.test.ts`.
