@@ -626,6 +626,16 @@ Two follow-up probes by the controller (same day, throwaway apps `mcpenv`, delet
    The 2026-09-05 bullet above, where an app with `workingDirectory: "nodeapp"` started and logged
    "listening on 3000", did not record what `nodeVersion` that create sent, so it does not
    contradict this.
+9. **A quoted segment with no whitespace inside it survives the word-split** (Task 7 e2e,
+   2026-09-17). What crash-looped in the "`command` is word-split" bullet above is the
+   *whitespace*, not the quotes: the runner splits on whitespace and never strips quotes, so a
+   quote character simply travels into the argv word it sits in. The command
+   `node -e require('http').createServer((q,s)=>s.end('mcp-c-ok-<slug>')).listen(<port>)` is three
+   argv words, the whole script being the third; it started on the first try and the proxy path
+   answered HTTP 200 with the marker as its body, twice. The milestone C e2e uses exactly this
+   shape, with the port hard-coded because nothing injects `PORT` (finding 7). It is a test
+   fixture, not a pattern to recommend: `validateCommand` still refuses the quoted-with-space
+   form, and real apps belong in a script or an npm script.
 
 ## Live test B: databases, PHP, cron and the gate on vahi.dev (2026-09-11)
 
