@@ -602,6 +602,19 @@ Two further behaviours this probe uncovered, both of which the tools must guard:
   the three minutes it was left up. Omit the field or send a real relative directory; the create tool should reject an
   empty string rather than pass it through.
 
+Two follow-up probes by the controller (same day, throwaway apps `mcpenv`, deleted; demo-login 200 after each):
+
+7. **The runner injects no `PORT`** (or any app-specific variable): an app that printed its
+   environment saw only `NVM_INC`, `NVM_DIR`, `NVM_CD_FLAGS`, `NVM_BIN`, cwd = the site home
+   when `workingDirectory` is unset. The proxy port is not passed to the process, so the app must
+   read its port from its own config: an npm script (`"start": "node --env-file=.env server.js"`,
+   `"start": "next start -p 3002"`) or a hard-coded value. `VAR=value` prefixes in `command` cannot
+   work because the command is exec'd as argv, not through a shell.
+8. **An app created without `nodeVersion` never starts**: the runner skips the nvm load and logs
+   `exec: node: not found`. `nodeVersion: "default"` works (nvm prints a harmless
+   `Version 'default' not found` from its install step, then `Now using node v22.23.2`, the
+   default alias). So the create tool must always send a `nodeVersion`, defaulting to `"default"`.
+
 ## Live test B: databases, PHP, cron and the gate on vahi.dev (2026-09-11)
 
 Driver: the milestone B e2e suite (`server/test/e2e/milestone-b.e2e.test.ts`) calling the tool
