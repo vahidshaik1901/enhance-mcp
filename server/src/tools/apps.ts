@@ -3,11 +3,12 @@ import { parseScalarText } from '../client/client.js';
 import type { components } from '../client/generated/types.js';
 import type { ToolContext } from '../core/context.js';
 import { websiteHome } from '../core/identity.js';
-import { defineTool, type ToolDef } from '../core/registry.js';
+import { httpsProbe } from '../core/probe.js';
+import { defineTool, type Target, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
-import { websiteArg } from './dbcommon.js';
-import { appsSite, nodeSelectorArg } from './node.js';
+import { siteOf, siteWebsiteById, websiteArg, type DbSite } from './dbcommon.js';
+import { appsSite, nodeSelectorArg, persistentAppsGate } from './node.js';
 import { tailLog } from './php.js';
 
 type ListedApp = components['schemas']['ListedPersistentApp'];
@@ -105,7 +106,8 @@ export function appUrl(w: Website, path: string | undefined): string | null {
   return path ? `https://${w.domain.domain}/${path}/` : null;
 }
 
-export const PREVIEW_NOTE = 'Persistent apps answer on the primary domain only; the *.mystaging.site preview URL does not proxy them (verified live). Before DNS resolves, verify with persistent_app_probe.';
+const PRIMARY_DOMAIN_ONLY = 'Persistent apps answer on the primary domain only; the *.mystaging.site preview URL does not proxy them (verified live).';
+export const PREVIEW_NOTE = `${PRIMARY_DOMAIN_ONLY} Before DNS resolves, verify with persistent_app_probe.`;
 
 /** Verified live: an app registered on a path that also exists under public_html wins — the PHP
  *  page there answered 503 while the app was merely registered, and 200 again once it was gone. */
@@ -119,6 +121,7 @@ const IGNORED_PROXY_ARGS_NOTE = 'port/allow_websocket ignored: no proxy_path was
 const CLEAR_PROXY_WON_NOTE = 'clear_proxy won: proxy_path/port/allow_websocket were ignored and the app is no longer exposed';
 const CLEAR_NODE_VERSION_WON_NOTE = 'clear_node_version won: node_version was ignored and the app was set to "default", nvm\'s default alias';
 const UPDATE_RESTART_NOTE = 'An update restarts the app and, verified live, the whole website container, so the site\'s PHP and static pages are interrupted for a second or two.';
+const DELETE_RESTART_NOTE = "Deleting also restarts the website container, so the site's PHP and static pages are interrupted for a second or two.";
 
 const appIdArg = z.string().uuid().describe('Persistent app id from persistent_apps_list');
 const startModeArg = z.enum(['automatic', 'manual']);
@@ -331,4 +334,88 @@ export const persistentAppLog = defineTool({
   },
 });
 
-export const tools: ToolDef[] = [persistentAppsList, persistentAppCreate, persistentAppUpdate, persistentAppLog];
+/** Convention 12: the target id is `<websiteId>:<appId>`; preview and handler re-read that site
+ *  by id and re-check the plan flag, never re-resolving the `website` string. */
+async function appTarget(ctx: ToolContext, target: Target): Promise<{ site: DbSite; w: Website; appId: string; app: ListedApp | undefined }> {
+  const cut = target.id.indexOf(':');
+  if (cut <= 0) throw new Error(`malformed persistent app target "${safe(target.id)}"`);
+  const { org, w } = await siteWebsiteById(ctx, target.id.slice(0, cut));
+  const site = siteOf(ctx, org, w);
+  const gate = persistentAppsGate(site, w, 'Persistent apps');
+  if (gate) throw new Error("Persistent apps are not enabled for this website's plan");
+  const appId = target.id.slice(cut + 1);
+  return { site, w, appId, app: findApp(await listApps(ctx, w.id), appId) };
+}
+
+export const persistentAppDelete = defineTool({
+  name: 'persistent_app_delete',
+  tier: 'customer',
+  risk: 'destructive',
+  description: `DESTRUCTIVE. Stops a persistent app's process and removes the app and its proxy path; the URL stops answering at once. The app's files in the container are not touched. ${DELETE_RESTART_NOTE} Requires the user to confirm by typing the website's domain name.`,
+  input: z.object({ website: websiteArg, app_id: appIdArg }),
+  async target({ website, app_id }, ctx) {
+    const s = await appsSite(ctx, website, 'Persistent apps');
+    if (!s.ok) throw new Error("Persistent apps are not enabled for this website's plan");
+    const app = findApp(await listApps(ctx, s.id), app_id);
+    if (!app) throw new Error(`no persistent app with id ${safe(app_id)} on this website; run persistent_apps_list`);
+    return { kind: 'persistent_app', id: `${s.id}:${app_id}`, name: s.w.domain.domain };
+  },
+  async preview(_args, ctx, target) {
+    const { site, w, appId, app } = await appTarget(ctx, target);
+    const what = app ? `${safe(app.command)}${app.proxyDetails ? `, served at ${appUrl(w, app.proxyDetails.path)}` : ''}` : 'an app the listing no longer shows';
+    return `${site.identity}\nThis will stop persistent app ${safe(appId)} (${what}) and remove it from the panel. The URL stops answering immediately; the files in the container stay. ${DELETE_RESTART_NOTE}`;
+  },
+  async handler(_args, ctx, target) {
+    const { site, w, appId } = await appTarget(ctx, target!);
+    await ctx.client.call('DELETE', '/websites/{website_id}/apps/persistent/{app_id}', () => ctx.client.api.DELETE('/websites/{website_id}/apps/persistent/{app_id}', { params: { path: { website_id: w.id, app_id: appId } } }));
+    return ok(`${site.identity}\npersistent app ${safe(appId)} stopped and removed. Its log file persistent_app_${safe(appId)}.log stays in ${websiteHome(w)}; remove it over SSH if you do not want it.`, { id: appId, deleted: true });
+  },
+});
+
+export const persistentAppProbe = defineTool({
+  name: 'persistent_app_probe',
+  tier: 'customer',
+  risk: 'read',
+  description:
+    "Fetches a persistent app's URL the way the web server serves it: HTTPS to the app server's IP with the primary domain as SNI and Host (the curl --resolve equivalent), so it works before DNS points at the site. Reports status, latency, the first bytes of the body, and whether the domain still has the placeholder certificate. Give app_id (from persistent_apps_list) or a proxy_path.",
+  input: z.object({ website: websiteArg, app_id: appIdArg.optional(), proxy_path: z.string().min(1).optional() }),
+  async handler({ website, app_id, proxy_path }, ctx) {
+    if (app_id === undefined && proxy_path === undefined) throw new Error('give app_id or proxy_path');
+    const s = await appsSite(ctx, website, 'Persistent apps');
+    if (!s.ok) return s.result;
+    let path: string;
+    if (app_id !== undefined) {
+      const app = findApp(await listApps(ctx, s.id), app_id);
+      if (!app) return fail(`${s.identity}\nno persistent app with id ${safe(app_id)} on this website; run persistent_apps_list.`, { reachable: false });
+      if (!app.proxyDetails) return fail(`${s.identity}\napp ${safe(app_id)} has no proxy path, so it is not reachable from the web; give it one with persistent_app_update proxy_path=… port=….`, { reachable: false });
+      path = app.proxyDetails.path;
+    } else {
+      try {
+        path = validateProxyPath(proxy_path!).path;
+      } catch (e) {
+        return fail(`${s.identity}\n${(e as Error).message}.`, { reachable: false });
+      }
+    }
+    const ip = (s.w.serverIps?.find((x) => x.isPrimary) ?? s.w.serverIps?.[0])?.ip;
+    if (!ip) return fail(`${s.identity}\nthis website has no server IP recorded, so there is nothing to connect to.`, { reachable: false });
+    const host = s.w.domain.domain;
+    const url = appUrl(s.w, path)!;
+    const probe = ctx.httpProbe ?? httpsProbe;
+    let res;
+    try {
+      res = await probe({ ip, host, path: `/${path}/`, timeoutMs: 5000, maxBodyBytes: 512 });
+    } catch (e) {
+      return fail(`${s.identity}\n${url} via ${ip}: connection failed (${safe((e as Error).message)}). The app server did not answer at all; check website_get serverIps and that the site is active.`, { url, ip, reachable: false });
+    }
+    const gateway = res.status === 502 || res.status === 503 || res.status === 504;
+    const certNote = res.certificate === 'placeholder' ? 'the domain still serves the panel placeholder certificate (issue one with domain_ssl_issue once DNS resolves)' : res.certificate.startsWith('error:') ? `certificate check: ${safe(res.certificate)}` : 'certificate valid';
+    const summary = kv([['url', url], ['connected to', ip], ['response', `HTTP ${res.status} in ${res.latencyMs} ms`], ['content-type', res.contentType ?? '-'], ['body (first 512 bytes)', res.body.trim() || '(empty)'], ['tls', certNote]]);
+    const structured = { url, ip, status: res.status, latencyMs: res.latencyMs, contentType: res.contentType, body: res.body, certificate: res.certificate, reachable: !gateway && res.status > 0 };
+    if (gateway) {
+      return fail(`${s.identity}\n${summary}\nthe web server answered but the app is not listening on its port (HTTP ${res.status}): read persistent_app_log for the startup error, and check the app really listens on the proxy's port — nothing injects PORT, so the app must choose that port itself.`, structured);
+    }
+    return ok(`${s.identity}\n${summary}\n${PRIMARY_DOMAIN_ONLY} This probe connected straight to the app server with the domain as Host, so an answer here does not prove that public DNS resolves to this site yet.`, structured);
+  },
+});
+
+export const tools: ToolDef[] = [persistentAppsList, persistentAppCreate, persistentAppUpdate, persistentAppDelete, persistentAppLog, persistentAppProbe];

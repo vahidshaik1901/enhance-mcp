@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import type { HttpProbe, ProbeRequest } from '../../src/core/probe.js';
 import { tools, validateCommand, validateProxyPath, validateWorkingDirectory } from '../../src/tools/apps.js';
-import { APP_ID, base, ORG_ID, persistentApp, persistentApps, websiteDetail, WEBSITE_ID } from '../fixtures/panel.js';
+import { APP_ID, base, ORG_ID, persistentApp, persistentApps, SERVER_IP, websiteDetail, WEBSITE_ID } from '../fixtures/panel.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
 import type { Route } from '../helpers/fakeFetch.js';
 
@@ -301,5 +302,94 @@ describe('persistent_app_log', () => {
     expect(byName(tools, 'persistent_app_log').description).toMatch(/256 KB/);
     expect(byName(tools, 'persistent_app_log').description).toMatch(/truncated on every restart/);
     expect(byName(tools, 'persistent_app_log').description).toMatch(/newest 64 KB/);
+  });
+});
+
+describe('persistent_app_delete', () => {
+  it('is destructive, previews the app behind the identity block, and the human types the domain', async () => {
+    let deleted: string | undefined;
+    const { ctx } = await makeContext([
+      ...base(),
+      { method: 'GET', path: appsPath, body: persistentApps },
+      { method: 'DELETE', path: appPath, handler: async (_req, url) => { deleted = url.pathname.split('/').pop(); return new Response(null, { status: 200 }); } },
+    ]);
+    const del = byName(tools, 'persistent_app_delete');
+    const args = del.input.parse({ website: 'vahi.dev', app_id: APP_ID });
+    const target = await del.target!(args, ctx);
+    expect(target).toMatchObject({ kind: 'persistent_app', id: `${WEBSITE_ID}:${APP_ID}`, name: 'vahi.dev' });
+    const preview = await del.preview!(args, ctx, target);
+    expect(preview).toContain(websiteLine);
+    expect(preview).toContain('npm start');
+    expect(preview).toContain('/node/');
+    expect(preview.indexOf(websiteLine)).toBeLessThan(preview.indexOf('stop'));
+    // Verified live: a delete bounces the whole container, exactly like create and update.
+    expect(preview).toMatch(/restarts the website container/);
+    const r = await del.handler(args, ctx, target);
+    expect(deleted).toBe(APP_ID);
+    expect(r.structured).toMatchObject({ id: APP_ID, deleted: true });
+    expect(r.text).toContain(`persistent_app_${APP_ID}.log`);
+  });
+
+  it('refuses at target() for an unknown app or a plan without persistent apps, sending nothing', async () => {
+    const { ctx, f } = await makeContext([...base(), { method: 'GET', path: appsPath, body: [] }]);
+    const del = byName(tools, 'persistent_app_delete');
+    await expect(del.target!(del.input.parse({ website: 'vahi.dev', app_id: APP_ID }), ctx)).rejects.toThrow(/no persistent app/);
+    const { ctx: gated, f: f2 } = await makeContext(noApps());
+    await expect(del.target!(del.input.parse({ website: 'vahi.dev', app_id: APP_ID }), gated)).rejects.toThrow(/not enabled/);
+    expect([...f.calls, ...f2.calls].some((c) => c.method === 'DELETE')).toBe(false);
+  });
+
+  it('says in its description that it is destructive and restarts the container', () => {
+    const d = byName(tools, 'persistent_app_delete').description;
+    expect(d).toMatch(/DESTRUCTIVE/);
+    expect(d).toMatch(/restarts the website container/);
+  });
+});
+
+describe('persistent_app_probe', () => {
+  const fakeProbe = (answer: Partial<Awaited<ReturnType<HttpProbe>>>, seen: ProbeRequest[]): HttpProbe => async (req) => {
+    seen.push(req);
+    return { status: 200, latencyMs: 12, contentType: 'text/plain', body: 'mcp-c ok', certificate: 'valid', ...answer };
+  };
+
+  it('connects to the server IP with the primary domain as host and reports the answer', async () => {
+    const seen: ProbeRequest[] = [];
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    ctx.httpProbe = fakeProbe({}, seen);
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(seen).toEqual([{ ip: SERVER_IP, host: 'vahi.dev', path: '/node/', timeoutMs: 5000, maxBodyBytes: 512 }]);
+    expect(r.isError).toBeUndefined();
+    expect(r.structured).toMatchObject({ url: 'https://vahi.dev/node/', status: 200, certificate: 'valid', body: 'mcp-c ok', reachable: true });
+    expect(r.text).toContain('HTTP 200');
+  });
+
+  it('takes a proxy_path directly, flags a placeholder certificate, and treats 502/503 as the app not listening', async () => {
+    const seen: ProbeRequest[] = [];
+    const { ctx } = await makeContext([...base()]);
+    ctx.httpProbe = fakeProbe({ status: 502, certificate: 'placeholder', body: '' }, seen);
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', proxy_path: 'node' }, ctx);
+    expect(seen[0]?.path).toBe('/node/');
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/not (listening|answering)/);
+    expect(r.text).toMatch(/placeholder/);
+    expect(r.structured).toMatchObject({ status: 502, reachable: false, certificate: 'placeholder' });
+  });
+
+  it('reports a connection failure as an error result with the reason', async () => {
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    ctx.httpProbe = async () => { throw new Error('no response within 5000 ms'); };
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('no response within 5000 ms');
+    expect(r.structured).toMatchObject({ reachable: false });
+  });
+
+  it('refuses an app without a proxy and requires app_id or proxy_path', async () => {
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: [{ ...persistentApp, proxyDetails: undefined }] }]);
+    ctx.httpProbe = async () => { throw new Error('must not be called'); };
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/no proxy/);
+    await expect(callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev' }, ctx)).rejects.toThrow(/app_id or proxy_path/);
   });
 });
