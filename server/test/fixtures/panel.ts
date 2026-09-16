@@ -148,3 +148,20 @@ export const MYSQL_DB = 'vahi_dev1_demo';
 export const mysqlDbs = {
   items: [{ name: MYSQL_DB, size: 40960, createdAt: '2026-09-05T15:00:34.000100Z', websiteId: WEBSITE_ID, serverId: '4b5f6a1e-2c3d-4e5f-8a9b-0c1d2e3f4a5b', userCount: 1 }],
 };
+
+export const APP_ID = '54bd4d05-4f8e-4291-a507-9be9e8424a89';
+
+/** One panel-managed Node app, the shape `GET /websites/{id}/apps/persistent` returns. The
+ *  command is an npm script because the panel exec's the command as argv without a shell
+ *  (verified live), so a `PORT=3000` prefix or a quoted argument would never work. */
+export const persistentApp = {
+  id: APP_ID,
+  appKind: 'generic',
+  command: 'npm start',
+  workingDirectory: 'nodeapp',
+  startMode: 'automatic',
+  nodeVersion: '22.23.2',
+  proxyDetails: { path: 'node', port: 3000, allowWebSocketUpgrade: false },
+};
+
+export const persistentApps = [persistentApp];
