@@ -61,7 +61,7 @@ Detect the project type and build here, never on the server for PHP:
 - **Laravel**: use the two-directory layout below. There is **no MCP tool that repoints an existing domain's document root** — that is a panel-UI action today (a future milestone may add one) — so the served directory stays `<home>/public_html` and the app lives beside it.
 - **Database**: create the database and user first with the `enhance-database` skill, then write the app config with `DB_HOST=localhost` and the full `<unixUser>_` prefixed names.
 - **WordPress theme or plugin**: deploy into `public_html/wp-content/themes/<name>` or `plugins/<name>`, never the docroot root.
-- **Node**: handled by a later milestone; for now stop and say so. Forward note: a Node persistent app's proxy path is served on the **primary domain**, not the `*.mystaging.site` preview URL (verified live), so its verification step will not match static and PHP.
+- **Node**: use the Node layout below. The app runs as a panel-managed **persistent app** behind the reverse proxy; there is no document root involved. Verification differs from static and PHP: a persistent app answers on the **primary domain only**, never on the `*.mystaging.site` preview URL (verified live), so use `persistent_app_probe` until DNS resolves.
 
 #### Laravel layout (the supported path)
 
@@ -84,13 +84,57 @@ Detect the project type and build here, never on the server for PHP:
 
 Everything below calls `<home>/app` the **`<app dir>`**.
 
+#### Node layout (persistent apps)
+
+Stop here unless `website_get` shows `canUse.persistentApps: true`: without it the plan does not
+run Node processes (safety rule 4). Every `persistent_app_create`, `persistent_app_update` and
+`persistent_app_delete` restarts the whole website container (verified live), not just the app, so
+the site's PHP and static pages are interrupted for a second or two each time.
+
+1. **Runtime.** `node_versions_installed` shows what the panel believes is installed — it is a hint
+   only; `. ~/.nvm/nvm.sh && nvm ls` over SSH is the truth, and the panel's list omits exactly the
+   version nvm's `default` alias points at (verified live). If there is no `~/.nvm`, run
+   `node_install` (nvm plus the current stable Node; allow a minute). For the version the project
+   wants (`.nvmrc`, `engines.node`, else the current LTS from `node_versions_available`):
+   `node_version_install version=<x.y.z>` then `node_version_set_default version=<x.y.z>`. Pin
+   `node_version` on the app when the project needs a specific version; otherwise the app runs on
+   nvm's `default` alias, which `node_version_set_default` controls. An app registered with no Node
+   version at all never starts (`exec: node: not found`, verified live), so the create tool always
+   sends one.
+2. **Directory.** The app lives in a named directory in the home, `<home>/<app>` (for example
+   `/var/www/<website_id>/nodeapp`), never in `public_html` and never the home root. That
+   directory name, relative to the home, is the `working_directory` the panel needs — relative,
+   never absolute, and never an empty string: the panel accepts an empty one and the app then never
+   starts (verified live), so the tool rejects it. Omit the argument only when the app is meant to
+   run from the home directory itself.
+3. **Port.** Pick the port the app will listen on (3000–3999 by convention) and check
+   `persistent_apps_list` does not already show it: the panel accepts a duplicate port without
+   complaint (verified live), so that check is yours. **The command is not a shell line.** The
+   panel splits it on whitespace and execs it as argv, and it injects no `PORT`, so an environment
+   assignment in front of the command cannot work — the create tool refuses those, along with
+   pipes, redirection and quoted segments containing whitespace (quotes are fine only around a
+   segment with no whitespace). The app has to choose the proxy's port itself:
+   - put it in the npm start script — `"start": "node --env-file=.env server.js"` with a `PORT=3000`
+     line in the server-side `.env` (Node 20.6+), or `"start": "next start -p 3000"` — and use
+     `npm start` as the command;
+   - or use `node --env-file=.env server.js` as the command directly;
+   - or hard-code the port in the app.
+4. **Proxy path.** The URL path the web server forwards to the app: `node`, `api`, `app/v2`. No
+   leading slash (the panel rejects it; the tool strips one and says so). A path another app
+   already uses is refused (409), but a path that a real directory under `public_html` serves is
+   accepted — and **the proxy wins even while the app is stopped**: verified live, an app merely
+   registered on `demo-login` turned that PHP page into a 503 until the app was deleted. Pick a
+   path that does not exist in the docroot.
+
+Everything below calls `<home>/<app>` the **`<app dir>`** for Node too.
+
 ### 8. Deploy with rsync
 - Always dry-run first and show the summary:
   `rsync -rltvz --dry-run --exclude .git --exclude node_modules --exclude .env <src>/ <user>@<host>:<docroot>/`
 - Use `-rltvz`, not `-a`. With a trailing-slash source, `-a` copies the local folder's owner, group and mode onto the document root, which the panel keeps at `750` with the web server's group (verified live 2026-09-05).
 - Add `-e "ssh -i <key>"` when the authorized key is not the user's default one.
 - Then run it for real. Use `--delete` only if the user explicitly asked to remove files not in the source.
-- Target is the document root, a directory under it, or a named directory in the home (`app/` for the Laravel layout in step 7 — that one runs twice, once into `app/` and once into `public_html/`). Never the home directory root itself.
+- Target is the document root, a directory under it, or a named directory in the home (`app/` for the Laravel layout in step 7 — that one runs twice, once into `app/` and once into `public_html/`). Never the home directory root itself. For Node, the target is the `<app dir>` from the Node layout, excluding `.git`, `node_modules`, `.env` and the build output (`.next`, `dist`, `build`): `rsync -rltvz --exclude .git --exclude node_modules --exclude .env --exclude .next --exclude dist <src>/ <user>@<host>:<app>/`.
 - **Sandbox**: this command needs the sandbox disabled (or `ssh`/`rsync` in `sandbox.excludedCommands`). Say so before running.
 
 ### 9. Post-deploy (over the same SSH)
@@ -102,12 +146,20 @@ Everything below calls `<home>/app` the **`<app dir>`**.
   2. Write `.env` on the server from the database tool output: `DB_HOST=localhost` (never `127.0.0.1`), the full `<unixUser>_` prefixed database and user names, and the password `db_user_create` showed once, plus `APP_ENV=production`, `APP_DEBUG=false` and an `APP_KEY` (`php artisan key:generate` when there is none). Never rsync a local `.env` up, never commit it, and do not repeat the password afterwards.
   3. `php artisan migrate --force` **only when the user explicitly confirms it** — it changes the schema and can drop columns. Take `db_export_sql` first.
   4. `php artisan config:cache` (and `route:cache` / `view:cache` if the app uses them). Re-run it after any later `.env` change, or the cached config keeps winning.
+- **Node**, in this order, all over SSH in the `<app dir>` with nvm loaded (`. ~/.nvm/nvm.sh &&`). Registering or changing the app restarts the whole website container, so deploy at a quiet moment:
+  1. `npm ci --omit=dev` when a lockfile exists, else `npm install --omit=dev`. Frameworks that build with dev dependencies (Next.js, Vite) need `npm ci` without `--omit=dev`, then the build, then optionally `npm prune --omit=dev`.
+  2. `npm run build` when `package.json` has a build script. If the build is killed for memory, build locally instead and rsync the output directory up (Next.js: set `output: 'standalone'`), and say so.
+  3. Write `.env` on the server (never rsync a local one). Put the `PORT=<port>` line in it when the app reads its port from the file — `node --env-file=.env server.js`, or an npm `start` script that does — because the command itself cannot carry it.
+  4. Register the app: `persistent_app_create website=<site> command="npm start" working_directory=<app> proxy_path=<path> port=<port>`. `command` is argv, not a shell line, so the port lives in the app's own config and never in front of the command. Add `allow_websocket=true` for Socket.IO and similar, and `node_version=<x.y.z>` when the project pins one (otherwise the app runs on nvm's `default` alias). Note the `id` it returns.
+  5. `persistent_app_log app_id=<id>` until it shows the listening line. A crash shows here first; fix it before touching the proxy, then verify with `persistent_app_probe` (step 10).
+  6. For a later deploy: rsync again, rebuild, then restart. An update restarts the app and, verified live, the whole website container, so the site's PHP and static pages are interrupted for a second or two — a no-change `persistent_app_update` is therefore the restart. The same tool changes the command, port, path or Node version.
 - WordPress: `wp cache flush` if WP-CLI reports a site.
 - Then both caches, which are different things: `website_restart_php` for PHP OPcache, which otherwise keeps serving the previous code, and `cache_clear` for the domain's FastCGI (page) cache.
 
 ### 10. Verify
 - Request a file you just deployed, not just `/`: an empty docroot returns 404 on every hostname.
   `curl -sS -o /dev/null -w '%{http_code}' https://<preview-domain>/index.html` (or `curl -k --resolve …` when there is no preview domain).
+- **Node**: `persistent_app_probe website=<site> app_id=<id>` — it connects to the app server's IP with the domain as SNI, so it works before DNS. `HTTP 200` with the app's body means the proxy and the process are up; `502`/`503` means the web server is fine and the app is not listening on its port (read `persistent_app_log`, and confirm the app really binds the proxy's port — nothing injects `PORT` into it). Once DNS resolves, `curl https://<primary domain>/<path>/`. The preview URL returns 404 for the app path; that is expected, not a failure.
 - `curl: (6) Could not resolve host` on a preview domain created minutes ago is DNS propagation, not a failed deploy (about five minutes live). Verify the vhost meanwhile with `curl -k --resolve <preview-domain>:443:<app-server-ip> https://<preview-domain>/index.html`, then retry the plain URL.
 - Report: preview URL, primary URL and its DNS status, SSL state, what was uploaded (from the rsync summary), and what the user still has to do (DNS at the registrar, if anything).
 
@@ -124,6 +176,15 @@ Only once the deploy works; none of this is part of the happy path.
   - **Escape every `%` as `\%`.** Cron ends the command at the first unescaped one and feeds the rest to the command's stdin, so `date +%s >> out.log` runs and writes nothing (verified live).
   - `cron_get` numbers lines from 0. `cron_remove` takes those numbers and the panel renumbers what is left after each removal, so re-read `cron_get` before removing more. `cron_delete` wipes the whole crontab and is destructive.
   - `container_cron_get` / `container_cron_set` only control whether `crontab -l` and `crontab -e` work **inside** the container over SSH. They do not schedule or stop anything: panel-managed jobs run either way (verified live). Turn it on only for a deploy script that installs its own jobs.
+
+## Node runtime
+
+- **Versions**: `node_versions_available` (newest of each major in the text, all in `structuredContent.versions`), `node_version_install`, `node_version_set_default`. `node_versions_installed` is a hint only; `nvm ls` over SSH is the truth — it omits exactly the version nvm's `default` alias points at (verified live), so never read a missing version as absent.
+- **Apps**: `persistent_apps_list` shows every app with its URL. `persistent_app_log` is the first thing to read when an app misbehaves: the panel keeps a 256 KB tail that is truncated on every restart, so it only ever covers the current run, and the tool returns the newest 64 KB of it. `persistent_app_probe` fetches the app's URL straight from the app server, so it answers before DNS does. `persistent_app_update` changes command, port, path, WebSocket flag or Node version; `clear_proxy=true` takes an app off the web (not yet verified live).
+- **Commands**: the panel execs the command as argv with no shell and injects no `PORT`, so the port belongs in the app's npm `start` script, its server-side `.env` (`node --env-file=.env server.js`) or its code — never in front of the command. `working_directory` is relative to the site home and must not be empty; omit it only when the app should run from the home directory itself.
+- **Restarts**: `persistent_app_create`, `persistent_app_update` and `persistent_app_delete` each restart the whole website container (verified live), not just the app, so the site's PHP and static pages are interrupted for a second or two. A no-change `persistent_app_update` is how you restart an app after a deploy.
+- **`persistent_app_delete`** is destructive: it stops the process and removes the proxy at once, and the user types the website's domain name to confirm. The app's files and its `persistent_app_<id>.log` stay in the home directory.
+- **Ports and paths**: one app per port, and the panel does not check for a clash — pick a free one from `persistent_apps_list`. A proxy path that collides with a directory in `public_html` is the app's, not PHP's, and answers 503 while the app is stopped (verified live), so pick paths that do not exist in the docroot. A path another app already uses is refused (409).
 
 ## Access control and rewrites
 
