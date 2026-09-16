@@ -15,7 +15,7 @@ describe('vendored spec', () => {
     expect(text).not.toMatch(/^\s+type: int$/m);
   });
 
-  it('generated types cover the milestone A paths', () => {
+  it('generated types cover the milestone A and C paths', () => {
     const text = readFileSync(generated, 'utf8');
     for (const p of [
       '"/login/memberships"',
@@ -24,6 +24,8 @@ describe('vendored spec', () => {
       '"/orgs/{org_id}/websites/{website_id}/ssh/keys"',
       '"/v2/domains/{domain_id}/letsencrypt"',
       '"/orgs/{org_id}/domains/check"',
+      '"/websites/{website_id}/apps/node/versions/default"',
+      '"/websites/{website_id}/apps/persistent/{app_id}"',
     ]) {
       expect(text).toContain(p);
     }
