@@ -617,3 +617,26 @@ Findings:
   copy at the old commit), so a rebuild or pull needs
   `claude plugin uninstall enhance@enhance-mcp && claude plugin install enhance@enhance-mcp`
   (verified: the cache's recorded commit moved to the checkout's HEAD) or a version bump first.
+
+## Spec re-vendored: 12.25.8 → 12.25.11 (2026-09-16)
+
+- `server/spec/oas3-api.yaml` and `docs/enhance-api/oas3-api.yaml` now carry 12.25.11; the
+  `spec-drift` CI job is green again (`npm run check:spec` went from
+  "upstream spec (version 12.25.11) differs …" / exit 1 to "vendored spec matches upstream" / exit 0).
+- Paths added: none. Paths removed: none. 302 paths before and after; `diff` of the sorted path
+  lists is empty.
+- Schema changes that touched a tool: none; all 313 tests passed unchanged, `tsc --noEmit` is clean
+  and `tsup` builds. No tool source was edited.
+- Milestone C endpoints (`/websites/{id}/apps/node…`, `/websites/{id}/apps/persistent…`) are
+  unchanged apart from nothing: all six of `/websites/{website_id}/apps/persistent`,
+  `/websites/{website_id}/apps/persistent/{app_id}`, `/websites/{website_id}/apps/node`,
+  `/websites/{website_id}/apps/node/possible_versions`, `/websites/{website_id}/apps/node/versions`
+  and `/websites/{website_id}/apps/node/versions/default` are byte-identical to the 12.25.8 copy.
+- **The 12.25.11 spec is byte-identical to 12.25.8 apart from the `info.version` line.** The only
+  diff in either vendored YAML is `version: 12.25.8` → `version: 12.25.11`, so
+  `openapi-typescript` regenerated `server/src/client/generated/types.ts` with zero content change
+  (git reports no diff for it). Upstream bumped the orchd release without touching the OpenAPI
+  surface; the drift job was flagging a version-string mismatch, not an API change.
+- The non-standard `type: int` count is still exactly 2, so `EXPECTED_INT_OCCURRENCES` in
+  `server/scripts/patch-spec.ts` (and the `test/unit/spec.test.ts` assertion that reads it) needed
+  no change.
