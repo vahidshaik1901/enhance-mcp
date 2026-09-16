@@ -117,7 +117,7 @@ const CREATE_RESTART_NOTE = 'registering the app restarted the website container
  *  overrode: both are silently dropped by the panel, so the tool says so instead. */
 const IGNORED_PROXY_ARGS_NOTE = 'port/allow_websocket ignored: no proxy_path was given, so the app is not exposed';
 const CLEAR_PROXY_WON_NOTE = 'clear_proxy won: proxy_path/port/allow_websocket were ignored and the app is no longer exposed';
-const CLEAR_NODE_VERSION_WON_NOTE = 'clear_node_version won: node_version was ignored and the app is back on nvm\'s default alias';
+const CLEAR_NODE_VERSION_WON_NOTE = 'clear_node_version won: node_version was ignored and the app was set to "default", nvm\'s default alias';
 const UPDATE_RESTART_NOTE = 'An update restarts the app and, verified live, the whole website container, so the site\'s PHP and static pages are interrupted for a second or two.';
 
 const appIdArg = z.string().uuid().describe('Persistent app id from persistent_apps_list');
@@ -239,7 +239,7 @@ export const persistentAppUpdate = defineTool({
   name: 'persistent_app_update',
   tier: 'customer',
   risk: 'write',
-  description: `Changes a persistent app: command, working directory, start mode, Node version, proxy path, port or WebSocket flag. Only the fields given are sent and the rest keep their current value; a new proxy path or port is merged with the current proxy. clear_proxy unexposes the app, clear_node_version returns it to nvm's default alias. The command runs without a shell, under the same rules as persistent_app_create. ${UPDATE_RESTART_NOTE}`,
+  description: `Changes a persistent app: command, working directory, start mode, Node version, proxy path, port or WebSocket flag. Only the fields given are sent and the rest keep their current value; a new proxy path or port is merged with the current proxy. clear_proxy unexposes the app; clear_node_version returns the app to nvm's default alias by setting node_version to "default" (the panel's unset form is not used because an app with no Node version at all never starts, verified live). The command runs without a shell, under the same rules as persistent_app_create. ${UPDATE_RESTART_NOTE}`,
   input: z.object({
     website: websiteArg,
     app_id: appIdArg,
@@ -251,7 +251,7 @@ export const persistentAppUpdate = defineTool({
     port: portArg.optional(),
     allow_websocket: z.boolean().optional(),
     clear_proxy: z.boolean().default(false),
-    clear_node_version: z.boolean().default(false),
+    clear_node_version: z.boolean().default(false).describe('Returns the app to nvm\'s default alias by setting node_version to "default"; it wins over an explicit node_version. The panel\'s unset form is not used because an app with no Node version at all never starts (verified live).'),
   }),
   async handler(args, ctx) {
     const s = await appsSite(ctx, args.website, 'Persistent apps');
@@ -265,10 +265,13 @@ export const persistentAppUpdate = defineTool({
       if (args.working_directory !== undefined) patch.workingDirectory = validateWorkingDirectory(args.working_directory);
       if (args.start_mode !== undefined) patch.startMode = args.start_mode;
       if (args.clear_node_version) {
-        patch.nodeVersion = { unset: true };
+        // Verified live: an app with no nodeVersion never starts ("exec: node: not found"), while the
+        // literal "default" resolves to nvm's default alias — so that, not Unset, is the clear path.
+        patch.nodeVersion = 'default';
         if (args.node_version !== undefined) notes.push(CLEAR_NODE_VERSION_WON_NOTE);
       } else if (args.node_version !== undefined) patch.nodeVersion = args.node_version;
       if (args.clear_proxy) {
+        // proxyDetails Unset is the API's documented way to unexpose an app; not yet exercised live (Task 7 / walkthrough).
         patch.proxyDetails = { unset: true };
         if (args.proxy_path !== undefined || args.port !== undefined || args.allow_websocket !== undefined) notes.push(CLEAR_PROXY_WON_NOTE);
       } else if (args.proxy_path !== undefined || args.port !== undefined || args.allow_websocket !== undefined) {

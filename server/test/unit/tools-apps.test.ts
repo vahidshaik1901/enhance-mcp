@@ -241,11 +241,11 @@ describe('persistent_app_update', () => {
     expect(r.text).toContain('primary domain');
   });
 
-  it('sends the Unset shape for clear_proxy and clear_node_version', async () => {
+  it('sends the Unset shape for clear_proxy and the "default" alias for clear_node_version', async () => {
     const sink: { body?: unknown } = {};
     const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }, captureBody({ method: 'PATCH', path: appPath }, sink)]);
     const r = await callTool(byName(tools, 'persistent_app_update'), { website: 'vahi.dev', app_id: APP_ID, clear_proxy: true, clear_node_version: true, start_mode: 'manual', port: 3100, node_version: '22.23.2' }, ctx);
-    expect(sink.body).toEqual({ proxyDetails: { unset: true }, nodeVersion: { unset: true }, startMode: 'manual' });
+    expect(sink.body).toEqual({ proxyDetails: { unset: true }, nodeVersion: 'default', startMode: 'manual' });
     // The clear flags win over the contradictory arguments, and the text says which were dropped.
     expect(r.text).toMatch(/clear_proxy won/);
     expect(r.text).toMatch(/clear_node_version won/);
