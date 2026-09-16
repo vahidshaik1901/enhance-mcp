@@ -27,8 +27,10 @@ reviews are in `.superpowers/sdd/milestone-b-minors.md` (git-ignored).
 Milestone A is MERGED to `main` (2026-09-05, PR #1, merge commit 7c0e4fa) in the public repo
 https://github.com/vahidshaik1901/enhance-mcp and was live-verified (e2e 8/8 plus the Task 19
 walkthrough; see "Live test A" in docs/research.md). The static test site from
-`~/enhance-e2e-site` is still deployed on vahi.dev (preview URL vahi-dev-ccyq.sgp1.mystaging.site;
-the domain has no DNS at Cloudflare yet).**
+`~/enhance-e2e-site` is still deployed on vahi.dev (preview URL vahi-dev-ccyq.sgp1.mystaging.site).
+Since 2026-09-16 vahi.dev resolves: A and www at Cloudflare (DNS only, proxy off) to 65.98.32.45,
+Let's Encrypt cert for vahi.dev + www (expires 2026-12-04), force-HTTPS on. A PHP login demo
+lives at https://vahi.dev/demo-login/ (db + user `vahi_dev1_demo`, source not in the repo).**
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
 Plans: milestone A `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD);
 milestone B `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` (10 tasks, TDD).
