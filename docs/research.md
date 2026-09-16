@@ -565,5 +565,52 @@ Findings:
 - **Session cookies keep expiring within hours.** The 2026-09-06 cookie was dead by the next
   session; the one pasted on 2026-09-11 worked for the whole run. The org still has no access
   token, so every live session starts with a fresh cookie.
-- **Not yet done:** the Task 10 walkthrough (PHP page reading MySQL, Laravel install + migrate
-  over SSH, and the typed-name prompt for `db_delete` inside Claude Code).
+- The Task 10 walkthrough was done on 2026-09-16 (next section).
+
+### Task 10 walkthrough: PHP + MySQL page, Laravel over SSH, the typed-name prompt (2026-09-16)
+
+Run inside Claude Code with the plugin installed permanently from the repo as a local marketplace
+(`enhance@enhance-mcp`, user scope), a fresh session cookie, and ssh/rsync/scp run with the
+sandbox disabled. Everything below went through the MCP tools and the `enhance-database` /
+`enhance-deploy` skills; nothing through the panel UI. The panel was left clean (no databases, only
+`vahi_dev1_phpma`; the static test site is back in `public_html`).
+
+| Step | Tools / commands | Result |
+|---|---|---|
+| Database for the app | `db_create walk`, `db_user_create walk`, `db_user_set_privileges grants=[all]` | `vahi_dev1_walk` / `vahi_dev1_walk`, password shown once |
+| Seed data | `db_import_sql` (CREATE TABLE + INSERT) | typed-name prompt shown in Claude Code; `imported: true`, 250 bytes |
+| PHP page | `db.php` rsynced to `public_html/`, config file scp'd to the home dir (mode 600, outside the docroot), PDO on `localhost` | `https://<preview>/db.php` → 200 and the seeded row |
+| Laravel | `composer create-project laravel/laravel` locally (13.32), rsync to `<home>/app` excluding vendor/node_modules/.env, `composer install --no-dev --optimize-autoloader` over SSH, `.env` written on the server, `key:generate`, `db_export_sql`, `migrate --force`, `config:cache`, `route:cache`, `view:cache`, `public/` rsynced to `public_html/`, `index.php` requires repointed to `../app/` | `/` → 200 (welcome page, 70 KB), `/up` → 200, the three default migrations created their tables next to `greetings` |
+| Post-deploy | `website_restart_php`, `cache_clear`, `php_error_log` | restarted, cleared, log empty; pages still 200 |
+| htaccess probe | `htaccess_rewrites_get`, `ip_rules_get`, `ip_rules_set block [203.0.113.1]`, `ip_rules_set block []` | see finding below |
+| Gate | `db_delete walk`, `db_user_delete walk` | first attempt: the user typed `vahid_dev1_walk` and `vahi_dev1_walk2`, both cancelled with the mismatch reason; second attempt with the exact names deleted both |
+
+Findings:
+
+- **The typed-name prompt works inside Claude Code** through the SDK `inputRequired` flow: the
+  prompt appeared for `db_import_sql`, `db_delete` and `db_user_delete`; a mismatched name cancels
+  the call with `{"cancelled": true, "reason": "Confirmation text … did not match …"}` and nothing
+  is sent to the panel; the exact name goes through.
+- **App `.htaccess` vs the panel's block, settled.** An rsync of Laravel's `public/` replaces
+  `public_html/.htaccess` outright: the panel's `<RequireAll> Require all granted </RequireAll>`
+  block is gone and the site keeps serving (200 on static, PHP and Laravel routes). When the panel
+  next writes the file (`ip_rules_set`), it **re-parses and merges**: Laravel's whole rewrite block
+  is kept (indentation stripped) and the panel's `<RequireAll>` block is appended after it; clearing
+  the rule leaves `Require all granted` in that block. `htaccess_rewrites_get` reports 0 chains
+  before and after, so the panel tracks its own rules separately and never shows the app's, even
+  once it has rewritten the file around them. Deploying an app `.htaccess` is therefore safe on
+  this server, and a later panel write does not destroy it.
+- **Laravel 13 `public/index.php` has three `__DIR__.'/../'` paths** (maintenance file, autoload,
+  bootstrap); `sed 's#__DIR__\.'"'"'/\.\./#…/../app/#g'` covers all of them and the page renders.
+  `storage/` and `bootstrap/cache` were writable as uploaded (owner `vahi_dev1`, 755); no chmod
+  needed because PHP runs as the same unix user.
+- **`db_export_sql` before `migrate`** wrote `sql_backup_vahi_dev1_walk_<date>.sql.gz` into the
+  home directory as documented; removed afterwards. The five `sql_backup_vahi_dev1_mcpb*` files
+  from the 2026-09-11 e2e runs are still there.
+- **The authorized key is `~/.ssh/enhance_vahi_dev_ed25519`** (panel name `claude-mcp-test`), not
+  the default `id_ed25519`; the default key is refused. The skill's "add `-e "ssh -i <key>"`" note
+  is the right advice.
+- **Plugin install copies the checkout.** `claude plugin install enhance@enhance-mcp` from a
+  local-directory marketplace copied the whole repo (164 MB, including `.env`) into
+  `~/.claude/plugins/cache/enhance-mcp/enhance/0.1.0/`; the copied `.env` was deleted by hand.
+  After a rebuild: `claude plugin marketplace update enhance-mcp && claude plugin update enhance@enhance-mcp`.

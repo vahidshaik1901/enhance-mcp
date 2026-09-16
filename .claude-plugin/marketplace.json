@@ -1,0 +1,17 @@
+{
+  "name": "enhance-mcp",
+  "owner": {
+    "name": "Shaik Vahid"
+  },
+  "metadata": {
+    "description": "Enhance hosting control panel: MCP server and skills for Claude Code",
+    "pluginRoot": "./"
+  },
+  "plugins": [
+    {
+      "name": "enhance",
+      "source": "./",
+      "description": "Manage and deploy to your Enhance-hosted websites from Claude Code, safely."
+    }
+  ]
+}

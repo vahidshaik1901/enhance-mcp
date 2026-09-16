@@ -78,7 +78,9 @@ Detect the project type and build here, never on the server for PHP:
    $app = require_once __DIR__.'/../app/bootstrap/app.php';
    ```
    Any other `__DIR__.'/../…'` path in that file (Laravel's maintenance-mode check, for example)
-   needs the same `/app` prefix. Re-apply the edit whenever step 2's rsync overwrites `index.php`.
+   needs the same `/app` prefix; Laravel 13 has three such lines and
+   `sed -i "s#__DIR__\.'/\.\./#__DIR__.'/../app/#g" public_html/index.php` over SSH covers them
+   (verified live 2026-09-16). Re-apply the edit whenever step 2's rsync overwrites `index.php`.
 
 Everything below calls `<home>/app` the **`<app dir>`**.
 
@@ -126,7 +128,7 @@ Only once the deploy works; none of this is part of the happy path.
 ## Access control and rewrites
 
 - Read `htaccess_rewrites_get` first, always: it lists the panel-managed `RewriteRule`/`RewriteCond` chains with their line numbers. `htaccess_rewrites_set` upserts by `lineNumber` — chains you do not list are kept exactly as they are — and `htaccess_rewrites_delete` removes by line number, after which the panel **renumbers the rest from 1**. Re-read before deleting more.
-- Rules an app ships in its own `.htaccess` (Laravel's `public/.htaccess`, WordPress's permalink block) are not shown by these tools. **Open question, not yet verified:** how the panel-managed block in `public_html/.htaccess` coexists with an app's own file after an rsync deploy. Check it on the first PHP deploy — read the file over SSH before and after — and report what you find instead of assuming the panel's block survived.
+- Rules an app ships in its own `.htaccess` (Laravel's `public/.htaccess`, WordPress's permalink block) are never shown by these tools, even after the panel has rewritten the file around them. **Verified live 2026-09-16:** an rsync that brings an app `.htaccess` replaces the panel's `<RequireAll>` block outright and the site keeps serving; the next panel write (`ip_rules_set`, `htaccess_rewrites_set`) re-parses the file, keeps the app's rules and appends the panel's block after them. So deploying an app `.htaccess` is safe, and a later panel write does not destroy it. Still read the file over SSH after a deploy when something behaves oddly.
 - `ip_rules_get` / `ip_rules_set` write an Apache 2.4 `Require ip` block. **Verified live: (Open)LiteSpeed servers ignore it** — an allow list naming a single address still answered 200 to every other IP, on static, PHP and 404 paths alike. Never present it as a security control. If the user asks for one, set it and then verify from an address that should be blocked with `curl -o /dev/null -w '%{http_code}' https://<domain>/`; when that returns 200, say plainly that this server does not enforce the rule and that access control belongs in the application or at the CDN.
 - An allow list that leaves out the user's own IP locks them out wherever the rule *is* enforced. `ip_rules_set website=<site> kind=block ips=[]` clears the rule.
 

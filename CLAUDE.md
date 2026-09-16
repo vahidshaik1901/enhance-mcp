@@ -6,21 +6,22 @@ provider or billing system. Lets a customer manage and deploy to their Enhance-h
 websites from Claude Code, with strong guardrails so an AI can never wipe a server or
 delete a site by accident.
 
-## Current status (2026-09-11)
+## Current status (2026-09-16)
 
-**Phase: milestone B LIVE-VERIFIED on branch `feat/milestone-b` (all 10 tasks of
-`docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done except the walkthrough half
-of Task 10). 71 tools are registered (a client lists 72 with `confirm_action`): milestone A plus
+**Phase: milestone B COMPLETE and LIVE-VERIFIED on branch `feat/milestone-b` (all 10 tasks of
+`docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done, including the Task 10
+walkthrough on 2026-09-16: PHP page reading MySQL, Laravel 13 `composer install` + `migrate` over
+SSH, and the typed-name prompt for `db_import_sql`/`db_delete`/`db_user_delete` inside Claude Code;
+see "Task 10 walkthrough" in docs/research.md). 71 tools are registered (a client lists 72 with `confirm_action`): milestone A plus
 MySQL, PostgreSQL, PHP extensions/workers/error log, Redis, FastCGI cache, htaccess rewrites and IP
 rules, and cron. 313 unit tests; the milestone B live suite passed 4/4 against vahi.dev on
 2026-09-11 with a fresh session JWT (see "Live test B" in docs/research.md). That run found and
 fixed one live bug: `db_import_sql` must name the multipart field `<database>.sql` (commit
 910e494; the spec's `sql` name is rejected by the panel). Skills: `enhance-database` added,
 `enhance-deploy` extended with the PHP/Laravel build and post-deploy steps, PHP settings and cron,
-and access control. Draft PR #3 is open; NOT merged yet. Remaining: the Task 10 walkthrough with
-the user (a PHP page reading MySQL, Laravel `composer install` + `migrate` over SSH, and the
-typed-name prompt for `db_delete` inside Claude Code), then
-`superpowers:finishing-a-development-branch`, then milestone C (Node + persistent apps).
+and access control. Draft PR #3 is open; NOT merged yet. Remaining:
+`superpowers:finishing-a-development-branch` (mark PR #3 ready and merge), then milestone C
+(Node + persistent apps).
 Milestone A is MERGED to `main` (2026-09-05, PR #1, merge commit 7c0e4fa) in the public repo
 https://github.com/vahidshaik1901/enhance-mcp and was live-verified (e2e 8/8 plus the Task 19
 walkthrough; see "Live test A" in docs/research.md). The static test site from
@@ -46,9 +47,13 @@ a fresh cookie before any live work. To run the live suite: put the credential i
 `cd server && set -a && source ../.env && set +a && ENHANCE_TOKEN="${ENHANCE_TOKEN:-$ENHANCE_SESSION_COOKIE}" ENHANCE_E2E=1 ENHANCE_E2E_SITE=vahi.dev npx vitest run --config vitest.e2e.config.ts test/e2e/milestone-b.e2e.test.ts`.
 (`npm run test:e2e` also runs the milestone A suite, which creates and deletes a throwaway
 website and additionally needs `ENHANCE_E2E_SUBSCRIPTION_ID=664`.)
-For Claude Code to load the server as a plugin (the walkthrough needs this), start it with
-`claude --plugin-dir /path/to/this/repo`; the project `.mcp.json` resolves `${CLAUDE_PLUGIN_ROOT}`
-and shell variables, so a plain session reports "Connection closed". The server reads
+The plugin is installed permanently at user scope from this repo as a local marketplace
+(`.claude-plugin/marketplace.json`; installed 2026-09-16 via `claude plugin marketplace add <repo>`
++ `claude plugin install enhance@enhance-mcp`). Claude Code COPIES the checkout into
+`~/.claude/plugins/cache/enhance-mcp/enhance/0.1.0/`, so after a rebuild run
+`claude plugin marketplace update enhance-mcp && claude plugin update enhance@enhance-mcp`.
+The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) still shows
+"Connection closed" inside this repo; the plugin copy is the one that works. The server reads
 `~/.enhance-mcp/config.json`; `node server/dist/index.js doctor` checks it.
 
 ### Decisions made

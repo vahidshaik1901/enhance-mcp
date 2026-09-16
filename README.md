@@ -19,13 +19,19 @@ git checkout and point Claude Code at that same directory.
    git clone https://github.com/vahidshaik1901/enhance-mcp.git && cd enhance-mcp
    cd server && npm ci && npm run build
    ```
-2. Start Claude Code with the plugin loaded from the directory you just built in: `claude --plugin-dir /path/to/enhance-mcp` (Claude Code 2.1.258 has no `plugin add`; a marketplace install comes with the npm publish)
-   (the repo root, the directory containing `.claude-plugin/`).
+2. Install the plugin permanently (user scope, so it loads in every Claude Code session).
+   The repo root doubles as a local marketplace (`.claude-plugin/marketplace.json`):
+   ```sh
+   claude plugin marketplace add /path/to/enhance-mcp --scope user
+   claude plugin install enhance@enhance-mcp --scope user
+   ```
+   Claude Code copies the checkout into `~/.claude/plugins/cache/enhance-mcp/enhance/<version>/`,
+   so **build first**: `server/dist` and `server/node_modules` must exist when you install
+   (the build bundles our own code but not the runtime dependencies, and neither is committed).
+   After you rebuild or pull, refresh the copy with
+   `claude plugin marketplace update enhance-mcp && claude plugin update enhance@enhance-mcp`.
+   For a one-off session without installing: `claude --plugin-dir /path/to/enhance-mcp`.
 
-   The plugin runs `server/dist/index.js` in place, so **both `server/dist` and
-   `server/node_modules` must exist inside that directory**: the build bundles our own code but
-   not the runtime dependencies, and neither directory is committed. Don't move or prune the
-   checkout after installing; if you re-clone or run `npm ci` elsewhere, build again.
 3. Create a credential: in your panel, Settings → Access Tokens → Create (name it, choose an expiry).
 4. Save it where the server reads it:
    ```json
@@ -37,9 +43,9 @@ git checkout and point Claude Code at that same directory.
    `FAIL` and the last line reads `doctor: all good`.
 6. In Claude Code: "connect to my enhance hosting" and follow the `enhance-connect` skill.
 
-**After npm publish** (not available yet): `/plugin marketplace add <this repo>` then
-`/plugin install enhance` for the install, and `npx enhance-mcp doctor` for the check, neither of
-which needs a local checkout.
+**After npm publish** (not available yet): `/plugin marketplace add vahidshaik1901/enhance-mcp`
+then `/plugin install enhance@enhance-mcp` for the install, and `npx enhance-mcp doctor` for the
+check, neither of which needs a local checkout.
 
 ## Configuration
 

@@ -1649,7 +1649,7 @@ ENHANCE_E2E=1 ENHANCE_E2E_DOMAIN=vahi.dev npm run test:e2e
 ```
 Expected: PASS; the randomised `<unixUser>_mcpb…` database and user are created and then removed in `afterAll`. Verify on the panel that no `mcpb…` database remains.
 
-- [ ] **Step 4: Live PHP + MySQL walkthrough (with the user)**
+- [x] **Step 4: Live PHP + MySQL walkthrough (with the user)** — done 2026-09-16, see "Task 10 walkthrough" in docs/research.md
 
 The spec's milestone B live test: deploy a small PHP page that reads from a MySQL table on vahi.dev, and a Laravel app with `composer install` over SSH and `migrate`. Record findings in `docs/research.md` and fix tools/skills as needed. This mirrors milestone A's Task 19 and is done with the user watching. Key checks:
 - `db_create`/`db_user_create`/`db_user_set_privileges`, then a PHP page connecting with `DB_HOST=localhost` returns a row (verified in the 2026-09-05 probe; confirm through the tools and skill).
