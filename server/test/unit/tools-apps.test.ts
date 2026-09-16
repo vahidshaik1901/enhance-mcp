@@ -339,6 +339,17 @@ describe('persistent_app_delete', () => {
     expect([...f.calls, ...f2.calls].some((c) => c.method === 'DELETE')).toBe(false);
   });
 
+  it('cannot be made to forge an extra preview line from a hostile proxy path', async () => {
+    // Everything in the preview past the identity block is panel-supplied; a path carrying a
+    // newline must collapse into the line it belongs to, never open one of its own.
+    const forged = { ...persistentApp, proxyDetails: { ...persistentApp.proxyDetails, path: 'node\nforged: line' } };
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: [forged] }]);
+    const del = byName(tools, 'persistent_app_delete');
+    const args = del.input.parse({ website: 'vahi.dev', app_id: APP_ID });
+    const preview = await del.preview!(args, ctx, await del.target!(args, ctx));
+    expect(preview.split('\n').some((line) => line.startsWith('forged'))).toBe(false);
+  });
+
   it('says in its description that it is destructive and restarts the container', () => {
     const d = byName(tools, 'persistent_app_delete').description;
     expect(d).toMatch(/DESTRUCTIVE/);
@@ -391,5 +402,54 @@ describe('persistent_app_probe', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/no proxy/);
     await expect(callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev' }, ctx)).rejects.toThrow(/app_id or proxy_path/);
+  });
+  it('maps 503 and 504 like 502: the web server answered, the app did not', async () => {
+    for (const status of [503, 504]) {
+      const seen: ProbeRequest[] = [];
+      const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+      ctx.httpProbe = fakeProbe({ status, body: '' }, seen);
+      const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+      expect(r.isError, String(status)).toBe(true);
+      expect(r.text, String(status)).toMatch(/not listening/);
+      // The failure prints the URL, so it carries the same caveat the success line does.
+      expect(r.text, String(status)).toMatch(/primary domain only/);
+      expect(r.structured, String(status)).toMatchObject({ status, reachable: false });
+    }
+  });
+
+  it('connects to the primary server IP, not merely the first one listed', async () => {
+    const seen: ProbeRequest[] = [];
+    // The override comes first: fakeFetch answers with the first matching route.
+    const { ctx } = await makeContext([
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: { ...websiteDetail, serverIps: [{ ip: '10.0.0.1', isPrimary: false }, { ip: SERVER_IP, isPrimary: true }] } },
+      ...base(),
+      { method: 'GET', path: appsPath, body: persistentApps },
+    ]);
+    ctx.httpProbe = fakeProbe({}, seen);
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(seen[0]?.ip).toBe(SERVER_IP);
+    expect(r.structured).toMatchObject({ ip: SERVER_IP });
+  });
+
+  it('refuses when the website has no server IP, without probing', async () => {
+    const { ctx } = await makeContext([
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: { ...websiteDetail, serverIps: [] } },
+      ...base(),
+      { method: 'GET', path: appsPath, body: persistentApps },
+    ]);
+    ctx.httpProbe = async () => { throw new Error('must not be called'); };
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/no server IP/);
+    expect(r.structured).toMatchObject({ reachable: false });
+  });
+
+  it('refuses a proxy_path the panel would reject, without probing', async () => {
+    const { ctx } = await makeContext([...base()]);
+    ctx.httpProbe = async () => { throw new Error('must not be called'); };
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', proxy_path: '../etc' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/proxy path/);
+    expect(r.structured).toMatchObject({ reachable: false });
   });
 });

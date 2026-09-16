@@ -7,7 +7,7 @@ import { httpsProbe } from '../core/probe.js';
 import { defineTool, type Target, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
-import { siteOf, siteWebsiteById, websiteArg, type DbSite } from './dbcommon.js';
+import { dbTargetSite, websiteArg, type DbSite } from './dbcommon.js';
 import { appsSite, nodeSelectorArg, persistentAppsGate } from './node.js';
 import { tailLog } from './php.js';
 
@@ -334,16 +334,13 @@ export const persistentAppLog = defineTool({
   },
 });
 
-/** Convention 12: the target id is `<websiteId>:<appId>`; preview and handler re-read that site
- *  by id and re-check the plan flag, never re-resolving the `website` string. */
+/** Convention 12: the target id is `<websiteId>:<appId>`, the same shape the database tools use,
+ *  so `dbTargetSite` does the split and the re-read by id; this adds the plan gate and the app
+ *  lookup. Preview and handler both go through it, never re-resolving the `website` string. */
 async function appTarget(ctx: ToolContext, target: Target): Promise<{ site: DbSite; w: Website; appId: string; app: ListedApp | undefined }> {
-  const cut = target.id.indexOf(':');
-  if (cut <= 0) throw new Error(`malformed persistent app target "${safe(target.id)}"`);
-  const { org, w } = await siteWebsiteById(ctx, target.id.slice(0, cut));
-  const site = siteOf(ctx, org, w);
+  const { site, name: appId, website: w } = await dbTargetSite(ctx, target);
   const gate = persistentAppsGate(site, w, 'Persistent apps');
   if (gate) throw new Error("Persistent apps are not enabled for this website's plan");
-  const appId = target.id.slice(cut + 1);
   return { site, w, appId, app: findApp(await listApps(ctx, w.id), appId) };
 }
 
@@ -362,7 +359,7 @@ export const persistentAppDelete = defineTool({
   },
   async preview(_args, ctx, target) {
     const { site, w, appId, app } = await appTarget(ctx, target);
-    const what = app ? `${safe(app.command)}${app.proxyDetails ? `, served at ${appUrl(w, app.proxyDetails.path)}` : ''}` : 'an app the listing no longer shows';
+    const what = app ? `${safe(app.command)}${app.proxyDetails ? `, served at ${safe(appUrl(w, app.proxyDetails.path) ?? '')}` : ''}` : 'an app the listing no longer shows';
     return `${site.identity}\nThis will stop persistent app ${safe(appId)} (${what}) and remove it from the panel. The URL stops answering immediately; the files in the container stay. ${DELETE_RESTART_NOTE}`;
   },
   async handler(_args, ctx, target) {
@@ -405,14 +402,14 @@ export const persistentAppProbe = defineTool({
     try {
       res = await probe({ ip, host, path: `/${path}/`, timeoutMs: 5000, maxBodyBytes: 512 });
     } catch (e) {
-      return fail(`${s.identity}\n${url} via ${ip}: connection failed (${safe((e as Error).message)}). The app server did not answer at all; check website_get serverIps and that the site is active.`, { url, ip, reachable: false });
+      return fail(`${s.identity}\n${safe(url)} via ${safe(ip)}: connection failed (${safe((e as Error).message)}). The app server did not answer at all; check website_get serverIps and that the site is active.`, { url, ip, reachable: false });
     }
     const gateway = res.status === 502 || res.status === 503 || res.status === 504;
     const certNote = res.certificate === 'placeholder' ? 'the domain still serves the panel placeholder certificate (issue one with domain_ssl_issue once DNS resolves)' : res.certificate.startsWith('error:') ? `certificate check: ${safe(res.certificate)}` : 'certificate valid';
     const summary = kv([['url', url], ['connected to', ip], ['response', `HTTP ${res.status} in ${res.latencyMs} ms`], ['content-type', res.contentType ?? '-'], ['body (first 512 bytes)', res.body.trim() || '(empty)'], ['tls', certNote]]);
     const structured = { url, ip, status: res.status, latencyMs: res.latencyMs, contentType: res.contentType, body: res.body, certificate: res.certificate, reachable: !gateway && res.status > 0 };
     if (gateway) {
-      return fail(`${s.identity}\n${summary}\nthe web server answered but the app is not listening on its port (HTTP ${res.status}): read persistent_app_log for the startup error, and check the app really listens on the proxy's port — nothing injects PORT, so the app must choose that port itself.`, structured);
+      return fail(`${s.identity}\n${summary}\nthe web server answered but the app is not listening on its port (HTTP ${res.status}): read persistent_app_log for the startup error, and check the app really listens on the proxy's port — nothing injects PORT, so the app must choose that port itself. ${PRIMARY_DOMAIN_ONLY}`, structured);
     }
     return ok(`${s.identity}\n${summary}\n${PRIMARY_DOMAIN_ONLY} This probe connected straight to the app server with the domain as Host, so an answer here does not prove that public DNS resolves to this site yet.`, structured);
   },
