@@ -517,7 +517,8 @@ the `MySQLDBsFullListing` type.
   confirmed `node -v` = v22.23.2, npm 10.9.8.
 - **Bug: `GET .../apps/node/versions` is out of sync.** After installing 22.23.2 via the API and
   setting it default, the list returned only `["26.8.1"]`, omitting 22.23.2, though `nvm ls`
-  shows both and default -> 22.23.2. A tool must not present this list as authoritative.
+  shows both and default -> 22.23.2. A tool must not present this list as authoritative (rule
+  pinned in the Task 1 probe below: it omits the `default`-alias version).
 - Persistent apps `GET/POST /websites/{id}/apps/persistent`,
   `PATCH/DELETE .../apps/persistent/{app_id}`, `GET .../apps/persistent/{app_id}` returns the
   **startup+stdout log** (nvm load, node version, app output) as a string.
@@ -549,8 +550,10 @@ Probed live on vahi.dev with a session JWT. Every app created here was deleted a
    `nvm ls`, and the rule is now known — **it lists the installed versions except the one nvm's
    `default` alias points at**. With default -> 22.23.2 and v22.23.2, v26.8.1, v26.8.2 installed
    it returned `["26.8.1","26.8.2"]`; after `nvm alias default 26.8.1` the same set returned
-   `["22.23.2","26.8.2"]` (the alias was restored afterwards). The version actually in use is
-   exactly the one missing from the list, so the list must never be presented as authoritative.
+   `["22.23.2","26.8.2"]` (the alias was restored afterwards). The version the nvm `default` alias
+   points at is exactly the one missing from the list; apps that pin `nodeVersion` explicitly are
+   unaffected by this (finding 6's app ran v26.8.2 while the list still contained 26.8.2). Either
+   way the list must never be presented as authoritative.
 2. Restart: **every `PATCH` restarts the app, even a no-change one**, and it restarts the whole
    website container with it. `PATCH {"startMode":"automatic"}` on an app already `automatic`
    returned HTTP 200, and one second later both the container's PID 1 (`appinit ... lsphp`) and
@@ -559,12 +562,15 @@ Probed live on vahi.dev with a session JWT. Every app created here was deleted a
    signal**: the app lands on pid 5 in every fresh container, so the probe page printed the same
    `probe-5` before and after; only `ps -eo pid,lstart,etimes` tells the truth. `startMode:
    "manual"` stops the process — the proxy path answered HTTP 503 at 5 s and at 20 s. Back to
-   `"automatic"` starts a new process (200 again within 8 s, new start time). Create and delete
-   bounce the container the same way, so the site's PHP process (PID 1 is `appinit` running
-   `lsphp`) is restarted on every persistent-app write, not just the app.
+   `"automatic"` starts a new process (200 again within 8 s, new start time). A partial PATCH is
+   field-safe: after sending only `startMode`, the listing still carried `command`,
+   `workingDirectory`, `nodeVersion` and `proxyDetails` unchanged. Create and delete bounce the
+   container the same way, so the site's PHP process (PID 1 is `appinit` running `lsphp`) is
+   restarted on every persistent-app write, not just the app.
 3. Duplicate port: **accepted**, HTTP 201 — a second app on port 3077 while a live app already
-   used 3077 was created without complaint, so the panel does not validate ports and a real clash
-   only shows up at runtime as the second process failing to bind. Proxy path colliding with a
+   used 3077 was created without complaint, so the panel does not validate ports. The duplicate
+   was created with `startMode: "manual"` and never started, so what happens when both try to
+   listen was not observed; presumably the second fails to bind. Proxy path colliding with a
    docroot directory (`demo-login`, a live PHP page): **accepted, HTTP 201, and the proxy wins.**
    With the app merely registered and `startMode: "manual"` (nothing listening),
    `https://vahi.dev/demo-login/` went from 200 to **503**; the PHP page returned to 200 within
@@ -584,7 +590,8 @@ Probed live on vahi.dev with a session JWT. Every app created here was deleted a
    v26.8.2 and installed it on the fly (nvm held 22.23.2 and 26.8.1 before). POST body: **empty** —
    HTTP 201 with `content-length: 0` and no `Location` header, so the new id must come from a
    follow-up `GET .../apps/persistent`. `workingDirectory` may be omitted entirely (stored as
-   `null`).
+   `null`). A successful `DELETE .../apps/persistent/{app_id}` answers HTTP 200 with an empty body
+   (every delete in this probe did).
 
 Two further behaviours this probe uncovered, both of which the tools must guard:
 
@@ -605,15 +612,20 @@ Two further behaviours this probe uncovered, both of which the tools must guard:
 Two follow-up probes by the controller (same day, throwaway apps `mcpenv`, deleted; demo-login 200 after each):
 
 7. **The runner injects no `PORT`** (or any app-specific variable): an app that printed its
-   environment saw only `NVM_INC`, `NVM_DIR`, `NVM_CD_FLAGS`, `NVM_BIN`, cwd = the site home
-   when `workingDirectory` is unset. The proxy port is not passed to the process, so the app must
-   read its port from its own config: an npm script (`"start": "node --env-file=.env server.js"`,
-   `"start": "next start -p 3002"`) or a hard-coded value. `VAR=value` prefixes in `command` cannot
-   work because the command is exec'd as argv, not through a shell.
+   environment, filtered to variable names matching /port|app|proxy|enhance|nvm/i, saw only
+   `NVM_INC`, `NVM_DIR`, `NVM_CD_FLAGS` and `NVM_BIN` — the filter, not the environment, is why
+   `PATH` and `HOME` do not appear; cwd = the site home when `workingDirectory` is unset. The
+   proxy port is not passed to the process, so the app must read its port from its own config: an
+   npm script (`"start": "node --env-file=.env server.js"`, `"start": "next start -p 3002"`) or a
+   hard-coded value. `VAR=value` prefixes in `command` cannot work because the command is exec'd
+   as argv, not through a shell.
 8. **An app created without `nodeVersion` never starts**: the runner skips the nvm load and logs
    `exec: node: not found`. `nodeVersion: "default"` works (nvm prints a harmless
    `Version 'default' not found` from its install step, then `Now using node v22.23.2`, the
    default alias). So the create tool must always send a `nodeVersion`, defaulting to `"default"`.
+   The 2026-09-05 bullet above, where an app with `workingDirectory: "nodeapp"` started and logged
+   "listening on 3000", did not record what `nodeVersion` that create sent, so it does not
+   contradict this.
 
 ## Live test B: databases, PHP, cron and the gate on vahi.dev (2026-09-11)
 
