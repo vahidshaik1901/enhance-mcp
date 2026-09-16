@@ -83,7 +83,9 @@ The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) 
 6. **Credential: the panel session JWT is a first-class credential for now.** The panel UI will
    surface it later; today the user copied it from browser network calls. MCP sends it as the `id0` cookie. Bearer access
    tokens are the second mode. The MCP auto-detects which was pasted by probing
-   `/login/memberships`. Decided 2026-09-04.
+   `/login/memberships`. Decided 2026-09-04. **OAuth is coming** (the Enhance team is building
+   it, per the user on 2026-09-16): add it as a third credential mode when it ships, browser
+   sign-in with the token stored by the server, tools unchanged. Noted in the README.
 7. **Destructive ops: two-step confirmation gate** (preview + confirmation token + the
    human typing the domain name). Never expose `force=true`, org delete, subscription
    delete, or bulk website delete. Assumed from my recommendation; confirm in design review.
