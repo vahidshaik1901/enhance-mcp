@@ -691,6 +691,21 @@ guardrails (item 14 came out of its review, and corrected the guard):
     and treats the path as free only when both answer 404 (the root app asks `/` alone); the refusal
     quotes which form answered, e.g. `HTTP 301 on /assets: an existing directory in public_html`.
     Before this, an empty or index-less directory read as free and the app would have shadowed it.
+15. **The asset check's own first version false-failed a healthy page** (found by the user on
+    `https://vahi.dev/next/`, 2026-09-17). It fetched up to 12 assets **in parallel** with a
+    **2 s** deadline. From a client about **0.8 s** of round trip away from the server, the twelve
+    simultaneous TLS handshakes made each fetch take **1.6-3.8 s**, so half of them blew the
+    deadline, were rejected, and were reported as failed with `status: null` ("no answer: the app
+    itself does not serve it"). Two Next.js chunks that answer **200 in 1.1-1.7 s** were called
+    broken and the whole probe came back `isError` on a deploy that was fine. The same run made a
+    **genuine** catch that must keep working: `/favicon.ico?favicon…`, referenced absolutely, was
+    **404 at the domain root** while `/next/favicon.ico` was 200.
+
+    The rule this fixes: **a false failure is worse than a missed one, and a timeout is not
+    evidence that an asset is broken.** Asset fetches now run **4 at a time** with an **8 s**
+    deadline, and a fetch that never produced a status is **unchecked**, reported on its own line
+    and never a failure. Only a definite 404, 410 or 5xx fails a probe; `failed`, `restricted`
+    (401/403) and `unchecked` are disjoint in `structured.assets`.
 
 ## Live test B: databases, PHP, cron and the gate on vahi.dev (2026-09-11)
 
