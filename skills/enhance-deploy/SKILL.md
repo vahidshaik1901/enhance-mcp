@@ -137,8 +137,9 @@ reports broken links. Read "PHP or static site plus a Node app" below before cho
    already uses is refused (409), but a path that a real directory under `public_html` serves is
    accepted by the panel — and **the proxy wins even while the app is stopped**: verified live, an
    app merely registered on `demo-login` turned that PHP page into a 503 until the app was deleted.
-   Pick a path that returns 404 on the live site today; `persistent_app_create` fetches it first and
-   refuses anything else. "PHP or static site plus a Node app" below has both directions of that
+   Pick a path that returns 404 on the live site today; `persistent_app_create` fetches both
+   `/<path>` and `/<path>/` first and refuses unless both answer 404 (an existing directory shows
+   only on the bare form, as a 301). "PHP or static site plus a Node app" below has both directions of that
    check and the layout choice. For an app that is the whole site, use `serve_at_root=true` on a
    website or subdomain of its own instead of a path.
    **The proxy strips the prefix before it forwards** (verified live 2026-09-17): a request to
@@ -217,7 +218,7 @@ Only once the deploy works; none of this is part of the happy path.
 - **Commands**: the panel execs the command as argv with no shell and injects no `PORT`, so the port belongs in the app's npm `start` script, its server-side `.env` (`node --env-file=.env server.js`) or its code — never in front of the command. `working_directory` is relative to the site home and must not be empty; omit it only when the app should run from the home directory itself.
 - **Restarts**: `persistent_app_create`, `persistent_app_update` and `persistent_app_delete` usually restart the whole website container, not just the app, so expect the site's PHP and static pages to be interrupted for a second or two. Verified live for create, delete, and updates that change the start mode, the command or clear the proxy; one update that only added a proxy to an app that had none applied without a restart, so do not count on an update being the restart by accident. Resending a field the app already has is how you restart one after a deploy, e.g. `persistent_app_update website=<site> app_id=<id> start_mode=automatic` — an update carrying no field is refused ("nothing to change").
 - **`persistent_app_delete`** is destructive: it stops the process and removes the proxy at once, and the user types the website's domain name to confirm. The app's files and its `persistent_app_<id>.log` stay in the home directory.
-- **Ports and paths**: one app per port, and the panel does not check for a clash — pick a free one from `persistent_apps_list`. A proxy path that collides with a directory in `public_html` is the app's, not PHP's, and answers 503 while the app is stopped (verified live), so pick paths that do not exist in the docroot; `persistent_app_create` and a path-changing `persistent_app_update` fetch the path first and refuse one that already answers, unless `replace_existing_path=true`. A path another app already uses is refused by the panel (409). `serve_at_root=true` on create gives an app the whole domain instead of a path — see "PHP or static site plus a Node app".
+- **Ports and paths**: one app per port, and the panel does not check for a clash — pick a free one from `persistent_apps_list`. A proxy path that collides with a directory in `public_html` is the app's, not PHP's, and answers 503 while the app is stopped (verified live), so pick paths that do not exist in the docroot; `persistent_app_create` and a path-changing `persistent_app_update` fetch both `/<path>` and `/<path>/` first and refuse unless both answer 404, unless `replace_existing_path=true`. A path another app already uses is refused by the panel (409). `serve_at_root=true` on create gives an app the whole domain instead of a path — see "PHP or static site plus a Node app".
 
 ## PHP or static site plus a Node app
 
@@ -226,11 +227,15 @@ goes to a Node app instead. Where the two overlap the proxy wins, even while the
 (verified live: an app registered on `demo-login` turned that live PHP page into a 503 until it was
 deleted), so decide who owns which path before registering anything.
 
-- **Picking a path for a new app**: one that returns 404 on the live site today. `persistent_app_create`
-  fetches the path itself and refuses one that answers anything else, naming what it would replace;
-  `replace_existing_path=true` overrides that and only makes sense when taking that page off the web
-  is the point. The exact local check is `ls public_html/<first segment>` over SSH — an empty
-  directory also answers 404, so a fetch alone cannot see it.
+- **Picking a path for a new app**: one that returns 404 on the live site today — in **both** forms.
+  Verified live 2026-09-17: an existing directory answers **301 to `https://<domain>/<dir>/` on the
+  bare `/<dir>`**, whether it is empty, holds files, or holds an index page, while `/<dir>/` itself
+  answers **404 unless it has an index file**; a file answers 200 on `/<file>` and 404 on `/<file>/`;
+  a path that exists nowhere answers 404 both ways. So the bare path is what reveals a directory, and
+  `persistent_app_create` fetches both forms and refuses unless both are 404, naming what it would
+  replace; `replace_existing_path=true` overrides that and only makes sense when taking that page off
+  the web is the point. `ls public_html/<first segment>` over SSH remains the exact check, and the
+  only one that also shows what is inside.
 - **Before rsyncing files into `public_html/<dir>`**, run the reverse check: `persistent_apps_list`,
   and stop if an app already proxies that path. The upload would succeed and the URL would keep
   answering from the app.

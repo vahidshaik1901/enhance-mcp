@@ -656,8 +656,8 @@ Two more from the Task 8 walkthrough (2026-09-17; the full run is under "Live te
     outcome and a no-restart as a possibility, never the other way round: to restart on purpose,
     resend a field the app already has (`start_mode=automatic`).
 
-Two more from the follow-up probes after the walkthrough (2026-09-17), which Task 9 turns into
-guardrails:
+Three more from the follow-up probes after the walkthrough (2026-09-17), which Task 9 turns into
+guardrails (item 14 came out of its review, and corrected the guard):
 
 12. **An empty proxy path is accepted and hands the app the whole site.** On the empty site
     vahid2.dev, an app created with `proxyDetails.path = ""` owned every URL: `/`,
@@ -676,6 +676,21 @@ guardrails:
     after a deploy that every other check called healthy, which is why `persistent_app_probe` now
     fetches a page's assets itself. The same applies to links the app generates
     (`<Link href="/about">`) and to absolute `fetch('/api')` calls.
+14. **A directory only shows on the BARE path, and answers 404 with the trailing slash.** Probed on
+    vahi.dev (2026-09-17) against the live docroot, with no app registered:
+    - an existing directory with **no index file** answers **404 on `/dir/`**, whether it is empty
+      or holds files — so the trailing-slash probe alone cannot see it at all;
+    - the bare `/dir` answers **301 → `https://vahi.dev/dir/`** for *every* existing directory,
+      empty, non-empty, or with an index page (`demo-login` redirects exactly the same way);
+    - a file answers **200 on `/file`** and **404 on `/file/`**;
+    - a path that exists nowhere answers **404 on both** `/x` and `/x/`;
+    - a path a persistent app owns answers **200 on both** `/express` and `/express/`.
+
+    So "does anything live here?" needs both requests, and the bare-path 301 whose `Location` is
+    the same path plus `/` is the signal for "existing directory". `pathPreflight` asks both forms
+    and treats the path as free only when both answer 404 (the root app asks `/` alone); the refusal
+    quotes which form answered, e.g. `HTTP 301 on /assets: an existing directory in public_html`.
+    Before this, an empty or index-less directory read as free and the app would have shadowed it.
 
 ## Live test B: databases, PHP, cron and the gate on vahi.dev (2026-09-11)
 

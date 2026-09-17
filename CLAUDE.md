@@ -8,13 +8,13 @@ delete a site by accident.
 
 ## Current status (2026-09-17)
 
-**Phase: milestone C COMPLETE and LIVE-VERIFIED on branch `feat/milestone-c` (all of Tasks 0-8 of
+**Phase: milestone C COMPLETE and LIVE-VERIFIED on branch `feat/milestone-c` (all of Tasks 0-9 of
 `docs/superpowers/plans/2026-09-16-milestone-c-node.md` done, walkthrough included).
 82 tools are registered (a client lists 83 with `confirm_action`): milestones A and B plus
 `node_install`, `node_versions_available`, `node_versions_installed`, `node_version_install`,
 `node_version_set_default`, `persistent_apps_list`, `persistent_app_create`,
 `persistent_app_update`, `persistent_app_delete` (destructive, typed domain), `persistent_app_log`
-and `persistent_app_probe`. 379 unit tests; the milestone C live suite passed 2/2 against vahi.dev
+and `persistent_app_probe`. 406 unit tests; the milestone C live suite passed 2/2 against vahi.dev
 on 2026-09-16 and again on 2026-09-17 after the review fixes, with no tool bug found and no tool fix
 needed (see "Live test C" in docs/research.md). The Task 8 walkthrough ran on 2026-09-17 on vahi.dev
 inside Claude Code with the plugin reinstalled from this branch: an Express app and a Next.js app
@@ -22,7 +22,12 @@ deployed behind the proxy and verified in the browser, `clear_proxy`, a delibera
 typed-domain prompt for `persistent_app_delete` twice (see "Walkthrough (2026-09-17)" under "Live
 test C" in docs/research.md). It found no tool bug but forced the corrections in this branch's last
 two commits: the proxy strips the path prefix, a 404-from-the-app hint in `persistent_app_probe`,
-`clear_proxy` verified, and honest ("usually") restart wording. Skills: `enhance-deploy` extended
+`clear_proxy` verified, and honest ("usually") restart wording. Task 9 then added the guardrails it
+called for: `persistent_app_create` and a path-moving `persistent_app_update` fetch both `/<path>`
+and `/<path>/` before writing and refuse unless both answer 404 (`replace_existing_path=true`
+overrides, and an existing directory shows only as a 301 on the bare form), `serve_at_root=true`
+hands an app the whole domain through the panel's empty proxy path, and `persistent_app_probe` now
+fetches the assets an HTML page references and fails the probe when one is missing. Skills: `enhance-deploy` extended
 with the Node path (runtime, app directory, port, proxy path and prefix stripping, rsync target,
 post-deploy order, probe) and `persistent_app_delete` added to its safety rules. Remaining: the
 final whole-branch review, then `superpowers:finishing-a-development-branch`, then milestone D
@@ -192,6 +197,12 @@ The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) 
     `https://vahi.dev/next/` were `/next.svg` (404 at the root) while `/next/next.svg` was 200. So a
     200 page can be wholly broken, and `persistent_app_probe` now fetches a page's assets and fails
     when any of them does not answer.
+  - **A directory shows only on the bare path** (probed on vahi.dev 2026-09-17): an existing
+    directory answers **404 on `/dir/`** unless it holds an index file — empty or not — while the
+    bare `/dir` answers **301 → `https://<domain>/dir/`** for every directory that exists. A file is
+    200 on `/file` and 404 on `/file/`, a nonexistent path 404s both ways, and a path an app owns
+    answers 200 both ways. So the path-clash preflight asks **both** forms and calls a path free only
+    when both answer 404.
 
 ## Enhance API facts (verified from the live spec)
 
