@@ -8,12 +8,12 @@ delete a site by accident.
 
 ## Current status (2026-09-17)
 
-**Phase: milestone C COMPLETE on branch `feat/milestone-c` (all of Tasks 0-9 of
+**Phase: milestone C MERGED to `main` (2026-09-17, PR #4, merge commit ce642b7; all of Tasks 0-9 of
 `docs/superpowers/plans/2026-09-16-milestone-c-node.md` done, walkthrough included). Tasks 0-8 are
 LIVE-VERIFIED; Task 9's path-clash guard and asset check were first exercised live on 2026-09-17,
 where the asset check made one genuine catch (a `/favicon.ico` referenced at the domain root, 404
 there while `/next/favicon.ico` was 200) and two FALSE failures (healthy Next.js chunks that blew
-the 2 s deadline because twelve fetches ran at once), fixed in this branch's last commit: asset
+the 2 s deadline because twelve fetches ran at once), fixed in commit a806b59: asset
 fetches now run 4 at a time with an 8 s deadline and a timeout is reported as unchecked, never as a
 failure (item 15 under "Milestone C Task 1 probe" in docs/research.md).
 82 tools are registered (a client lists 83 with `confirm_action`): milestones A and B plus
@@ -28,8 +28,8 @@ day found the asset check's false failures (item 15), and the C3 trial produced 
 inside Claude Code with the plugin reinstalled from this branch: an Express app and a Next.js app
 deployed behind the proxy and verified in the browser, `clear_proxy`, a deliberate restart, and the
 typed-domain prompt for `persistent_app_delete` twice (see "Walkthrough (2026-09-17)" under "Live
-test C" in docs/research.md). It found no tool bug but forced the corrections in this branch's last
-two commits: the proxy strips the path prefix, a 404-from-the-app hint in `persistent_app_probe`,
+test C" in docs/research.md). It found no tool bug but forced the corrections in commits
+8f86607 and da0702e: the proxy strips the path prefix, a 404-from-the-app hint in `persistent_app_probe`,
 `clear_proxy` verified, and honest ("usually") restart wording. Task 9 then added the guardrails it
 called for: `persistent_app_create` and a path-moving `persistent_app_update` fetch both `/<path>`
 and `/<path>/` before writing and refuse unless both answer 404 (`replace_existing_path=true`
@@ -53,9 +53,9 @@ rule, log+asset verification, finished-theme default); see "Live test C3" in doc
 four trial sites (`start`, `ghost`, `payload`, `emdash` under vahi.dev) and the two demo apps on
 vahi.dev (`/express/`, `/next/`) are LIVE TEST RESOURCES left running on purpose: remove them
 (`persistent_app_delete`, `rm -rf` over SSH, then `website_delete`) only when the user says so.
-Remaining: the
-final whole-branch review, then `superpowers:finishing-a-development-branch`, then milestone D
-(email, backups, DNS zone editing, WordPress, staging).
+The final whole-branch reviews (code; skills and docs), one fix wave and a focused re-review
+ended "Ready to merge: Yes" (424 unit tests). Remaining: milestone D (email, backups, DNS zone
+editing, WordPress, staging), starting with the follow-ups named below; brainstorm, spec and plan first.
 Deliberately after the merge, not on this branch: a shared write-then-verify helper (which also
 re-checks `website_create`'s timeout behaviour from milestone A), moving the probe/verification code
 out of `tools/apps.ts` into `core/probe.ts`, and a `files_list` tool through the panel's file
@@ -96,8 +96,7 @@ capability and negotiates the legacy protocol era; the server uses the SDK's `in
 flow (not `elicitInput`) so the human prompt works on both eras (see docs/research.md).
 `outputSchema` has known issues so tools return `structuredContent` without declaring one;
 the Bash sandbox can never carry SSH (use `sandbox.excludedCommands` or run unsandboxed).
-Progress: milestones A and B are merged to `main`; milestone C is code-complete and e2e-verified
-on `feat/milestone-c` (ledger in `.superpowers/sdd/progress.md`, git-ignored; `git log` is the
+Progress: milestones A, B and C are merged to `main` (ledger in `.superpowers/sdd/progress.md`, git-ignored; `git log` is the
 recovery map). Session JWTs expire within hours and the org still has no access token, so ask for
 a fresh cookie before any live work. To run the live suite: put the credential in `.env`
 (`ENHANCE_TOKEN`, or a session JWT as `ENHANCE_SESSION_COOKIE`), then from the repo root:
