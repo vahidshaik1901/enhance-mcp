@@ -226,6 +226,9 @@ describe('persistent_app_create', () => {
     expect(d).toMatch(/public_html/);
     expect(d).toMatch(/without a shell/);
     expect(d).toMatch(/restarts the whole website container/);
+    // Verified live: what reaches the app is the path minus the proxy prefix.
+    expect(d).toMatch(/strips the path prefix/);
+    expect(d).toMatch(/not basePath/);
   });
 });
 
@@ -237,7 +240,10 @@ describe('persistent_app_update', () => {
     expect(sink.path).toBe(appPath);
     expect(sink.body).toEqual({ proxyDetails: { path: 'node', port: 3100, allowWebSocketUpgrade: false } });
     expect(r.structured).toMatchObject({ id: APP_ID, updated: true, url: 'https://vahi.dev/node/' });
-    expect(r.text).toMatch(/restarts the app and, verified live, the whole website container/);
+    // Honest wording: one walkthrough PATCH (a proxy added to an app that had none) applied
+    // without a restart, so the note says "usually" and names the deliberate restart.
+    expect(r.text).toMatch(/usually restarts the app and the whole website container/);
+    expect(r.text).toMatch(/start_mode=automatic/);
     // The URL above is the primary domain; the preview alias never proxies an app.
     expect(r.text).toContain('primary domain');
   });
@@ -384,6 +390,20 @@ describe('persistent_app_probe', () => {
     expect(r.text).toMatch(/not (listening|answering)/);
     expect(r.text).toMatch(/placeholder/);
     expect(r.structured).toMatchObject({ status: 502, reachable: false, certificate: 'placeholder' });
+  });
+
+  it('reads a 404 as the app not serving "/" behind the prefix-stripping proxy, and stays reachable', async () => {
+    // Verified live 2026-09-17: a Next.js app built with basePath answered its own 404 page,
+    // because the proxy hands it "/" and it only serves /<path>/…. That is a build mistake, not
+    // an unreachable app, so it must stay a success result carrying the hint.
+    const seen: ProbeRequest[] = [];
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    ctx.httpProbe = fakeProbe({ status: 404, body: 'This page could not be found.' }, seen);
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toMatch(/404 came from the app itself/);
+    expect(r.text).toMatch(/assetPrefix, not basePath/);
+    expect(r.structured).toMatchObject({ status: 404, reachable: true });
   });
 
   it('reports a connection failure as an error result with the reason', async () => {

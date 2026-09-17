@@ -113,6 +113,13 @@ export const PREVIEW_NOTE = `${PRIMARY_DOMAIN_ONLY} Before DNS resolves, verify 
  *  page there answered 503 while the app was merely registered, and 200 again once it was gone. */
 const PROXY_SHADOWS_DOCROOT = 'the proxy path takes precedence over any public_html/<path> directory — never reuse a directory name that PHP or static files serve';
 
+/** Verified live 2026-09-17: the reverse proxy strips the `/<path>` prefix before it forwards, so
+ *  an app that was built to live under that prefix serves nothing the proxy asks for. An Express
+ *  app answered at `/` and echoed `/foo/bar?x=1` for `/express/foo/bar?x=1`; a Next.js build with
+ *  `basePath` returned its own 404 until it was rebuilt with `assetPrefix` and no `basePath`. */
+const PROXY_STRIPS_PREFIX =
+  'The proxy strips the path prefix before forwarding (verified live): a request to /<proxy_path>/foo reaches the app as /foo, so the app serves its routes at "/" — a framework needs an asset prefix rather than a base path (Next.js: assetPrefix: \'/<proxy_path>\', not basePath).';
+
 /** Verified live: create, update and delete all bounce the container, not just the app process. */
 const CREATE_RESTART_NOTE = 'registering the app restarted the website container; PHP and static pages were interrupted for a second or two';
 /** Arguments that describe a proxy the caller did not ask for, and arguments a clear_* flag
@@ -120,7 +127,8 @@ const CREATE_RESTART_NOTE = 'registering the app restarted the website container
 const IGNORED_PROXY_ARGS_NOTE = 'port/allow_websocket ignored: no proxy_path was given, so the app is not exposed';
 const CLEAR_PROXY_WON_NOTE = 'clear_proxy won: proxy_path/port/allow_websocket were ignored and the app is no longer exposed';
 const CLEAR_NODE_VERSION_WON_NOTE = 'clear_node_version won: node_version was ignored and the app was set to "default", nvm\'s default alias';
-const UPDATE_RESTART_NOTE = 'An update restarts the app and, verified live, the whole website container, so the site\'s PHP and static pages are interrupted for a second or two.';
+const UPDATE_RESTART_NOTE =
+  'An update usually restarts the app and the whole website container (verified live for start mode, command and clearing the proxy), so expect the site\'s PHP and static pages to be interrupted for a second or two; a change that only added a proxy was once seen to apply without a restart. To restart on purpose, resend a field the app already has, e.g. start_mode=automatic.';
 const DELETE_RESTART_NOTE = "Deleting also restarts the website container, so the site's PHP and static pages are interrupted for a second or two.";
 
 const appIdArg = z.string().uuid().describe('Persistent app id from persistent_apps_list');
@@ -178,7 +186,7 @@ export const persistentAppCreate = defineTool({
   name: 'persistent_app_create',
   tier: 'customer',
   risk: 'write',
-  description: `Registers a persistent app: a command the panel starts in the website container, keeps running, and (with proxy_path and port) exposes at https://<primary domain>/<proxy_path>/. The command runs without a shell — it is split on whitespace and exec'd as argv, so "VAR=value" prefixes, pipes, redirection and quoted arguments with spaces are refused here; put the port and any environment in an npm script or a wrapper script and use "npm start" or "node server.js". Nothing injects PORT, so the app must listen on the port given here by its own configuration, and ${PROXY_SHADOWS_DOCROOT}. The panel refuses a proxy path another app already uses (409 already_exists) but does not check ports, so pick a free one from persistent_apps_list. working_directory is relative to the site home (never absolute); proxy_path never starts with "/". node_version defaults to "default", nvm's default alias: an app created without a Node version never starts (verified live: "exec: node: not found"). Registering the app restarts the whole website container, so the site's PHP and static pages are interrupted for a second or two. Requires persistent apps on the plan and Node installed (node_install). The preview domain never proxies apps.`,
+  description: `Registers a persistent app: a command the panel starts in the website container, keeps running, and (with proxy_path and port) exposes at https://<primary domain>/<proxy_path>/. The command runs without a shell — it is split on whitespace and exec'd as argv, so "VAR=value" prefixes, pipes, redirection and quoted arguments with spaces are refused here; put the port and any environment in an npm script or a wrapper script and use "npm start" or "node server.js". Nothing injects PORT, so the app must listen on the port given here by its own configuration, and ${PROXY_SHADOWS_DOCROOT}. ${PROXY_STRIPS_PREFIX} The panel refuses a proxy path another app already uses (409 already_exists) but does not check ports, so pick a free one from persistent_apps_list. working_directory is relative to the site home (never absolute); proxy_path never starts with "/". node_version defaults to "default", nvm's default alias: an app created without a Node version never starts (verified live: "exec: node: not found"). Registering the app restarts the whole website container, so the site's PHP and static pages are interrupted for a second or two. Requires persistent apps on the plan and Node installed (node_install). The preview domain never proxies apps.`,
   input: z.object({
     website: websiteArg,
     command: commandArg,
@@ -253,7 +261,7 @@ export const persistentAppUpdate = defineTool({
     proxy_path: z.string().min(1).optional(),
     port: portArg.optional(),
     allow_websocket: z.boolean().optional(),
-    clear_proxy: z.boolean().default(false),
+    clear_proxy: z.boolean().default(false).describe('Unexposes the app: removes its proxy path so the URL falls back to the docroot while the process keeps running (verified live).'),
     clear_node_version: z.boolean().default(false).describe('Returns the app to nvm\'s default alias by setting node_version to "default"; it wins over an explicit node_version. The panel\'s unset form is not used because an app with no Node version at all never starts (verified live).'),
   }),
   async handler(args, ctx) {
@@ -274,7 +282,10 @@ export const persistentAppUpdate = defineTool({
         if (args.node_version !== undefined) notes.push(CLEAR_NODE_VERSION_WON_NOTE);
       } else if (args.node_version !== undefined) patch.nodeVersion = args.node_version;
       if (args.clear_proxy) {
-        // proxyDetails Unset is the API's documented way to unexpose an app; not yet exercised live (Task 7 / walkthrough).
+        // proxyDetails Unset is the API's documented way to unexpose an app, verified live
+        // 2026-09-17: the listing came back with `proxy: null`, the URL fell through to the
+        // docroot (404) and the Node process kept running, with command, working directory,
+        // node version and start mode untouched.
         patch.proxyDetails = { unset: true };
         if (args.proxy_path !== undefined || args.port !== undefined || args.allow_websocket !== undefined) notes.push(CLEAR_PROXY_WON_NOTE);
       } else if (args.proxy_path !== undefined || args.port !== undefined || args.allow_websocket !== undefined) {
@@ -373,8 +384,7 @@ export const persistentAppProbe = defineTool({
   name: 'persistent_app_probe',
   tier: 'customer',
   risk: 'read',
-  description:
-    "Fetches a persistent app's URL the way the web server serves it: HTTPS to the app server's IP with the primary domain as SNI and Host (the curl --resolve equivalent), so it works before DNS points at the site. Reports status, latency, the first bytes of the body, and whether the domain still has the placeholder certificate. Give app_id (from persistent_apps_list) or a proxy_path.",
+  description: `Fetches a persistent app's URL the way the web server serves it: HTTPS to the app server's IP with the primary domain as SNI and Host (the curl --resolve equivalent), so it works before DNS points at the site. Reports status, latency, the first bytes of the body, and whether the domain still has the placeholder certificate. Give app_id (from persistent_apps_list) or a proxy_path. ${PROXY_STRIPS_PREFIX}`,
   input: z.object({ website: websiteArg, app_id: appIdArg.optional(), proxy_path: z.string().min(1).optional() }),
   async handler({ website, app_id, proxy_path }, ctx) {
     if (app_id === undefined && proxy_path === undefined) throw new Error('give app_id or proxy_path');
@@ -411,7 +421,13 @@ export const persistentAppProbe = defineTool({
     if (gateway) {
       return fail(`${s.identity}\n${summary}\nthe web server answered but the app is not listening on its port (HTTP ${res.status}): read persistent_app_log for the startup error, and check the app really listens on the proxy's port — nothing injects PORT, so the app must choose that port itself. ${PRIMARY_DOMAIN_ONLY}`, structured);
     }
-    return ok(`${s.identity}\n${summary}\n${PRIMARY_DOMAIN_ONLY} This probe connected straight to the app server with the domain as Host, so an answer here does not prove that public DNS resolves to this site yet.`, structured);
+    // A 404 here is the app's own, not the web server's (that would be a gateway status): verified
+    // live when a Next.js build with basePath answered its 404 page for the proxy's "/".
+    const notFound =
+      res.status === 404
+        ? `\nHTTP 404 came from the app itself: the proxy strips the /${safe(path)} prefix, so the app received "/" — check it serves "/" (Next.js: assetPrefix, not basePath).`
+        : '';
+    return ok(`${s.identity}\n${summary}${notFound}\n${PRIMARY_DOMAIN_ONLY} This probe connected straight to the app server with the domain as Host, so an answer here does not prove that public DNS resolves to this site yet.`, structured);
   },
 });
 
