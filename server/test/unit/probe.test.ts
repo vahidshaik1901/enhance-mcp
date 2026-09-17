@@ -39,6 +39,24 @@ describe('extractAssetUrls', () => {
     expect(extractAssetUrls(html, page)).toEqual([]);
   });
 
+  it('ignores commented-out tags and anything inside a script or style body', () => {
+    // These are the false failures: a page that works perfectly would have been reported as
+    // broken because a commented-out <img>, a CSS url() or a string inside a script was fetched.
+    const html = `<!-- <img src="/old-hero.png"> -->
+      <style>body{background:url(/bg.png)}</style>
+      <script>document.write('<img src="/written.png">'); var s = "<!--";</script>
+      <script src="/app.js"></script>
+      <img src="/real.png">`;
+    expect(extractAssetUrls(html, page)).toEqual(['/app.js', '/real.png']);
+  });
+
+  it('takes the first srcset candidate even when a URL holds commas, and never a data: one', () => {
+    // Splitting on every comma cut `/a,b.png` in half and turned a base64 data URI into a path.
+    expect(extractAssetUrls('<img srcset="/a,b.png 1x, /c.png 2x">', page)).toEqual(['/a,b.png']);
+    expect(extractAssetUrls('<img srcset="data:image/png;base64,iVBOR 1x, /c.png 2x">', page)).toEqual([]);
+    expect(extractAssetUrls('<img srcset="/only.png">', page)).toEqual(['/only.png']);
+  });
+
   it('de-duplicates and stops at twelve, so one broken page cannot fan out into a scan', () => {
     const many = Array.from({ length: 20 }, (_, i) => `<script src="/a${i}.js"></script>`).join('');
     expect(extractAssetUrls(`<img src="/dup.png"><img src="/dup.png">`, page)).toEqual(['/dup.png']);

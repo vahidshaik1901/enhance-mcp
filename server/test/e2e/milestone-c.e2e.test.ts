@@ -131,11 +131,27 @@ suite('milestone C against the live panel', () => {
     const takenPath = process.env['ENHANCE_E2E_TAKEN_PATH'];
     if (takenPath) {
       const clash = await call(tool(tools, 'persistent_app_create'), { website: site, command, proxy_path: takenPath, port });
-      expect(clash.isError, `the preflight let a create through on ${takenPath}, which already serves something: ${clash.text}`).toBe(true);
+      // A preflight that cannot reach the site does NOT block the write, so this create can land a
+      // real app on a path that serves a real page. Remove it before asserting anything, or the
+      // failure leaves the site's own page shadowed by this suite's throwaway app.
+      const strayId = (clash.structured as { id?: string | null } | undefined)?.id ?? undefined;
+      let stray = '';
+      if (strayId) {
+        stray = ` It registered app ${strayId} on that path`;
+        try {
+          const del = tool(tools, 'persistent_app_delete');
+          const args = del.input.parse({ website: site, app_id: strayId });
+          const target = await del.target!(args, ctx).catch(() => undefined);
+          if (target?.id.endsWith(`:${strayId}`)) await del.handler(args, ctx, target);
+          stray += ', now deleted again';
+        } catch (e) {
+          stray += `, and it could NOT be deleted — remove it by hand: ${(e as Error).message}`;
+        }
+      }
+      expect(clash.isError, `the preflight let a create through on ${takenPath}, which already serves something.${stray}: ${clash.text}`).toBe(true);
       expect(clash.text).toMatch(/would replace what/);
       expect(clash.text).toContain('replace_existing_path');
       expect((clash.structured as { created: boolean }).created).toBe(false);
-      // Nothing may have reached the panel, so there is no app to clean up here.
       expect((await listedRows()).some((a) => a.proxy?.path === takenPath), 'the refused create registered an app anyway').toBe(false);
     }
 

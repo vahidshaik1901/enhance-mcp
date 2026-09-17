@@ -270,37 +270,79 @@ describe('persistent_app_create path preflight', () => {
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx);
     expect(r.isError).toBe(true);
     expect(r.text).toContain(websiteLine);
-    expect(r.text).toContain('HTTP 200');
+    expect(r.text).toContain('HTTP 200 on /node/');
     expect(r.text).toContain('https://vahi.dev/node/');
     expect(r.text).toContain('replace_existing_path');
     expect(r.text).toMatch(/Nothing was sent to the panel/);
-    expect(seen.map((s) => s.path)).toEqual(['/node/']);
+    // Both forms are asked, because they answer differently on a real site.
+    expect(seen.map((s) => s.path)).toEqual(['/node', '/node/']);
     expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
     expect(r.structured).toMatchObject({ created: false });
   });
 
-  it('creates without a word about replacing when the path answers 404 today', async () => {
+  it('refuses a directory that has no index file, which only the bare path reveals', async () => {
+    // Verified live 2026-09-17 on vahi.dev: an existing directory answers 404 on /dir/ whether it
+    // is empty or full, and 301 to https://<domain>/dir/ on the bare /dir. The trailing-slash probe
+    // alone called that directory free, and the app would then have shadowed it.
+    const sink: { body?: unknown } = {};
+    const seen: ProbeRequest[] = [];
+    const { ctx, f } = await makeContext(routes(sink));
+    ctx.httpProbe = pathProbe({ '/assets': { status: 301, location: 'https://vahi.dev/assets/' } }, seen);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'assets', port: 3000 }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('HTTP 301 on /assets: an existing directory in public_html');
+    expect(r.text).toMatch(/Nothing was sent to the panel/);
+    expect(seen.map((s) => s.path)).toEqual(['/assets', '/assets/']);
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+    expect(r.structured).toMatchObject({ created: false, pathStatus: 301 });
+  });
+
+  it('refuses a bare path that serves a file, a trailing-slash path that serves content, and names the 200 when both answer', async () => {
+    // A file answers 200 on /file and 404 on /file/; the reverse cannot happen for a directory,
+    // but either form answering anything but 404 is content this create would replace. A directory
+    // that does have an index answers both ways (live: demo-login), and the 200 is the more useful
+    // half to name, because it is a page the reader can open.
+    for (const [answers, seenText] of [
+      [{ '/report.pdf': 200 }, 'HTTP 200 on /report.pdf'],
+      [{ '/node/': 200 }, 'HTTP 200 on /node/'],
+      [{ '/demo-login': { status: 301, location: 'https://vahi.dev/demo-login/' }, '/demo-login/': 200 }, 'HTTP 200 on /demo-login/'],
+    ] as const) {
+      const sink: { body?: unknown } = {};
+      const { ctx, f } = await makeContext(routes(sink));
+      ctx.httpProbe = pathProbe(answers);
+      const path = Object.keys(answers)[0]!.replace(/^\/|\/$/g, '');
+      const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: path, port: 3000 }, ctx);
+      expect(r.isError, seenText).toBe(true);
+      expect(r.text).toContain(seenText);
+      expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+    }
+  });
+
+  it('creates without a word about replacing when both forms of the path answer 404 today', async () => {
     const sink: { body?: unknown } = {};
     const seen: ProbeRequest[] = [];
     const { ctx, f } = await makeContext(routes(sink));
     ctx.httpProbe = pathProbe({}, seen);
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', working_directory: 'nodeapp', proxy_path: 'node', port: 3000 }, ctx);
     expect(r.isError).toBeUndefined();
-    expect(seen.map((s) => s.path)).toEqual(['/node/']);
+    expect(seen.map((s) => s.path)).toEqual(['/node', '/node/']);
     expect(f.calls.some((c) => c.method === 'POST')).toBe(true);
     expect(r.text).not.toMatch(/would replace|replaced/);
     expect(r.text).not.toMatch(/could not be checked/);
+    expect(r.structured).not.toHaveProperty('replaced');
   });
 
   it('proceeds with replace_existing_path and records what the app replaced', async () => {
     const sink: { body?: unknown } = {};
     const { ctx, f } = await makeContext(routes(sink));
-    ctx.httpProbe = pathProbe({ '/node/': 301 });
+    ctx.httpProbe = pathProbe({ '/node': { status: 301, location: 'https://vahi.dev/node/' } });
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', working_directory: 'nodeapp', proxy_path: 'node', port: 3000, replace_existing_path: true }, ctx);
     expect(r.isError).toBeUndefined();
     expect(f.calls.some((c) => c.method === 'POST')).toBe(true);
     expect(r.text).toMatch(/replaced/);
-    expect(r.text).toContain('HTTP 301');
+    expect(r.text).toContain('HTTP 301 on /node: an existing directory in public_html');
+    // Machine-readable, so a caller that has to put the replaced content back knows what it was.
+    expect(r.structured).toMatchObject({ created: true, replaced: { status: 301, path: '/node' } });
   });
 
   it('creates anyway when the preflight cannot run, and says the path was not checked', async () => {
@@ -339,8 +381,10 @@ describe('persistent_app_create path preflight', () => {
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', serve_at_root: true, port: 3000 }, ctx);
     expect(r.isError).toBe(true);
     expect(r.text).toContain('ENTIRE site');
-    expect(r.text).toContain('HTTP 200');
+    expect(r.text).toContain('HTTP 200 on /');
     expect(r.text).toMatch(/subdomain/);
+    // Every refusal in this server says what did not happen, and this one is no exception.
+    expect(r.text).toMatch(/Nothing was sent to the panel/);
     expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
   });
 
@@ -419,11 +463,21 @@ describe('persistent_app_update', () => {
     ctx.httpProbe = pathProbe({ '/demo-login/': 200 }, seen);
     const r = await callTool(byName(tools, 'persistent_app_update'), { website: 'vahi.dev', app_id: APP_ID, proxy_path: 'demo-login' }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('HTTP 200');
+    expect(r.text).toContain('HTTP 200 on /demo-login/');
     expect(r.text).toContain('replace_existing_path');
-    expect(seen.map((s) => s.path)).toEqual(['/demo-login/']);
+    expect(seen.map((s) => s.path)).toEqual(['/demo-login', '/demo-login/']);
     expect(f.calls.some((c) => c.method === 'PATCH')).toBe(false);
     expect(r.structured).toMatchObject({ updated: false });
+  });
+
+  it('moves the proxy anyway with replace_existing_path and records what it replaced', async () => {
+    const { ctx, f } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }, { method: 'PATCH', path: appPath }]);
+    ctx.httpProbe = pathProbe({ '/demo-login/': 200 });
+    const r = await callTool(byName(tools, 'persistent_app_update'), { website: 'vahi.dev', app_id: APP_ID, proxy_path: 'demo-login', replace_existing_path: true }, ctx);
+    expect(r.isError, r.text).toBeUndefined();
+    expect(f.calls.some((c) => c.method === 'PATCH')).toBe(true);
+    expect(r.text).toMatch(/replaced/);
+    expect(r.structured).toMatchObject({ updated: true, replaced: { status: 200, path: '/demo-login/' } });
   });
 
   it('does not preflight an update that leaves the proxy path where it is', async () => {
@@ -504,6 +558,16 @@ describe('persistent_app_delete', () => {
     const { ctx: gated, f: f2 } = await makeContext(noApps());
     await expect(del.target!(del.input.parse({ website: 'vahi.dev', app_id: APP_ID }), gated)).rejects.toThrow(/not enabled/);
     expect([...f.calls, ...f2.calls].some((c) => c.method === 'DELETE')).toBe(false);
+  });
+
+  it('previews a whole-site app as served at the domain root, with no double slash', async () => {
+    const rootApp = { ...persistentApp, proxyDetails: { path: '', port: 3000, allowWebSocketUpgrade: false } };
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: [rootApp] }]);
+    const del = byName(tools, 'persistent_app_delete');
+    const args = del.input.parse({ website: 'vahi.dev', app_id: APP_ID });
+    const preview = await del.preview!(args, ctx, await del.target!(args, ctx));
+    expect(preview).toContain('served at https://vahi.dev/');
+    expect(preview).not.toContain('https://vahi.dev//');
   });
 
   it('cannot be made to forge an extra preview line from a hostile proxy path', async () => {
@@ -610,6 +674,43 @@ describe('persistent_app_probe', () => {
     expect(r.text).toMatch(/outside \/node\//);
     // The app itself is up: only its HTML is wrong, and the structured content has to keep saying so.
     expect(r.structured).toMatchObject({ status: 200, reachable: true, assets: { checked: 1, failed: [{ url: '/next.svg', status: 404, outsidePrefix: true }] } });
+  });
+
+  it('reports a 401/403 asset as access-controlled instead of failing the deploy', async () => {
+    // A guarded asset is served, just not to an anonymous probe: calling that a broken deploy would
+    // fail a site that works for the people who are allowed in.
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    ctx.httpProbe = pathProbe({ '/node/': { status: 200, body: '<img src="/node/private.png"><img src="/node/ok.png">' }, '/node/private.png': 403, '/node/ok.png': 200 });
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toMatch(/access-controlled/);
+    expect(r.text).toContain('/node/private.png');
+    expect(r.structured).toMatchObject({ assets: { checked: 2, failed: [], restricted: [{ url: '/node/private.png', status: 403 }] } });
+  });
+
+  it('fails only on 404, 410, 5xx and no answer, not on every non-2xx', async () => {
+    for (const [status, fails] of [[404, true], [410, true], [500, true], [503, true], [405, false], [302, false]] as const) {
+      const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+      ctx.httpProbe = pathProbe({ '/node/': { status: 200, body: '<img src="/node/a.png">' }, '/node/a.png': status });
+      const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+      expect(r.isError, String(status)).toBe(fails ? true : undefined);
+      expect((r.structured as { assets: { failed: unknown[] } }).assets.failed, String(status)).toHaveLength(fails ? 1 : 0);
+    }
+  });
+
+  it('probes a whole-site app on "/" and never calls its assets outside a prefix', async () => {
+    // A root app owns every URL, so there is no prefix to be outside of — and no proxy_path to
+    // pass either, which is why app_id is the only way to probe one.
+    const rootApp = { ...persistentApp, proxyDetails: { path: '', port: 3000, allowWebSocketUpgrade: false } };
+    const seen: ProbeRequest[] = [];
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: [rootApp] }]);
+    ctx.httpProbe = pathProbe({ '/': { status: 200, body: '<img src="/logo.svg">' }, '/logo.svg': 404 }, seen);
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(seen.map((s) => s.path)).toEqual(['/', '/', '/logo.svg']);
+    expect(r.isError).toBe(true);
+    expect(r.structured).toMatchObject({ url: 'https://vahi.dev/', assets: { failed: [{ url: '/logo.svg', outsidePrefix: false }] } });
+    expect(r.text).not.toMatch(/outside/);
+    expect(byName(tools, 'persistent_app_probe').description).toMatch(/serve_at_root.*app_id|app_id.*serve_at_root/s);
   });
 
   it('checks no assets for a non-HTML response or when check_assets is off', async () => {

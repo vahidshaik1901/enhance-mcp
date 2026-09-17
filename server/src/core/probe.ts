@@ -20,6 +20,9 @@ export interface ProbeResponse {
   body: string;
   /** `valid`, `placeholder` (the panel's self-signed 1975 certificate), or `error:<reason>`. */
   certificate: string;
+  /** The `Location` header when the answer is a redirect (nothing is followed). Only ever used to
+   *  word what was seen: a bare `/dir` redirecting to `/dir/` is how an existing directory shows. */
+  location?: string | null;
 }
 
 export type HttpProbe = (req: ProbeRequest) => Promise<ProbeResponse>;
@@ -50,6 +53,14 @@ export function collectCapped(chunks: Buffer[], max: number): { body: string; hi
 
 /** `<img>`, `<script>` and `<link>` open tags, with their attribute text. */
 const ASSET_TAG_RE = /<(img|script|link)\b([^>]*)>/gi;
+/** The BODY of a `<script>` or `<style>` element; the open tag is kept, because a script's own
+ *  `src` is a real asset. Neither body is markup: `document.write('<img src="/x.png">')` and a
+ *  `background: url(…)` inside them are not references the page necessarily requests, and reading
+ *  them as tags invents assets that then "fail". */
+const SCRIPT_BODY_RE = /(<script\b[^>]*>)[\s\S]*?<\/script\s*>/gi;
+const STYLE_BODY_RE = /(<style\b[^>]*>)[\s\S]*?<\/style\s*>/gi;
+/** A commented-out tag is not fetched by anything, so it must not be checked either. */
+const COMMENT_RE = /<!--[\s\S]*?-->/g;
 /** One `name="value"`, `name='value'` or `name=value` pair inside a tag. */
 const ATTR_RE = /([A-Za-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
 /** The `rel` values whose target the browser fetches as part of rendering the page. */
@@ -65,13 +76,27 @@ function attributes(tag: string): Record<string, string> {
 }
 
 /**
+ * The URL of a `srcset`'s first candidate, or undefined when there is nothing to fetch. The list is
+ * `<url> <descriptor>, <url> <descriptor>`, and a URL may itself hold commas (`/a,b.png`) or be a
+ * `data:` URI whose base64 is full of them — so the split needs the whitespace that always follows
+ * the separating comma, and a `data:` candidate is dropped rather than cut in half.
+ */
+function firstSrcsetCandidate(value: string): string | undefined {
+  const first = value.trim().split(/\s*,\s+/)[0]?.trim();
+  if (first === undefined || first === '' || /^data:/i.test(first)) return undefined;
+  return first.split(/\s+/)[0];
+}
+
+/**
  * Pure: every reference in `html` that the browser would fetch from the page's own origin, as a
  * path on that origin (`/next.svg?a=1`), in document order, deduplicated and capped.
  *
  * Only same-origin references are returned: another host's 404 is not this deploy's problem, and
  * a `data:` URI, a fragment or a `javascript:` handler is nothing to fetch. A regex rather than a
- * DOM parser because the question is "which URLs does this page name", not "what does it mean" —
- * a missed attribute costs one unchecked asset, never a wrong verdict.
+ * DOM parser because the question is "which URLs does this page name", not "what does it mean".
+ * A missed attribute costs one unchecked asset; a reference read here that the browser would never
+ * request costs a FALSE failure, which is the worse error — so comments and the bodies of
+ * `<script>` and `<style>` are removed before anything is matched.
  */
 export function extractAssetUrls(html: string, pageUrl: string): string[] {
   let origin: string;
@@ -80,6 +105,9 @@ export function extractAssetUrls(html: string, pageUrl: string): string[] {
   } catch {
     return [];
   }
+  // Script and style bodies first: a `"<!--"` string inside one would otherwise open a comment
+  // that swallows the real markup after it.
+  const markup = html.replace(SCRIPT_BODY_RE, '$1').replace(STYLE_BODY_RE, '$1').replace(COMMENT_RE, '');
   const out: string[] = [];
   const seen = new Set<string>();
   const add = (raw: string | undefined): void => {
@@ -100,7 +128,7 @@ export function extractAssetUrls(html: string, pageUrl: string): string[] {
     seen.add(path);
     out.push(path);
   };
-  for (const tag of html.matchAll(ASSET_TAG_RE)) {
+  for (const tag of markup.matchAll(ASSET_TAG_RE)) {
     const name = tag[1]!.toLowerCase();
     const attrs = attributes(tag[2] ?? '');
     if (name === 'link') {
@@ -111,7 +139,7 @@ export function extractAssetUrls(html: string, pageUrl: string): string[] {
     add(attrs['src']);
     // A srcset lists `<url> <descriptor>` candidates: the first one is enough to tell whether the
     // app serves that family of images at all.
-    if (attrs['srcset'] !== undefined) add(attrs['srcset'].split(',')[0]?.trim().split(/\s+/)[0]);
+    if (attrs['srcset'] !== undefined) add(firstSrcsetCandidate(attrs['srcset']));
   }
   return out;
 }
@@ -153,7 +181,7 @@ export const httpsProbe: HttpProbe = (req) =>
         const certificate = classifyCertificate(socket?.getPeerCertificate?.() as CertLike | undefined, req.host, socket?.authorized === true, authError ? String(authError) : undefined);
         const chunks: Buffer[] = [];
         let size = 0;
-        const answer = (): ProbeResponse => ({ status: res.statusCode ?? 0, latencyMs: Date.now() - started, contentType: res.headers['content-type'] ?? null, body: collectCapped(chunks, req.maxBodyBytes).body, certificate });
+        const answer = (): ProbeResponse => ({ status: res.statusCode ?? 0, latencyMs: Date.now() - started, contentType: res.headers['content-type'] ?? null, body: collectCapped(chunks, req.maxBodyBytes).body, certificate, location: res.headers['location'] ?? null });
         res.on('data', (c: Buffer) => {
           if (size < req.maxBodyBytes) {
             const pushed = c.subarray(0, req.maxBodyBytes - size);
