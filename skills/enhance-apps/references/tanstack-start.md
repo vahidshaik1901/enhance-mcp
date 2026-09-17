@@ -40,7 +40,7 @@ The scaffold ships no `start` script, so add this one to `package.json` before u
 "scripts": { "start": "node --env-file=.env .output/server/index.mjs" }
 ```
 
-## Upload and build
+## Upload (skill step 8)
 
 The exclude list the trial used (**verified live 2026-09-17**):
 
@@ -49,24 +49,28 @@ The exclude list the trial used (**verified live 2026-09-17**):
 rsync -rltvz --exclude .git --exclude node_modules --exclude .output --exclude .env \
   --exclude dist --exclude build --exclude .tanstack --exclude .nitro \
   <src>/ <user>@<host>:startapp/
-
-# on the server
-ssh <user>@<host> '. ~/.nvm/nvm.sh && cd startapp && npm ci && npm run build'
 ```
 
 `.tanstack` and `.nitro` are build caches; uploading them wastes time and can confuse the build.
 
-Trial timings on the container: `npm ci` 4 s, `npm run build` 2 s. The build writes `.output/`.
-
-## Env file (`<app dir>/.env`, written on the server)
+## Env file (`<app dir>/.env`) — on the server BEFORE install and build (skill step 9)
 
 ```
 PORT=3000
 ```
 
-The Nitro server entry reads `NITRO_PORT ?? PORT`, so either name works; `PORT` keeps it consistent
-with the other recipes. The command cannot carry it — the panel execs argv with no shell and injects
-no `PORT`.
+`chmod 600`, never in the rsync, never committed. The Nitro server entry reads `NITRO_PORT ?? PORT`,
+so either name works; `PORT` keeps it consistent with the other recipes. The command cannot carry it
+— the panel execs argv with no shell and injects no `PORT`. Write it before the build so anything the
+customer's app reads from the environment at build time sees the same file the running app will.
+
+## Install and build (skill steps 10 and 12 — no migrations in between)
+
+```sh
+ssh <user>@<host> '. ~/.nvm/nvm.sh && cd startapp && npm ci && npm run build'
+```
+
+Trial timings on the container: `npm ci` 4 s, `npm run build` 2 s. The build writes `.output/`.
 
 ## Register the app
 
@@ -83,20 +87,20 @@ persistent_app_create website=<site> command="npm start" working_directory=start
 
 None.
 
-## First admin
-
-The framework ships no admin and no authentication, so there is nothing to claim — but say that
-plainly: **everything the app serves is public from the moment it answers.** If the customer's app
-has its own login, their code owns that story; ask whether anything sensitive is in the build before
-handing over the URL.
-
-## Verification
+## Verification (skill step 14) — before the customer is told anything
 
 - `persistent_app_probe website=<site> app_id=<id>` → HTTP 200, certificate valid, assets all
   answered (2/2 in the trial).
 - `persistent_app_log` → the listening line
   (`Listening on: http://localhost:3000/ (all interfaces)` in the trial), no stack traces.
 - `curl -sS -o /dev/null -w '%{http_code}' https://<domain>/` and one client-side route.
+
+## First admin (skill step 15)
+
+The framework ships no admin and no authentication, so there is nothing to claim — but say that
+plainly: **everything the app serves is public from the moment it answers.** If the customer's app
+has its own login, their code owns that story; ask whether anything sensitive is in the build before
+handing over the URL.
 
 ## What to back up
 

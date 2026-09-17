@@ -22,10 +22,13 @@ browser editing.
   trial — it booted in 4.9 s and ran its migrations and seed without complaint — but it is an
   unsupported combination upstream, so a future Ghost release could break it.
 
-## Install (on the server, not locally)
+## Install (on the server, not locally — skill steps 8 and 10 in one)
 
-ghost-cli downloads Ghost itself; there is nothing to scaffold or rsync. **Verified live
-2026-09-17** — this exact command, run over SSH with nvm loaded:
+ghost-cli downloads Ghost itself; there is nothing to scaffold, nothing to rsync and **no build
+step**, so the config and `.env` below are written between this install and the first start, which is
+where the canonical order puts them (step 9 is "config before anything runs", and nothing runs until
+step 13). The database (step 7) must already exist, because its credentials go into the config.
+**Verified live 2026-09-17** — this exact command, run over SSH with nvm loaded:
 
 ```sh
 ssh <user>@<host> '. ~/.nvm/nvm.sh && npx --yes ghost-cli@latest install \
@@ -46,7 +49,7 @@ Every flag is load-bearing:
 - `--no-stack` — no nginx/systemd stack checks; the panel is the web server and the process manager.
 - `--no-setup` / `--no-prompt` — no interactive wizard; the config below is written by hand.
 
-## Configuration (`<home>/ghost/config.production.json`)
+## Configuration (`<home>/ghost/config.production.json`) — skill step 9, before anything runs
 
 ```json
 {
@@ -75,10 +78,11 @@ Every flag is load-bearing:
 - `process: "local"` — Ghost's systemd mode does not exist in the container.
 - `contentPath` is absolute (`<home>/ghost/content`) and is where images, themes and member data
   live.
-- Write the file over SSH with a heredoc; never commit it and never echo the password again
+- Write the file over SSH with a heredoc and `chmod 600` it. The database password belongs in this
+  config and nowhere else — not in another file, not in a commit, not in a later message
   (safety rule 10).
 
-## Env file (`<home>/ghost/.env`)
+## Env file (`<home>/ghost/.env`) — skill step 9 as well
 
 ```
 NODE_ENV=production
@@ -97,27 +101,12 @@ persistent_app_create website=<site> command="node --env-file=.env current/index
 
 `current/index.js` is the symlink ghost-cli maintains, so the command survives a `ghost update`.
 
-## Migrations
+## Migrations (skill step 11)
 
 None to run by hand: Ghost migrates and seeds its own database on first boot (4.9 s in the trial).
 Read `persistent_app_log` once and confirm it finished before opening the admin.
 
-## First admin
-
-`https://<domain>/ghost/` is an **open owner-creation screen** until someone claims it. Claim it
-immediately (skill section 4).
-
-- Preferred: create the owner through Ghost's own setup endpoint
-  (`POST /ghost/api/admin/authentication/setup/` with the name, email, password and blog title).
-  **Not exercised in the trial** — if you use it, read the response and then confirm with the status
-  below rather than assuming it worked.
-- Verified fallback: send the customer to `https://<domain>/ghost/` right away with the name, email
-  and generated password, and stay with them until the account exists.
-- Confirm afterwards: `https://<domain>/ghost/` shows a **sign-in** form, not "create your account".
-
-Then hand over URL, email and password once, and tell them to enable 2FA in Ghost's settings.
-
-## Verification
+## Verification (skill step 14) — before the customer is told anything
 
 - `persistent_app_probe website=<site> app_id=<id>` → 200 with the page's assets answering
   (7 assets, all OK in the trial).
@@ -125,6 +114,23 @@ Then hand over URL, email and password once, and tell them to enable 2FA in Ghos
   webhook self-fetch error at boot, logged while the site was not yet being served. Anything else is
   a problem.
 - `curl` each of `/`, `/ghost/` and `/rss/` — all 200 in the trial.
+
+## First admin (skill step 15) — only once the checks above passed
+
+`https://<domain>/ghost/` is an **open owner-creation screen** until someone claims it. Claim it
+immediately (skill section 5).
+
+- **The documented path, verified live:** send the customer to `https://<domain>/ghost/` — the URL
+  you have just loaded yourself — with the name, email and generated password, and stay with them
+  until the account exists.
+- **Option, not exercised in the trial:** Ghost's own setup endpoint
+  (`POST /ghost/api/admin/authentication/setup/` with the name, email, password and blog title).
+  Confirm the request shape against Ghost's current Admin API documentation before relying on it, and
+  whatever the response says, verify with the check below rather than assuming it worked.
+- Confirm afterwards (skill step 16): `https://<domain>/ghost/` shows a **sign-in** form, not
+  "create your account".
+
+Then hand over URL, email and password once, and tell them to enable 2FA in Ghost's settings.
 
 ## Outgoing mail
 

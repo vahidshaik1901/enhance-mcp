@@ -34,41 +34,30 @@ It produced **Payload 3.89.0, Next 16.3.3, `@payloadcms/db-sqlite`**, and wrote 
 
 **`--no-deps` is the trial's choice, not a recommendation.** It skips the install, so the scaffold
 has **no `package-lock.json`** — which is why the server step below is `npm install` and not
-`npm ci`. For a real customer project, **scaffold with dependencies** (drop `--no-deps`) so a
-lockfile exists and the server build is a reproducible `npm ci`. Nothing else about the recipe
-changes.
-
-Generate the migrations locally straight after scaffolding (see "Migrations" — this is the
-trap that cost the trial the most time):
+`npm ci`. For a real customer project, **scaffold with dependencies** (drop `--no-deps`): a lockfile
+exists, the server build is a reproducible `npm ci`, and — because the `payload` binary is then
+installed locally — you can generate the migrations before you upload:
 
 ```sh
-npm run payload -- migrate:create initial
+npm run payload -- migrate:create initial   # only with a dependency-installed scaffold
 ```
 
-and commit the generated `src/migrations/` (or wherever the template puts them) so they travel with
-the upload.
+Commit the generated `src/migrations/` (or wherever the template puts them) so they travel with the
+upload, and the server then only runs `payload migrate`.
 
-## Upload and build
+With `--no-deps` there is **no local `payload` binary**, so nothing can be generated locally; the
+migrations are created on the server after `npm install` instead (see "Migrations"). Nothing else
+about the recipe changes.
+
+## Upload (skill step 8)
 
 ```sh
 # local, sandbox disabled
 rsync -rltvz --exclude .git --exclude node_modules --exclude .env --exclude .next \
   --exclude '*.db' <src>/ <user>@<host>:payloadapp/
-
-# on the server
-ssh <user>@<host> '. ~/.nvm/nvm.sh && cd payloadapp && npm install && npm run build'
 ```
 
-`npm install`, **not `npm ci`**, because the trial's `--no-deps` scaffold shipped no lockfile. If
-you scaffolded with dependencies (the recommendation above), upload the lockfile and use `npm ci`.
-
-`npm install` plus `next build` took 36 s in the trial with no out-of-memory kill, on a 3.9 GB
-container with about 2.4 GB free. If the template's build script carries
-`NODE_OPTIONS=--max-old-space-size=8000`, that is a **ceiling, not a requirement** — leave it, it
-costs nothing. (It works inside `package.json` because npm runs scripts through a shell; the
-persistent-app command has no shell and could not carry it.)
-
-## Env file (`<app dir>/.env`, written on the server)
+## Env file (`<app dir>/.env`) — on the server BEFORE install and build (skill step 9)
 
 ```
 DATABASE_URL=file:./payload.db
@@ -77,36 +66,55 @@ PAYLOAD_SECRET=<32+ random characters>
 
 The scaffolder writes this file locally with both values. The trial copied it to the server with a
 single `scp` and **never** let it into the rsync (the rsync excludes `.env`, and a heredoc over SSH
-works just as well). Either way it must never be committed.
+works just as well); `chmod 600` it there. Either way it must never be committed.
+
+**It has to be in place before the build, not after it.** `payload.config.ts` reads
+`PAYLOAD_SECRET` and `DATABASE_URL` at import time, and both `next build` and the `payload` CLI
+import that config — without the file they fail or build against the wrong database.
 
 Next.js loads `.env` from the working directory itself, so `npm start` picks these up without
 `--env-file`. The template's start script is
 `cross-env NODE_OPTIONS=--no-deprecation next start`, and `next start` listens on **3000** unless
 the script passes `-p` — which is why the trial registered port 3000.
 
-## Migrations — run them before the first start
+## Install, migrate, build (skill steps 10–12)
 
-**The trap, verified live.** The SQLite adapter only pushes the schema automatically in
-*development*. Started with `next start` in production, Payload created `payload.db` as a **0-byte
-file** and the blank template ships no migrations, so:
+In that order, on the server in the app directory with nvm loaded:
+
+```sh
+ssh <user>@<host> '. ~/.nvm/nvm.sh && cd payloadapp && npm install'
+ssh <user>@<host> '. ~/.nvm/nvm.sh && cd payloadapp && npm run payload -- migrate:create initial'
+ssh <user>@<host> '. ~/.nvm/nvm.sh && cd payloadapp && npm run payload -- migrate'
+ssh <user>@<host> '. ~/.nvm/nvm.sh && cd payloadapp && npm run build'
+```
+
+`npm install`, **not `npm ci`**, because the trial's `--no-deps` scaffold shipped no lockfile. If you
+scaffolded with dependencies (the recommendation above), upload the lockfile, use `npm ci`, and skip
+the `migrate:create` line — the migrations came with the upload.
+
+`npm install` plus `next build` took 36 s in the trial with no out-of-memory kill, on a 3.9 GB
+container with about 2.4 GB free; `payload migrate` took 75 ms. If the template's build script
+carries `NODE_OPTIONS=--max-old-space-size=8000`, that is a **ceiling, not a requirement** — leave
+it, it costs nothing. (It works inside `package.json` because npm runs scripts through a shell; the
+persistent-app command has no shell and could not carry it.)
+
+## Migrations — the trap, and why they come before the build
+
+**Verified live.** The SQLite adapter only pushes the schema automatically in *development*. Started
+with `next start` in production, Payload created `payload.db` as a **0-byte file** and the blank
+template ships no migrations, so:
 
 - `https://<domain>/admin` answered **HTTP 200**,
 - the browser showed "This page couldn't load" (the error is rendered client-side),
 - and `persistent_app_log` showed `SQLITE_ERROR: no such table: users`.
 
-Fix, on the server in the app directory with nvm loaded:
-
-```sh
-npm run payload -- migrate:create initial   # only if no migrations were committed
-npm run payload -- migrate                  # 75 ms in the trial
-```
-
-then restart: `persistent_app_update website=<site> app_id=<id> start_mode=automatic`. After that
-`/admin/login` and `/admin/create-first-user` answered 200 with no database errors in the log.
-
-**Rule:** generate the migrations locally, upload them, and run `payload migrate` on the server
-**before** the first start — ideally before `next build`. Never rely on the schema appearing by
-itself in production.
+**In the trial the migration was run afterwards, as the repair** — `migrate:create` + `migrate` on
+the server, then a restart with
+`persistent_app_update website=<site> app_id=<id> start_mode=automatic`, after which
+`/admin/login` and `/admin/create-first-user` answered 200 with no database errors in the log. The
+order above is the corrected one: **migrate before the build and therefore long before the first
+start**, so the app never serves a request against an empty database. Never rely on the schema
+appearing by itself in production.
 
 ## Register the app
 
@@ -115,27 +123,28 @@ persistent_app_create website=<site> command="npm start" working_directory=paylo
   serve_at_root=true port=3000
 ```
 
-## First admin
-
-`https://<domain>/admin` shows **"Create first user"** to anyone who finds it until it is claimed.
-Claim it immediately (skill section 4).
-
-- Payload exposes the first-user creation over its REST API (`POST /api/users` while no user
-  exists). **Not exercised in the trial** — if you use it, check the response body and then confirm
-  with the page below.
-- Verified path: send the customer to `https://<domain>/admin/create-first-user` right away with the
-  name, email and generated password, and stay with them. The trial's admin was created this way and
-  the customer confirmed it works.
-- Confirm afterwards: `/admin` now lands on the **login** form, not the create-first-user screen.
-
-`GET /api/users` answering **403** while signed out is correct, not a fault.
-
-## Verification
+## Verification (skill step 14) — before the customer is told anything
 
 - `persistent_app_probe website=<site> app_id=<id>` → 200 with its assets answering.
 - **`persistent_app_log`** → no `SQLITE_ERROR`, no stack traces. This is the check that catches the
   empty-database failure; the status code does not.
 - `curl` `/`, `/admin`, `/admin/login`, and open `/admin` in a browser when the customer is there.
+
+## First admin (skill step 15) — only once the checks above passed
+
+`https://<domain>/admin` shows **"Create first user"** to anyone who finds it until it is claimed.
+Claim it immediately (skill section 5).
+
+- Payload exposes the first-user creation over its REST API (`POST /api/users` while no user
+  exists). **Not exercised in the trial** — if you use it, check the response body and then confirm
+  with the page below.
+- Verified path: send the customer to `https://<domain>/admin/create-first-user` — which you have
+  just loaded yourself — with the name, email and generated password, and stay with them. The
+  trial's admin was created this way and the customer confirmed it works.
+- Confirm afterwards (skill step 16): `/admin` now lands on the **login** form, not the
+  create-first-user screen.
+
+`GET /api/users` answering **403** while signed out is correct, not a fault.
 
 ## What to back up
 
@@ -148,7 +157,8 @@ Claim it immediately (skill section 4).
 
 | Trap | What you see | Fix |
 |---|---|---|
-| Empty database in production | `/admin` 200 but "This page couldn't load"; log: `no such table: users` | `payload migrate:create` + `payload migrate`, then restart; run migrations before the first start |
+| Empty database in production | `/admin` 200 but "This page couldn't load"; log: `no such table: users` | `payload migrate:create` + `payload migrate`, then restart; in the recipe order they run **before the build**, so the app never starts against an empty database |
+| `.env` written after the build | the build fails, or builds against the wrong database | the env file goes on the server before `npm install`; the config reads `PAYLOAD_SECRET`/`DATABASE_URL` at import time |
 | Verifying by status code | a 200 that is broken in the browser | probe **and** read the log **and** load `/admin/login` |
 | `PORT` not honoured | app answers nothing on the proxy port | `next start` defaults to 3000; register that port or pass `-p <port>` in the start script |
 | An 8 GB heap flag in the build script | looks like a 8 GB requirement | it is a ceiling; the 3.9 GB container built in 36 s |

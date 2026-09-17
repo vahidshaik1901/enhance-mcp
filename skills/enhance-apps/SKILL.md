@@ -57,22 +57,29 @@ and limits, uses one of your website slots, and it is the only way to run a Node
 - Check the slot first: `subscriptions_list` shows the website quota and its usage. If it is full,
   stop and tell the customer; do not delete anything to make room (safety rule 4).
 
-## 2. The common flow
+## 2. The one canonical order
 
-Every recipe runs these steps in this order. Say which step you are on. Stop and report whenever
-the customer has to act outside Claude Code (DNS at their registrar, a setup screen in a browser).
+Every install runs these seventeen steps **in this order**, and every recipe in
+`references/` follows it. It is written out once, here; if a recipe seems to ask for a different
+order, this list wins. Say which step you are on, and stop and report whenever the customer has to
+act outside Claude Code (DNS at their registrar, a setup screen in a browser).
 
-1. **Domain.** `domain_check`. `notInUse` → `website_create domain=<subdomain>` (mode B) or
-   `domain_add` (mode A, non-Node only). `inUseCurrentOrg` → `website_get` and reuse that site.
-   `inUseAnotherOrg`, `prohibited`, `inUseDeletedSite` → stop and explain.
+1. **Layout choice** — section 1. Ask first, wait for the answer, and steer a Node app to mode B
+   (its own website). Check the slot with `subscriptions_list` before promising anything.
+2. **Domain check and website.** `domain_check`. `notInUse` → `website_create domain=<subdomain>`
+   (mode B) or `domain_add` (mode A, non-Node only). `inUseCurrentOrg` → `website_get` and reuse that
+   site. `inUseAnotherOrg`, `prohibited`, `inUseDeletedSite` → stop and explain.
+   - **Pass `subscription_id`** when more than one subscription has free website quota:
+     `website_create` only picks by itself when exactly one does, and otherwise stops and lists the
+     eligible ones. The same `subscriptions_list` call that shows the free slot gives you the id.
    - **Create sites one at a time.** Verified live: four `website_create` calls issued in parallel
      returned two client-side timeouts ("operation was aborted due to timeout") although the panel
      had created both sites. On a timeout, **do not retry** — run `domain_check` and report what it
      says (`inUseCurrentOrg` means the site exists).
-2. **Capabilities.** `website_get`. Confirm `canUse.persistentApps` for a Node app, and the
-   subscription's `featureSSH`. Note `unixUser`, `home`, `serverIp` and the preview domain.
-3. **DNS.** `domain_dns_status`, then relay `domain_dns_records` advice verbatim. For a family of
-   subdomains, one wildcard `A` record (`*.<domain>` → the site's IP, **DNS only / no CDN proxy**)
+   - Then `website_get`: confirm `canUse.persistentApps` for a Node app and the subscription's
+     `featureSSH`, and note `unixUser`, `home`, `serverIp` and the preview domain.
+3. **DNS note.** `domain_dns_status`, then relay `domain_dns_records` advice verbatim. For a family
+   of subdomains, one wildcard `A` record (`*.<domain>` → the site's IP, **DNS only / no CDN proxy**)
    covers them all; otherwise one `A` record per subdomain. Never touch the registrar yourself.
 4. **SSL.** Once DNS resolves, `domain_ssl_issue`, then `domain_ssl_get` to confirm a real issuer,
    then offer `domain_set_force_ssl enabled=true`. An admin login must not be handed over on a
@@ -82,9 +89,11 @@ the customer has to act outside Claude Code (DNS at their registrar, a setup scr
      `www.<sub>.vahi.dev`, expiring 2026-12-16 — with DNS a single wildcard `A` record at
      Cloudflare, **DNS only / proxy off**. A wildcard record is enough; each site still needs its
      own `domain_ssl_issue`.
-5. **SSH.** `ssh_keys_list`; add the key with `ssh_key_add` if it is missing; `ssh_connection_info`
-   for the login line. A mode-B subdomain is a **separate container with its own unix user**, so the
-   key has to be added per site. `ssh` and `rsync` need the sandbox disabled (safety rule 7).
+5. **SSH key.** `ssh_keys_list`. If the customer's public key is not listed, read **the public key**
+   (`~/.ssh/id_ed25519.pub`, or ask which key they want to use) and call `ssh_key_add` — never read,
+   ask for or send a private key. `ssh_connection_info` gives the login line. A mode-B subdomain is a
+   **separate container with its own unix user**, so the key has to be added per site. `ssh`, `scp`
+   and `rsync` need the sandbox disabled (safety rule 7).
 6. **Node runtime.** `node_versions_installed` is a hint only (it omits the version nvm's `default`
    alias points at); `. ~/.nvm/nvm.sh && nvm ls` over SSH is the truth. The **verified sequence**
    (2026-09-17, on all four trial sites):
@@ -97,13 +106,17 @@ the customer has to act outside Claude Code (DNS at their registrar, a setup scr
    leaves that as the `default` alias — 26.9.0 in the trial — which is not what these apps want. All
    three steps, in that order; then all four stacks ran on v22.23.2 through the `default` alias with
    nothing pinned on the app. Allow a minute for `node_install`.
-7. **Database**, only when the recipe needs one. Use the `enhance-database` skill: `db_create`,
-   `db_user_create` (password shown once), `db_user_set_privileges grants=["all"]`. Keep the **full
-   prefixed names**. Read "MySQL from Node" below before writing the config.
-8. **Scaffold or fetch the app.** Either scaffold locally and upload (TanStack Start, Payload,
-   EmDash) or run the app's own installer on the server (Ghost). Pick a **finished theme or
-   template**, never a bare starter — see step 12.
-9. **Upload with rsync**, sandbox disabled, dry run first:
+7. **Database**, only when the app needs MySQL. Use the `enhance-database` skill: `db_create`,
+   `db_user_create` (password shown once), then all four arguments on the grant call:
+   ```
+   db_user_set_privileges website=<site> username=<db user> database=<db name> grants=["all"]
+   ```
+   Keep the **full prefixed names** (`<unixUser>_<name>`) the create calls returned. Read "MySQL from
+   Node" in section 3 before writing the config.
+8. **Scaffold and upload.** Either scaffold locally and upload (TanStack Start, Payload, EmDash) or
+   run the app's own installer on the server and upload nothing (Ghost). Pick a **finished theme or
+   template**, never a bare starter (section 4). The upload is rsync, sandbox disabled, dry run
+   first:
    ```sh
    rsync -rltvz --dry-run --exclude .git --exclude node_modules --exclude .env \
      --exclude .next --exclude .output --exclude dist --exclude build \
@@ -112,18 +125,22 @@ the customer has to act outside Claude Code (DNS at their registrar, a setup scr
    Use `-rltvz`, never `-a` (it would copy this machine's modes onto the server). The `<app dir>` is
    a **named directory in the home** (`<home>/ghost`, `<home>/payloadapp`), never `public_html` and
    never the home root. Never upload a local `.env` or a local database file.
-10. **Install and build on the server**, over SSH in the `<app dir>` with nvm loaded
-    (`. ~/.nvm/nvm.sh && cd <app dir> && …`): `npm ci` (frameworks need dev dependencies to build,
-    so not `--omit=dev`), then the build. `npm ci` needs a lockfile — a scaffold created without
-    dependencies has none, and then it is `npm install` (Payload's recipe; prefer scaffolding *with*
-    dependencies so `npm ci` works). Building in the container is fine on this plan — the trial built
-    Next.js, Astro and Nitro on a 3.9 GB box with no memory kill.
-11. **Put `.env` on the server** — a heredoc over SSH, or `scp` of the file the scaffolder generated
-    (Payload). **Never in the rsync**, never committed. It holds the port, the database credentials
-    and any secret key the scaffolder generated (EmDash's `EMDASH_ENCRYPTION_KEY` must be the same
-    value on every redeploy).
-12. **Migrations, before the first start.** Recipes that need them say so. An app that starts
-    against an empty database can answer 200 and still be broken (Payload did exactly that).
+9. **Env/config file on the server — before anything is installed or built.** A heredoc over SSH, or
+   `scp` of the file the scaffolder generated (Payload), then `chmod 600`. **Never in the rsync**,
+   never committed. It holds the port, the database credentials and any secret the scaffolder
+   generated (EmDash's `EMDASH_ENCRYPTION_KEY` must stay the same value across redeploys of that
+   app). This is before the build because **builds read it**: Payload's config reads
+   `PAYLOAD_SECRET` and `DATABASE_URL` at import time and `next build` imports that config.
+10. **Install dependencies** over SSH in the `<app dir>` with nvm loaded
+    (`. ~/.nvm/nvm.sh && cd <app dir> && …`): `npm ci` — frameworks need dev dependencies to build,
+    so not `--omit=dev`. `npm ci` needs a lockfile; a scaffold created without dependencies has none
+    and then it is `npm install` (Payload's recipe; prefer scaffolding *with* dependencies so
+    `npm ci` works).
+11. **Migrations, before the build**, for apps that have them (Payload). An app that starts against
+    an empty database can answer 200 and still be wholly broken — Payload did exactly that. Recipes
+    that need no migration step say so.
+12. **Build.** Building in the container is fine on this plan — the trial built Next.js, Astro and
+    Nitro on a 3.9 GB box with no memory kill.
 13. **Register the app:**
     ```
     persistent_app_create website=<site> command="npm start" working_directory=<app dir name> \
@@ -134,11 +151,20 @@ the customer has to act outside Claude Code (DNS at their registrar, a setup scr
     is needed. It refuses if the site already serves something at its root — on a site created for
     this app, it does not. Add `node_version=<x.y.z>` when the recipe pins one, and
     `allow_websocket=true` for apps with live updates. Note the `id` it returns.
-14. **First admin** — section 4. Never skip it, never postpone it.
-15. **Verify** — section 5. All three checks.
-16. **Hand over** — section 6.
+14. **Verify — first, and before the customer is told anything** — section 4. All three checks:
+    `persistent_app_probe`, `persistent_app_log` read for errors, and the login/admin page loaded.
+    A broken install must never be handed to the customer as "it's ready, go and claim it".
+15. **First admin** — section 5. Only once step 14 passed. Never skip it, never postpone it.
+16. **Re-check that the setup screen is closed**: the app's setup status endpoint stops asking for
+    setup, or the admin URL now shows a login instead of "create first user".
+17. **Hand over** — section 6.
 
 ## 3. Panel facts that bite every Node app
+
+These facts are restated here so a recipe can be followed end to end, but their source is
+`enhance-deploy`'s Node sections ("Node layout (persistent apps)", "Node runtime", "PHP or static
+site plus a Node app"); if the two skills ever disagree, the research notes in `docs/research.md`
+win and **both** must be corrected.
 
 - **The command is argv, not a shell line.** The panel splits it on whitespace and execs it; there
   is no shell, so `NODE_ENV=production node x.js`, pipes, redirection and quoted arguments with
@@ -167,35 +193,7 @@ the customer has to act outside Claude Code (DNS at their registrar, a setup scr
 - **Ports:** the panel accepts duplicates without complaint, so check `persistent_apps_list` for a
   free one yourself. On a dedicated site the app's own default (3000, 2368, 4321) is fine.
 
-## 4. The first admin — never leave an installer unclaimed
-
-**Verified live 2026-09-17:** the moment each site answered, its installer was open to anyone on the
-internet — Ghost's `/ghost/` owner screen, Payload's `/admin` "Create first user", EmDash's setup
-wizard. Whoever reaches it first becomes the owner of the customer's site.
-
-Every install ends with a claimed admin account:
-
-1. **Ask up front**, before the install starts: the admin's **name** and **email address**. Some
-   installers take them on the command line; all of them need them at the end.
-2. **Generate a strong password** where the app accepts one (24+ random characters — `openssl rand
-   -base64 24`). Never reuse a password the customer typed in chat, and never invent one they gave
-   you for something else.
-3. **Create the account through the app's own API or CLI** when the recipe has a verified one.
-4. **Otherwise send the customer to the setup URL immediately** and stay with them until it is done.
-   EmDash's first admin is a **browser passkey** — it cannot be automated, a human must be at the
-   keyboard. Do not wander off to the next step while the window is open.
-5. **Verify the setup screen is closed**: the app's setup status endpoint stops asking for setup, or
-   the admin URL now shows a login instead of "create first user". Check, do not assume.
-6. **Hand the login over once**, in the chat and nowhere else (section 6).
-7. If the customer cannot claim it right now, say plainly that the installer is open to the
-   internet until they do, and offer to park the app —
-   `persistent_app_update website=<site> app_id=<id> start_mode=manual` stops the process (the URL
-   then answers 503) — until they are ready.
-
-**Never write credentials to a file, a commit, an issue or a log** (safety rule 10), and never
-repeat the password in a later message.
-
-## 5. Verification — a customer must never be the one to find a broken install
+## 4. Verification — a customer must never be the one to find a broken install
 
 A status code is not verification. **Verified live:** Payload's `/admin` answered **200** while the
 database had no tables at all and the browser showed "This page couldn't load"; the error was
@@ -225,6 +223,36 @@ carries the whole i18n catalogue, "an error occurred" strings included.
 **Default to a finished theme.** For a customer-facing install always pick the project's finished
 template (EmDash `blog`, marketing, portfolio) over a deliberately bare `starter`. Changing template
 later can mean a fresh database and a second setup.
+
+## 5. The first admin — never leave an installer unclaimed
+
+**Verified live 2026-09-17:** the moment each site answered, its installer was open to anyone on the
+internet — Ghost's `/ghost/` owner screen, Payload's `/admin` "Create first user", EmDash's setup
+wizard. Whoever reaches it first becomes the owner of the customer's site.
+
+This step comes **after** section 4, never before it: the customer is sent to a URL you have already
+loaded yourself. Every install then ends with a claimed admin account:
+
+1. **Ask up front**, before the install starts: the admin's **name** and **email address**. Some
+   installers take them on the command line; all of them need them at the end.
+2. **Generate a strong password** where the app accepts one (24+ random characters — `openssl rand
+   -base64 24`). Never reuse a password the customer typed in chat, and never invent one they gave
+   you for something else.
+3. **Create the account through the app's own API or CLI** when the recipe has a verified one.
+4. **Otherwise send the customer to the now-verified setup URL immediately** and stay with them
+   until it is done. EmDash's first admin is a **browser passkey** — it cannot be automated, a human
+   must be at the keyboard. Do not wander off to the next step while the window is open.
+5. **Re-check that the setup screen is closed**: the app's setup status endpoint stops asking for
+   setup, or the admin URL now shows a login instead of "create first user". Check, do not assume.
+6. **Hand the login over once**, in the chat and nowhere else (section 6).
+7. If the customer cannot claim it right now, say plainly that the installer is open to the
+   internet until they do, and offer to park the app —
+   `persistent_app_update website=<site> app_id=<id> start_mode=manual` stops the process (the URL
+   then answers 503) — until they are ready.
+
+Generated credentials — a database password, an app secret, an admin password — go **straight into
+the app config this install needs** (`chmod 600` on the server) and nowhere else: never into any
+other file, a commit, an issue or a log, and never repeated in a later message (safety rule 10).
 
 ## 6. Hand-over message
 

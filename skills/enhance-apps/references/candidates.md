@@ -45,15 +45,16 @@ a trial:
    the fallback is building locally and uploading the output — which is a different recipe shape.
 4. **The first-admin flow.** Is there a CLI or an API to create the first administrator
    (Strapi's `strapi admin:create-user`, Directus' `directus users create` / bootstrap env vars), or
-   is it a web wizard open to the internet until claimed? The skill's section 4 needs a concrete
-   answer per app.
+   is it a web wizard open to the internet until claimed? The skill's section 5 needs a concrete
+   answer per app, and it runs only after the verification in section 4.
 5. **Host and port from the environment.** The panel injects no `PORT` and execs argv with no shell,
    so the app must read `HOST`/`PORT` from a `.env` (loaded with `--env-file` or by the framework)
    or from its own config file.
 6. **Where uploads land**, so the backup advice is real: a database dump alone is never a backup.
-7. **Migrations before the first start.** Payload's empty-database failure (200 with no tables) is
-   the pattern to look for: does the app create its schema on boot in production, or does it need an
-   explicit migration/bootstrap step first?
+7. **Migrations before the build.** Payload's empty-database failure (200 with no tables) is the
+   pattern to look for: does the app create its schema on boot in production, or does it need an
+   explicit migration/bootstrap step first? The canonical order runs migrations at step 11, between
+   the install and the build, so the app never serves a request against an empty database.
 8. **Whether it wants to be at the root.** All four recipes use `serve_at_root=true`; an app that
    insists on a base path would need the proxy-path route instead, and the proxy strips the prefix.
 

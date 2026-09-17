@@ -13,9 +13,11 @@ newsletter/membership publication, Payload when the content model is written in 
 ## Requirements
 
 - Mode B: a website of its own (`website_create`), app registered with `serve_at_root=true`.
-- **Node ≥ 22.16** — it uses `node:sqlite`. The trial ran v22.23.2 through nvm's `default` alias
-  (`node_install` → `node_version_install 22.23.2` → `node_version_set_default 22.23.2`); pin it on
-  the app with `node_version=` if the site's default may move below 22.16.
+- **Node ≥ 22.16**, per **EmDash's own documentation** (docs.emdashcms.com), because it uses
+  `node:sqlite`. That floor is upstream documentation, **not a trial finding** — nothing below it was
+  tested here. The trial ran **v22.23.2** through nvm's `default` alias (`node_install` →
+  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`); pin it on the app with
+  `node_version=` if the site's default may move below 22.16.
 - No database to provision: SQLite in a file inside the app directory.
 - `canUse.persistentApps`, `featureSSH`.
 
@@ -37,8 +39,9 @@ npm create --yes emdash@latest <name> -- --template blog --platform node --pm np
 - **Never a bare starter for a customer install.** Other finished templates: `marketing`,
   `portfolio`. Platforms: `node`, `cloudflare` — on Enhance it is always `node`.
 - The scaffolder generates an **`EMDASH_ENCRYPTION_KEY`** into the local `.env`. Keep it: it
-  encrypts stored secrets, so the same value has to travel to the server and stay the same across
-  redeploys.
+  encrypts secrets stored in that scaffold's database, so the same value has to travel to the server
+  and stay the same for every redeploy of that app directory. A new scaffold generates a new key and
+  starts a new database (see "Changing the template later").
 
 Change the start script to load the env file (the scaffold's own script does not):
 
@@ -46,31 +49,37 @@ Change the start script to load the env file (the scaffold's own script does not
 "scripts": { "start": "node --env-file=.env ./dist/server/entry.mjs" }
 ```
 
-## Upload and build
+## Upload (skill step 8)
 
 ```sh
 # local, sandbox disabled
 rsync -rltvz --exclude .git --exclude node_modules --exclude .env --exclude dist \
   --exclude '*.db' --exclude uploads <src>/ <user>@<host>:emdashapp/
+```
 
-# on the server
+## Env file (`<app dir>/.env`) — on the server BEFORE install and build (skill step 9)
+
+```
+HOST=0.0.0.0
+PORT=4321
+EMDASH_ENCRYPTION_KEY=<the key this scaffold generated>
+```
+
+`chmod 600` it, never rsync it, never commit it. `HOST=0.0.0.0` is required for the panel's proxy to
+reach the standalone Astro server. The command cannot carry any of these (argv, no shell, no
+injected `PORT`), which is why the start script uses `--env-file`.
+
+The canonical order puts this file ahead of every server step, so the build and the first start see
+the same values and the encryption key cannot change between them.
+
+## Install and build (skill steps 10 and 12 — nothing to migrate in between)
+
+```sh
 ssh <user>@<host> '. ~/.nvm/nvm.sh && cd emdashapp && npm ci && npm run build'
 ```
 
 Trial timings: `npm ci` 12–14 s, `astro build` about 10 s. The build writes
 `dist/server/entry.mjs`.
-
-## Env file (`<app dir>/.env`, written on the server)
-
-```
-HOST=0.0.0.0
-PORT=4321
-EMDASH_ENCRYPTION_KEY=<the key the scaffolder generated>
-```
-
-`HOST=0.0.0.0` is required for the panel's proxy to reach the standalone Astro server. The command
-cannot carry any of these (argv, no shell, no injected `PORT`), which is why the start script uses
-`--env-file`.
 
 ## Register the app
 
@@ -85,22 +94,7 @@ None to run. The database **auto-migrates and auto-seeds on the first request**,
 request yourself — `persistent_app_probe` does it — before looking at the setup status or telling
 the customer anything.
 
-## First admin — a passkey, so a human must do it
-
-While unclaimed, `GET https://<domain>/_emdash/api/setup/status` answers `{"needsSetup":true}` and
-the setup wizard is open to anyone who finds the site.
-
-**The first admin is created with a browser passkey. It cannot be automated.** So:
-
-1. Have the customer ready before you register the app.
-2. Send them to the site's setup URL the moment it answers, with the admin name and email.
-3. Stay with them until the passkey is created — do not move on to cleanup or hand-over.
-4. Confirm: `GET /_emdash/api/setup/status` no longer reports `needsSetup: true`.
-
-If they cannot do it now, say plainly that the setup wizard is open to the internet until they do,
-and offer to park the app (`persistent_app_update … start_mode=manual`) until they are ready.
-
-## Verification
+## Verification (skill step 14) — before the customer is told anything
 
 - `persistent_app_probe website=<site> app_id=<id>` → 200 with its assets answering. The `blog`
   template's page pulls a real stylesheet; if the page renders unstyled, you shipped `starter`.
@@ -110,24 +104,44 @@ and offer to park the app (`persistent_app_update … start_mode=manual`) until 
 - Do **not** grep the admin HTML for "error": it carries the whole i18n catalogue, "an error
   occurred" strings included, and they mean nothing.
 
+## First admin (skill step 15) — a passkey, so a human must do it
+
+While unclaimed, `GET https://<domain>/_emdash/api/setup/status` answers `{"needsSetup":true}` and
+the setup wizard is open to anyone who finds the site.
+
+**The first admin is created with a browser passkey. It cannot be automated.** So:
+
+1. Have the customer ready before you register the app.
+2. Run the verification above yourself first — the probe is also the first request that migrates and
+   seeds the database.
+3. Send them to the site's setup URL, which you have just checked, with the admin name and email.
+4. Stay with them until the passkey is created — do not move on to cleanup or hand-over.
+5. Confirm (skill step 16): `GET /_emdash/api/setup/status` no longer reports `needsSetup: true`.
+
+If they cannot do it now, say plainly that the setup wizard is open to the internet until they do,
+and offer to park the app (`persistent_app_update … start_mode=manual`) until they are ready.
+
 ## Changing the template later — the verified procedure
 
 A different template means a **fresh database**, so never edit the running app directory in place.
 The trial did this (**verified live 2026-09-17**):
 
-1. Scaffold the new template into a **new local folder** with the create command above.
-2. Copy the same `EMDASH_ENCRYPTION_KEY` into its `.env`, rsync it to a **new directory on the
-   server** (`emdashblog`, alongside the old one), then `npm ci && npm run build` there.
+1. Scaffold the new template into a **new local folder** with the create command above. It generates
+   its **own** `EMDASH_ENCRYPTION_KEY` — the trial used that new key, not the old one.
+2. rsync it to a **new directory on the server** (`emdashblog`, alongside the old one), write its own
+   `.env` there (new key, `HOST`, `PORT`), then `npm ci && npm run build`.
 3. Point the app at it: `persistent_app_update website=<site> app_id=<id>
    working_directory=emdashblog`. This restarts the container.
 4. **The old folder is kept**, untouched, with its database and uploads — it is the rollback, and
    the only copy of whatever was in the old admin. Remove it over SSH only when the customer says
    the new site is right.
 
-The site came up styled, with the setup wizard **open again** — the earlier setup did not carry
-over. So **decide the template before the customer claims the site**, and if you must switch
-afterwards, warn them first that the admin account and any content stay behind in the old
-directory.
+The site came up styled with a **fresh, empty database** and the setup wizard **open again** — the
+earlier setup did not carry over, because the new directory has its own database file. **Carrying
+the old database over — which would mean carrying the old `EMDASH_ENCRYPTION_KEY` with it — was not
+tried**, so do not promise it. So **decide the template before the customer claims the site**, and
+if you must switch afterwards, warn them first that the admin account and any content stay behind in
+the old directory and that setup has to be done again.
 
 ## What to back up
 

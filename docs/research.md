@@ -1003,8 +1003,10 @@ Verbatim, for the recipes in `skills/enhance-apps/references/`:
   script changed to `"node --env-file=.env ./dist/server/entry.mjs"`; `.env` held the scaffolder's
   `EMDASH_ENCRYPTION_KEY` plus `HOST=0.0.0.0` and `PORT=4321`. Server: `npm ci` 12–14 s,
   `npm run build` ~10 s. `persistent_app_create command="npm start" port=4321 serve_at_root=true`.
-  Switching template = a **new folder**, built there, then
+  Switching template = a **new folder** with its **own** generated
+  `EMDASH_ENCRYPTION_KEY` and a fresh database, built there, then
   `persistent_app_update working_directory=<new>` (restarts the container); the old folder is kept.
+  Carrying the old database (and with it the old key) into the new folder was **not tried**.
 
 ### Traps and fixes
 
@@ -1029,12 +1031,16 @@ Verbatim, for the recipes in `skills/enhance-apps/references/`:
   migrations, so `/admin` answered **HTTP 200** while the browser showed "This page couldn't load"
   and the log said `SQLITE_ERROR: no such table: users`. Fix on the server:
   `npm run payload -- migrate:create initial` then `npm run payload -- migrate` (75 ms), then restart
-  with `persistent_app_update start_mode=automatic`. **Rule:** generate migrations locally, commit
-  and upload them, run `payload migrate` on the server before the first start.
+  with `persistent_app_update start_mode=automatic`. **In the trial the migration therefore ran after
+  the first start, as the repair**; the recipe's corrected order is install → migrate → build, so the
+  app never serves a request against an empty database. **Rule:** generate migrations locally when the
+  scaffold has its dependencies (commit and upload them), otherwise create them on the server after
+  `npm install`, and run `payload migrate` **before the build**.
 - **Payload — the verification lesson.** The controller's own check had missed this because `/admin`
   returned 200 and the error was rendered client-side. Verification must load the **login** page and
-  read `persistent_app_log`, not just collect status codes. This is now rule 5 of the
-  `enhance-apps` skill.
+  read `persistent_app_log`, not just collect status codes. This is now **section 4** of the
+  `enhance-apps` skill, and it runs **before** the first-admin step (section 5), so a customer is
+  never sent to a setup URL nobody has loaded.
 - **EmDash — `node:starter` is intentionally unstyled.** The user reported the site "looks wrong";
   assets were all 200 and the deploy was correct — the `node:starter` template, which is the form
   EmDash's own docs show, ships "minimal styling … a base you can build on" by design. Fixed by
@@ -1044,7 +1050,9 @@ Verbatim, for the recipes in `skills/enhance-apps/references/`:
   directory means a **fresh database**, so setup had to be redone.
 - **EmDash — log and HTML noise.** `ExperimentalWarning` from `node:sqlite` on every start is
   normal, and the "an error occurred" strings in the admin HTML are the i18n catalogue, not errors.
-- **EmDash — Node ≥ 22.16** is required (`node:sqlite`).
+- **EmDash — Node ≥ 22.16** is the floor **EmDash's own documentation** states (docs.emdashcms.com)
+  for its use of `node:sqlite`. It is upstream documentation, not a trial finding: the trial ran
+  v22.23.2 and nothing lower was tested.
 
 ### The subdomain-mode probe
 
