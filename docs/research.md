@@ -742,3 +742,42 @@ Findings:
 - The non-standard `type: int` count is still exactly 2, so `EXPECTED_INT_OCCURRENCES` in
   `server/scripts/patch-spec.ts` (and the `test/unit/spec.test.ts` assertion that reads it) needed
   no change.
+
+## Live test C: Node runtime and persistent apps on vahi.dev (2026-09-16/17)
+
+Driver: the milestone C e2e suite (`server/test/e2e/milestone-c.e2e.test.ts`) calling the tool
+handlers (and, for the delete, the real gate) against the live panel with a fresh session JWT as the
+`id0` cookie, inside the existing site vahi.dev. Every write was a per-run `mcpc<5 hex>` app on a
+port picked free from the live listing; the app is one inline `node -e` script with no whitespace in
+it (finding 9 above), so nothing has to be uploaded.
+
+| Test | Tools | What it proves |
+|---|---|---|
+| Node runtime reads | `node_versions_available`, `node_versions_installed` (and `node_install` only if the installed list is empty) | >10 available versions, newest a bare semver; the installed list carries the "as reported by the panel" hedge |
+| Persistent app round trip | `persistent_apps_list`, `persistent_app_create`, `persistent_app_probe`, `persistent_app_log`, `persistent_app_update`, `persistent_app_delete` through `ctx.gate` | create recovers the id from the follow-up listing (201 has no body); the probe reaches the app over HTTPS-to-IP with the domain as SNI/Host and gets the marker; the log is non-empty for a fresh app; a partial `PATCH` merges (`command`, `proxy.path`, `proxy.port`, `nodeVersion` survive an `allow_websocket`-only update); the gate refuses a mistyped domain (`mismatch`) and the typed primary domain deletes exactly that app, which then leaves the listing |
+
+Three passing runs, 2/2 each:
+
+| Run | Duration | Notes |
+|---|---|---|
+| 1 | 17.74 s | first live run, default reporter |
+| 2 | 25.47 s | verbose: Node reads 3.84 s, app round trip 18.41 s |
+| 3 | 15.67 s | after the review fixes (`713078f`): Node reads 2.66 s, app round trip 12.02 s |
+
+No 401/403 and no `invalid_session_token` on any run; the cookie was never printed. Node reads at
+~3 s mean nvm was already installed, so the 60 s `node_install` branch never ran. **No tool needed
+fixing** — every live assertion passed on the first attempt, so milestone C has no live-bug commit
+(unlike milestone B's `db_import_sql` fix). After each run `persistent_apps_list` was `[]` and both
+`https://vahi.dev/` and `https://vahi.dev/demo-login/` answered 200.
+
+Known leftovers:
+
+- One `persistent_app_<id>.log` per run stays in the website home; only SSH removes it (the same
+  trade-off as milestone B's `sql_backup_….sql.gz` dumps). Documented in the test and `.env.example`.
+- `clear_proxy` (the `proxyDetails: Unset` path of `persistent_app_update`) is still not exercised
+  live; the comment in `src/tools/apps.ts` says so.
+- The `node_install` branch is untested live, because vahi.dev has had nvm since the Task 1 probe.
+- Each run bounces the website container three times (create, update, delete), which is why
+  `ENHANCE_E2E_SITE` must never name a production site.
+
+Walkthrough (Express, Next.js, typed-name prompt in Claude Code): pending.

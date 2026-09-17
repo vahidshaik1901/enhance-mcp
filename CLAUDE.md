@@ -6,24 +6,36 @@ provider or billing system. Lets a customer manage and deploy to their Enhance-h
 websites from Claude Code, with strong guardrails so an AI can never wipe a server or
 delete a site by accident.
 
-## Current status (2026-09-16)
+## Current status (2026-09-17)
 
-**Phase: milestone B MERGED to `main` (2026-09-16, PR #3, merge commit ecb0d96); all 10 tasks of
+**Phase: milestone C CODE-COMPLETE and E2E-VERIFIED on branch `feat/milestone-c` (all 8 tasks of
+`docs/superpowers/plans/2026-09-16-milestone-c-node.md` done except the walkthrough half of Task 8).
+82 tools are registered (a client lists 83 with `confirm_action`): milestones A and B plus
+`node_install`, `node_versions_available`, `node_versions_installed`, `node_version_install`,
+`node_version_set_default`, `persistent_apps_list`, `persistent_app_create`,
+`persistent_app_update`, `persistent_app_delete` (destructive, typed domain), `persistent_app_log`
+and `persistent_app_probe`. 378 unit tests; the milestone C live suite passed 2/2 against vahi.dev
+on 2026-09-16 and again on 2026-09-17 after the review fixes, with no tool bug found and no tool fix
+needed (see "Live test C" in docs/research.md). Skills: `enhance-deploy` extended with the Node path
+(runtime, app directory, port, proxy path, rsync target, post-deploy order, probe) and
+`persistent_app_delete` added to its safety rules. Remaining: the Task 8 walkthrough with the user
+(Express, then Next.js, on vahi.dev, and the typed-name prompt for `persistent_app_delete` inside
+Claude Code), then `superpowers:finishing-a-development-branch`, then milestone D (email, backups,
+DNS zone editing, WordPress, staging).
+Milestone B is MERGED to `main` (2026-09-16, PR #3, merge commit ecb0d96); all 10 tasks of
 `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done, including the Task 10
 walkthrough on 2026-09-16: PHP page reading MySQL, Laravel 13 `composer install` + `migrate` over
 SSH, and the typed-name prompt for `db_import_sql`/`db_delete`/`db_user_delete` inside Claude Code;
-see "Task 10 walkthrough" in docs/research.md. 71 tools are registered (a client lists 72 with `confirm_action`): milestone A plus
-MySQL, PostgreSQL, PHP extensions/workers/error log, Redis, FastCGI cache, htaccess rewrites and IP
-rules, and cron. 313 unit tests; the milestone B live suite passed 4/4 against vahi.dev on
-2026-09-11 with a fresh session JWT (see "Live test B" in docs/research.md). That run found and
-fixed one live bug: `db_import_sql` must name the multipart field `<database>.sql` (commit
-910e494; the spec's `sql` name is rejected by the panel). Skills: `enhance-database` added,
-`enhance-deploy` extended with the PHP/Laravel build and post-deploy steps, PHP settings and cron,
-and access control. Remaining: milestone C (Node + persistent apps): brainstorm, spec section, plan, then
-`superpowers:subagent-driven-development`. Before it, re-vendor the upstream spec (the advisory
-`spec-drift` CI job fails: upstream is 12.25.11, `server/spec/oas3-api.yaml` is 12.25.8; run
-`npm run check:spec`, re-vendor, `gen:types`, review the diff). After-merge minors from the B
-reviews are in `.superpowers/sdd/milestone-b-minors.md` (git-ignored).
+see "Task 10 walkthrough" in docs/research.md. It added MySQL, PostgreSQL, PHP
+extensions/workers/error log, Redis, FastCGI cache, htaccess rewrites and IP rules, and cron; the
+milestone B live suite passed 4/4 against vahi.dev on 2026-09-11 with a fresh session JWT (see
+"Live test B" in docs/research.md). That run found and fixed one live bug: `db_import_sql` must name
+the multipart field `<database>.sql` (commit 910e494; the spec's `sql` name is rejected by the
+panel). Skills: `enhance-database` added, `enhance-deploy` extended with the PHP/Laravel build and
+post-deploy steps, PHP settings and cron, and access control. After-merge minors from the B
+reviews are in `.superpowers/sdd/milestone-b-minors.md` (git-ignored). The upstream spec was
+re-vendored on 2026-09-16 (milestone C Task 0): both vendored copies are 12.25.11 and the advisory
+`spec-drift` CI job is green.
 Milestone A is MERGED to `main` (2026-09-05, PR #1, merge commit 7c0e4fa) in the public repo
 https://github.com/vahidshaik1901/enhance-mcp and was live-verified (e2e 8/8 plus the Task 19
 walkthrough; see "Live test A" in docs/research.md). The static test site from
@@ -33,7 +45,8 @@ Let's Encrypt cert for vahi.dev + www (expires 2026-12-04), force-HTTPS on. A PH
 lives at https://vahi.dev/demo-login/ (db + user `vahi_dev1_demo`, source not in the repo).**
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
 Plans: milestone A `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD);
-milestone B `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` (10 tasks, TDD).
+milestone B `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` (10 tasks, TDD);
+milestone C `docs/superpowers/plans/2026-09-16-milestone-c-node.md` (8 tasks, TDD).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
 Key library facts: MCP TypeScript SDK is v2 (`@modelcontextprotocol/server`
 2.0.0, `serveStdio`, `registerTool`, elicitation via the SDK's `inputRequired` flow), zod 4
@@ -43,11 +56,14 @@ capability and negotiates the legacy protocol era; the server uses the SDK's `in
 flow (not `elicitInput`) so the human prompt works on both eras (see docs/research.md).
 `outputSchema` has known issues so tools return `structuredContent` without declaring one;
 the Bash sandbox can never carry SSH (use `sandbox.excludedCommands` or run unsandboxed).
-Progress: milestones A and B are merged to `main` (ledger in `.superpowers/sdd/progress.md`,
-git-ignored; `git log` is the recovery map). Session JWTs expire within hours and the org still has no access token, so ask for
+Progress: milestones A and B are merged to `main`; milestone C is code-complete and e2e-verified
+on `feat/milestone-c` (ledger in `.superpowers/sdd/progress.md`, git-ignored; `git log` is the
+recovery map). Session JWTs expire within hours and the org still has no access token, so ask for
 a fresh cookie before any live work. To run the live suite: put the credential in `.env`
 (`ENHANCE_TOKEN`, or a session JWT as `ENHANCE_SESSION_COOKIE`), then from the repo root:
 `cd server && set -a && source ../.env && set +a && ENHANCE_TOKEN="${ENHANCE_TOKEN:-$ENHANCE_SESSION_COOKIE}" ENHANCE_E2E=1 ENHANCE_E2E_SITE=vahi.dev npx vitest run --config vitest.e2e.config.ts test/e2e/milestone-b.e2e.test.ts`.
+The milestone C suite runs the same way with `test/e2e/milestone-c.e2e.test.ts` (same env recipe; it
+needs nvm on the site, installs it on first run, and leaves one `persistent_app_<id>.log` behind).
 (`npm run test:e2e` also runs the milestone A suite, which creates and deletes a throwaway
 website and additionally needs `ENHANCE_E2E_SUBSCRIPTION_ID=664`.)
 The plugin is installed permanently at user scope from this repo as a local marketplace
@@ -95,7 +111,7 @@ The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) 
 ## Live test panel (verified 2026-09-04, read-only probes)
 
 - Panel: `https://e4500.sgp1.stableserver.net`, API base `/api`, orchd version **12.25.5**
-  (spec copy is 12.25.8; treat small deltas as possible).
+  (vendored spec copy is 12.25.11; treat small deltas as possible).
 - The user's login is **Owner of a customer org**, not the master org. `isMasterOrg: false`,
   `parentId` = the provider's reseller org. Server, licence, plans, and customers endpoints
   return 403. This is exactly the v1 customer persona, so it is the right test bed.
@@ -132,10 +148,30 @@ The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) 
   `allowedApps` (wordpress, joomla), `persistentAppsAllowed`, `redisAllowed`.
 - Unauthenticated: `/version`, `/status`, `/client_ip` work without a token.
 - No rate-limit headers were returned on these calls.
+- **Milestone C live facts** (Node and persistent apps, probed 2026-09-16/17; full notes in
+  docs/research.md under "Milestone C Task 1 probe"):
+  - Every persistent-app create, update or delete restarts the **whole website container**, not
+    just the app, so the site's PHP and static pages are interrupted for a second or two each time.
+  - `command` is exec'd as argv with no shell and no injected `PORT`, so a `VAR=value` prefix, a
+    pipe or a redirection can never work; the app must take its port from its own config.
+  - An app created without a `nodeVersion` never starts (`exec: node: not found`); `"default"` is
+    the nvm alias and is what the create tool sends when the caller pins nothing.
+  - A proxy path shadows a same-named `public_html/<path>` directory, and returns 503 while the app
+    is stopped (a live PHP page went 200 → 503 on registration alone).
+  - A duplicate proxy path is refused with 409 `already_exists`; duplicate ports are accepted
+    unchecked, so the port check is the caller's job.
+  - The log endpoint returns a 256 KiB tail (cut mid-line), the file is truncated on every restart,
+    and it outlives the app's deletion as `persistent_app_<id>.log` in the home.
+  - `GET .../apps/node/versions` omits exactly the version nvm's `default` alias points at, so it is
+    never authoritative; `nvm ls` over SSH is.
+  - Apps answer on the **primary domain only**; the `*.mystaging.site` preview URL 404s the proxy
+    path.
 
 ## Enhance API facts (verified from the live spec)
 
-- Spec: https://apidocs.enhance.com/spec/oas3-api.yaml (OpenAPI 3.0.3, version 12.25.8).
+- Spec: https://apidocs.enhance.com/spec/oas3-api.yaml (OpenAPI 3.0.3, version 12.25.11,
+  re-vendored 2026-09-16 and byte-identical to the previous 12.25.8 copy apart from the
+  `info.version` line; the advisory `spec-drift` CI job is green).
   Local copy: `docs/enhance-api/oas3-api.yaml`. Endpoint list with operationIds:
   `docs/enhance-api/endpoint-inventory.txt`. Full research notes: `docs/research.md`.
 - Base URL is the customer's own panel: `https://<panel-host>/api/...`. There is no

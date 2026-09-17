@@ -95,10 +95,12 @@ the site's PHP and static pages are interrupted for a second or two each time.
    only; `. ~/.nvm/nvm.sh && nvm ls` over SSH is the truth, and the panel's list omits exactly the
    version nvm's `default` alias points at (verified live). If there is no `~/.nvm`, run
    `node_install` (nvm plus the current stable Node; allow a minute). For the version the project
-   wants (`.nvmrc`, `engines.node`, else the newest even-numbered major from
-   `node_versions_available` — even majors are the LTS lines, and the tool returns bare versions
-   with no LTS marker):
-   `node_version_install version=<x.y.z>` then `node_version_set_default version=<x.y.z>`. Pin
+   wants — the project's `.nvmrc` or `engines.node`, else the newest even-numbered major from
+   `node_versions_available` that is **already in LTS** (even majors are the LTS lines, but the
+   newest one is still Current for months after its release and the tool returns bare versions with
+   no LTS marker; when unsure, take one even major behind the newest):
+   `node_version_install website=<site> version=<x.y.z>` then
+   `node_version_set_default website=<site> version=<x.y.z>`. Pin
    `node_version` on the app when the project needs a specific version; otherwise the app runs on
    nvm's `default` alias, which `node_version_set_default` controls. An app registered with no Node
    version at all never starts (`exec: node: not found`, verified live), so the create tool always
@@ -114,9 +116,9 @@ the site's PHP and static pages are interrupted for a second or two each time.
    complaint (verified live), so that check is yours. **The command is not a shell line.** The
    panel splits it on whitespace and execs it as argv, and it injects no `PORT`, so an environment
    assignment in front of the command cannot work — the create tool refuses those, along with
-   pipes and redirection. Never quote anything: quotes reach the program as literal characters (the
-   tool only refuses a quoted segment that contains whitespace, but `node "server.js"` would still
-   fail to exec). The app has to choose the proxy's port itself:
+   pipes and redirection. Never quote anything inside the command string: quotes reach the program
+   as literal characters (the tool only refuses a quoted segment that contains whitespace, but
+   `node "server.js"` would still fail to exec). The app has to choose the proxy's port itself:
    - put it in the npm start script — `"start": "node --env-file=.env server.js"` with a `PORT=3000`
      line in the server-side `.env` (Node 20.6+), or `"start": "next start -p 3000"` — and use
      `npm start` as the command;
@@ -142,7 +144,7 @@ Everything below calls `<home>/<app>` the **`<app dir>`** for Node too.
 - Use `-rltvz`, not `-a`. With a trailing-slash source, `-a` copies the local folder's owner, group and mode onto the document root, which the panel keeps at `750` with the web server's group (verified live 2026-09-05).
 - Add `-e "ssh -i <key>"` when the authorized key is not the user's default one.
 - Then run it for real. Use `--delete` only if the user explicitly asked to remove files not in the source.
-- Target is the document root, a directory under it, or a named directory in the home (`app/` for the Laravel layout in step 7 — that one runs twice, once into `app/` and once into `public_html/`). Never the home directory root itself. For Node, the target is the `<app dir>` from the Node layout, excluding `.git`, `node_modules`, `.env` and the build output (`.next`, `dist`, `build`): `rsync -rltvz --exclude .git --exclude node_modules --exclude .env --exclude .next --exclude dist <src>/ <user>@<host>:<app>/`.
+- Target is the document root, a directory under it, or a named directory in the home (`app/` for the Laravel layout in step 7 — that one runs twice, once into `app/` and once into `public_html/`). Never the home directory root itself. For Node, the target is the `<app dir>` from the Node layout, excluding `.git`, `node_modules`, `.env` and the build output (`.next`, `dist`, `build`): `rsync -rltvz --exclude .git --exclude node_modules --exclude .env --exclude .next --exclude dist --exclude build <src>/ <user>@<host>:<app>/`.
 - **Sandbox**: this command needs the sandbox disabled (or `ssh`/`rsync` in `sandbox.excludedCommands`). Say so before running.
 
 ### 9. Post-deploy (over the same SSH)
@@ -157,6 +159,7 @@ Everything below calls `<home>/<app>` the **`<app dir>`** for Node too.
 - **Node**, in this order, all over SSH in the `<app dir>` with nvm loaded (`. ~/.nvm/nvm.sh &&`). Registering or changing the app restarts the whole website container, so deploy at a quiet moment:
   1. `npm ci --omit=dev` when a lockfile exists, else `npm install --omit=dev`. Frameworks that build with dev dependencies (Next.js, Vite) need `npm ci` without `--omit=dev`, then the build, then optionally `npm prune --omit=dev`.
   2. `npm run build` when `package.json` has a build script. If the build is killed for memory, build locally instead and rsync the output directory up (Next.js: set `output: 'standalone'`), and say so. For that upload drop the build-output excludes from step 8 — rsync `.next/` (with `output: 'standalone'`, also `.next/standalone/` and `.next/static/`) and `public/` explicitly.
+     To run a standalone build, copy `.next/static` to `.next/standalone/.next/static` and `public` to `.next/standalone/public` (Next.js does not), then register `command="node server.js"` with `working_directory=<app>/.next/standalone`. The generated `server.js` reads `PORT` (and `HOSTNAME`), so pass it with `--env-file` (`command="node --env-file=.env server.js"` and a `PORT=<port>` line) or by setting `hostname`/`port` in the generated `server.js`. Not yet verified live.
   3. Write `.env` on the server (never rsync a local one). Put the `PORT=<port>` line in it when the app reads its port from the file — `node --env-file=.env server.js`, or an npm `start` script that does — because the command itself cannot carry it.
   4. Register the app: `persistent_app_create website=<site> command="npm start" working_directory=<app> proxy_path=<path> port=<port>`. `command` is argv, not a shell line, so the port lives in the app's own config and never in front of the command. Add `allow_websocket=true` for Socket.IO and similar, and `node_version=<x.y.z>` when the project pins one (otherwise the app runs on nvm's `default` alias). Note the `id` it returns.
   5. `persistent_app_log website=<site> app_id=<id>` until it shows the listening line. A crash shows here first; fix it before touching the proxy, then verify with `persistent_app_probe` (step 10).
