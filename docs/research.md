@@ -907,3 +907,156 @@ Findings:
   200 — a page that is itself 200 can be wholly broken. Task 9 makes `persistent_app_probe` fetch a
   page's images, scripts and stylesheets and fail the result when any of them does not answer, and
   makes `persistent_app_create` refuse a proxy path that already serves something.
+
+## Live test C3: popular Node stacks as one-click installs (2026-09-17)
+
+Run by the controller with the product owner inside Claude Code, with the plugin installed from
+`feat/milestone-c` (Task 9 code: path-clash preflight, `serve_at_root`, asset check). Four popular
+Node stacks were installed on four **new websites** on subscription 686, each subdomain of vahi.dev
+being its own website and each app registered with `serve_at_root=true`. DNS was a wildcard
+`A *.vahi.dev → 65.98.32.45` at Cloudflare (DNS only). Everything went through the MCP tools plus
+`ssh`/`rsync` with the sandbox disabled. The purpose was to find out whether "install Ghost on
+blog.example.com" can be a verified recipe rather than an improvisation; the four recipes now live
+in `skills/enhance-apps/`.
+
+### Sites created
+
+| Subdomain | Website id | Unix user | App id |
+|---|---|---|---|
+| start.vahi.dev | 51128ca6-62c2-45d6-a86b-2e99481d6fb8 | start_va1 | 335be440-72a3-4f72-90af-c186e0eee6ed |
+| ghost.vahi.dev | 303180c8-d4d4-44d3-8ec1-17b21ee76a0b | ghost_va1 | d78b5a45-8d95-4f7f-bea7-cacab1ad5191 |
+| payload.vahi.dev | 81a59c9b-b2a5-46eb-bd82-f00171966661 | payload_1 | 51ad27b0-af44-4851-9ed6-c432e0f88085 |
+| emdash.vahi.dev | 2f0cb7fb-3fdf-4903-9010-178199e22719 | emdash_v1 | d4e3c49c-9e23-45c3-bc90-8e22fdc99822 |
+
+One deploy key (`enhance_vahi_dev_ed25519`) was authorised on all four through `ssh_key_add`.
+
+### Results
+
+| Stack | Version | URL (all `serve_at_root`) | Database | Install + build on the server | Result |
+|---|---|---|---|---|---|
+| TanStack Start | Start on Nitro, Node 22.23.2 | https://start.vahi.dev/ — port 3000, `npm start` = `node --env-file=.env .output/server/index.mjs` | none | `npm ci` 4 s, build 2 s | **live first try**; probe 200, certificate valid, 2/2 assets OK |
+| Ghost | 6.64.0 (ghost-cli, pnpm) | https://ghost.vahi.dev/ — port 2368, `node --env-file=.env current/index.js`, `working_directory=ghost` | MySQL `ghost_va1_ghost` on MariaDB 11.4, over the socket | `ghost install` ~40 s, boot 4.9 s incl. its own migrations + seed | **live after two traps**; `/`, `/ghost/`, `/rss/` 200; probe 200, 7/7 assets OK |
+| Payload | 3.89 + Next 16.3.3 + `@payloadcms/db-sqlite` | https://payload.vahi.dev/ — port 3000, `npm start`, `working_directory=payloadapp` | SQLite `file:./payload.db` | `npm install` + `next build` 36 s, no OOM | **live after the migration trap**; `/` 200, `/admin/login` + `/admin/create-first-user` 200, `/api/users` 403 (correct) |
+| EmDash | 0.38 + Astro 7.3 + `@astrojs/node` standalone | https://emdash.vahi.dev/ — port 4321, `npm start` = `node --env-file=.env ./dist/server/entry.mjs` | SQLite `file:./data.db` via `node:sqlite` | `npm ci` 12–14 s, `astro build` ~10 s | **live after a template swap**; DB auto-migrates and auto-seeds on the first request |
+
+All four ran on Node v22.23.2 through nvm's `default` alias; none pinned `node_version`. Building in
+the container was never a problem on this plan (3.9 GB box, ~2.4 GB free) — Next.js, Astro and Nitro
+all built there, and the 8 GB `--max-old-space-size` in Payload's template build script is a ceiling,
+not a requirement.
+
+### Traps and fixes
+
+- **Ghost 1 — the home directory is mode 711.** `ghost install` refuses with a "not readable by other
+  users" check. The correct fix is the flag **`--no-setup-linux-user`** (it skips ghost-cli's
+  directory checks), **not** a `chmod` on the site home: the panel owns those modes. Full flag set
+  used: `--no-prompt --no-stack --no-setup --no-setup-linux-user`.
+- **Ghost 2 — MySQL is socket-only from Node.** MariaDB answers on `/run/mysqld/mysqld.sock` inside
+  the container and `127.0.0.1` is refused; a Node client treats `localhost` as TCP, so
+  `database.connection.socketPath` (mysql2/knex) is required and `host`/`port` must be absent. PHP's
+  `localhost` resolves to the socket by itself (milestone B), Node's does not.
+- **Ghost 3 — MariaDB 11.4 vs "MySQL 8 only".** `canUse.mysqlKind` is `mariaDbLts`; Ghost documents
+  MySQL 8 only. Ghost 6.64.0 ran on it anyway: migrations, seeding and the admin all worked. Works
+  today, unsupported upstream — worth saying to a customer, not worth refusing the install over.
+- **Ghost 4 — `NODE_ENV`.** The panel execs the command as argv with no shell, so
+  `NODE_ENV=production node …` is impossible; the variable goes in `.env` and the command loads it
+  with `--env-file`. `config.production.json` is only read when `NODE_ENV=production`.
+- **Ghost 5 — benign boot error.** An ActivityPub webhook self-fetch fails at boot, before the site
+  is being served. Not a failure.
+- **Payload — an empty database under `next start`.** The SQLite adapter only pushes the schema in
+  *development*. In production the db file was created **0 bytes** and the blank template ships no
+  migrations, so `/admin` answered **HTTP 200** while the browser showed "This page couldn't load"
+  and the log said `SQLITE_ERROR: no such table: users`. Fix on the server:
+  `npm run payload -- migrate:create initial` then `npm run payload -- migrate` (75 ms), then restart
+  with `persistent_app_update start_mode=automatic`. **Rule:** generate migrations locally, commit
+  and upload them, run `payload migrate` on the server before the first start.
+- **Payload — the verification lesson.** The controller's own check had missed this because `/admin`
+  returned 200 and the error was rendered client-side. Verification must load the **login** page and
+  read `persistent_app_log`, not just collect status codes. This is now rule 5 of the
+  `enhance-apps` skill.
+- **EmDash — `starter` is intentionally unstyled.** The user reported the site "looks wrong"; assets
+  were all 200 and the deploy was correct — the `starter` template ships "minimal styling … a base
+  you can build on" by design. Fixed by scaffolding `--template blog --platform node` into a second
+  directory and pointing the app at it with `persistent_app_update working_directory=emdashblog`
+  (which restarted it): styled page, ~27 KB of CSS with theme tokens. The new directory means a
+  **fresh database**, so setup had to be redone.
+- **EmDash — log and HTML noise.** `ExperimentalWarning` from `node:sqlite` on every start is
+  normal, and the "an error occurred" strings in the admin HTML are the i18n catalogue, not errors.
+- **EmDash — Node ≥ 22.16** is required (`node:sqlite`).
+
+### The subdomain-mode probe
+
+The product owner asked for both subdomain layouts to be offered as a choice, so mode A was probed
+on vahi.dev: `domain_add kind=subdomain domain=apptest.vahi.dev document_root=apptest`.
+
+- The docroot was created at `<home>/apptest`, a **sibling of `public_html`**, mode 750, group 33.
+- A static page answered **200 on `https://apptest.vahi.dev/`** with the placeholder certificate.
+- **The website's persistent apps did not answer there**: `/express/` and `/next/` returned 404 on
+  the subdomain while both were 200 on the primary domain. `/demo-login/` also 404s there, because
+  the docroot is a different directory.
+- The test subdomain was removed again with `domain_remove`.
+
+So the two modes are genuinely different products:
+
+| | A. subdomain inside a website (`domain_add kind=subdomain`) | B. subdomain as its own website (`website_create`) |
+|---|---|---|
+| Container, unix user, PHP version, databases, quota | shared with the parent site | its own |
+| Website slot | none | one |
+| Static and PHP | yes | yes |
+| Persistent Node apps | **no — verified 404** | yes, with `serve_at_root=true` |
+
+Every C3 recipe therefore uses mode B, and the skill asks the customer which they want before
+anything is created.
+
+### First admin: every installer was unclaimed
+
+The moment each site answered, its installer was open to anyone on the internet: Ghost's `/ghost/`
+owner screen, Payload's `/admin` "Create first user", EmDash's setup wizard
+(`GET /_emdash/api/setup/status` → `needsSetup: true`). The product owner's requirement out of this
+trial: **a recipe must create or guide the first admin and present the login once at the end, never
+leave an installer unclaimed.** EmDash's first admin is a **browser passkey** and cannot be
+automated at all, which is why the skill's rule is "stay with the customer until it is claimed, or
+park the app with `start_mode=manual`". The Payload admin was created during the trial and the user
+confirmed it works.
+
+### Other findings
+
+- **Parallel `website_create` calls time out client-side while succeeding.** Four issued at once
+  returned two "operation was aborted due to timeout" errors although the panel had created both
+  sites; `domain_check` then reported `inUseCurrentOrg` for them. Create sites one at a time, and on
+  a timeout re-check with `domain_check` instead of retrying. (Minor for the final review:
+  `website_create` could do that re-check itself and report the real outcome.)
+- **A stale cached tool schema is not the running server.** After the restart, `ToolSearch` showed a
+  `persistent_app_create` schema without `serve_at_root`, while the running server (repo `dist`,
+  Task 9) accepted the argument and enforced the preflight. Trust behaviour, not the cached schema.
+- **The asset check was calibrated by this trial**, not by a unit test: twelve parallel fetches on a
+  2 s deadline from a ~0.8 s-RTT client reported healthy Next.js chunks as missing, while making one
+  genuine catch (`/favicon.ico` 404 at the domain root, 200 under `/next/`). Fixed in Task 9b — four
+  at a time, 8 s deadline, a timeout is *unchecked* and never a failure (item 15 under "Milestone C
+  Task 1 probe").
+- **`serve_at_root` and the path preflight were verified live** for the first time here: on each
+  fresh site the root answered 404, the preflight allowed the create, and the app then owned the
+  whole domain.
+
+### Discovery: the site file listing (filerd), held for a later milestone
+
+Asked whether the plugin could list a site's files, the controller found a working, **undocumented**
+path (verified read-only on vahi.dev):
+
+1. `POST /orgs/{org_id}/websites/{website_id}/access-tokens` (this one **is** in the spec) returns a
+   short-lived **site JWT**, claims `euid`, `egid`, `exp`, `website_id`, `read_only`.
+2. `GET <panel><filerdAddress>/websites/{website_id}/entries?recursive=true&maxDepth=N&fetchMetadata=true`
+   with `Authorization: Bearer <site token>` returns the directory tree of the site home.
+
+Notes: `?path=` is ignored (the whole tree comes back); the panel session cookie is rejected with
+"Token header not found" and the session JWT as a Bearer with "InvalidSignature"; filerd's own
+`/version` reports 12.25.8. **filerd is not in the public OpenAPI spec**, so a `files_list` tool
+built on it would be betting on an unversioned internal API — worth doing (it would also make the
+path-clash guard exact instead of HTTP-based), but as its own task with an HTTP fallback, not inside
+milestone C.
+
+### Left running
+
+The four trial sites (`start`, `ghost`, `payload`, `emdash` under vahi.dev) and the two demo
+persistent apps on vahi.dev (`/express/`, `/next/`) were deliberately left live as test resources.
+They are to be removed when the user says so: `persistent_app_delete` per app (typed-domain prompt),
+`rm -rf` the app directories and `persistent_app_*.log` over SSH, then `website_delete` per site.

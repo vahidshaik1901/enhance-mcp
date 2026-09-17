@@ -37,7 +37,16 @@ fetches the assets an HTML page references (4 at a time, 8 s each) and fails the
 definitely missing — 404, 410 or 5xx — while a fetch that timed out is reported as unchecked and
 never fails anything. Skills: `enhance-deploy` extended
 with the Node path (runtime, app directory, port, proxy path and prefix stripping, rsync target,
-post-deploy order, probe) and `persistent_app_delete` added to its safety rules. Remaining: the
+post-deploy order, probe) and `persistent_app_delete` added to its safety rules.
+On 2026-09-17 a live trial with the product owner installed four popular Node stacks end to end
+through the tools — TanStack Start, Ghost 6.64 (on MariaDB 11.4, socket-only), Payload 3.89 and
+EmDash 0.38, each on its own subdomain website with `serve_at_root=true` — and produced the new
+`enhance-apps` skill (four recipes plus `candidates.md`, the two subdomain modes, the first-admin
+rule, log+asset verification, finished-theme default); see "Live test C3" in docs/research.md. The
+four trial sites (`start`, `ghost`, `payload`, `emdash` under vahi.dev) and the two demo apps on
+vahi.dev (`/express/`, `/next/`) are LIVE TEST RESOURCES left running on purpose: remove them
+(`persistent_app_delete`, `rm -rf` over SSH, then `website_delete`) only when the user says so.
+Remaining: the
 final whole-branch review, then `superpowers:finishing-a-development-branch`, then milestone D
 (email, backups, DNS zone editing, WordPress, staging).
 Milestone B is MERGED to `main` (2026-09-16, PR #3, merge commit ecb0d96); all 10 tasks of
