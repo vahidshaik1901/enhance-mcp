@@ -688,7 +688,7 @@ describe('persistent_app_probe', () => {
     expect(r.structured).toMatchObject({ assets: { checked: 2, failed: [], restricted: [{ url: '/node/private.png', status: 403 }] } });
   });
 
-  it('fails only on 404, 410, 5xx and no answer, not on every non-2xx', async () => {
+  it('fails only on a definite 404, 410 or 5xx, not on every non-2xx', async () => {
     for (const [status, fails] of [[404, true], [410, true], [500, true], [503, true], [405, false], [302, false]] as const) {
       const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
       ctx.httpProbe = pathProbe({ '/node/': { status: 200, body: '<img src="/node/a.png">' }, '/node/a.png': status });
@@ -711,6 +711,64 @@ describe('persistent_app_probe', () => {
     expect(r.structured).toMatchObject({ url: 'https://vahi.dev/', assets: { failed: [{ url: '/logo.svg', outsidePrefix: false }] } });
     expect(r.text).not.toMatch(/outside/);
     expect(byName(tools, 'persistent_app_probe').description).toMatch(/serve_at_root.*app_id|app_id.*serve_at_root/s);
+  });
+
+  it('reports an asset fetch that times out as unchecked, never as a failure', async () => {
+    // The live defect: twelve parallel fetches against a 2 s deadline timed out from a distant
+    // client and two healthy 200 chunks were reported broken. A timeout is not evidence.
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    const answers = pathProbe({ '/node/': { status: 200, body: '<img src="/node/slow.png">' } });
+    ctx.httpProbe = async (req) => {
+      if (req.path === '/node/slow.png') throw new Error('no response within 8000 ms');
+      return answers(req);
+    };
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toMatch(/1 asset.? could not be checked in time/);
+    expect(r.text).toContain('/node/slow.png');
+    expect(r.structured).toMatchObject({ assets: { checked: 1, failed: [], restricted: [], unchecked: [{ url: '/node/slow.png', reason: 'no response within 8000 ms' }] } });
+  });
+
+  it('fails on a definite 404 while a timed-out asset in the same page stays unchecked', async () => {
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    const html = '<img src="/next.svg"><script src="/node/slow.js"></script><link rel="stylesheet" href="/node/app.css">';
+    const answers = pathProbe({ '/node/': { status: 200, body: html }, '/node/app.css': 200, '/next.svg': 404 });
+    ctx.httpProbe = async (req) => {
+      if (req.path === '/node/slow.js') throw new Error('no response within 8000 ms');
+      return answers(req);
+    };
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBe(true);
+    const assets = (r.structured as { assets: { failed: unknown[]; unchecked: unknown[] } }).assets;
+    expect(assets.failed).toEqual([{ url: '/next.svg', status: 404, outsidePrefix: true }]);
+    expect(assets.unchecked).toEqual([{ url: '/node/slow.js', reason: 'no response within 8000 ms' }]);
+    expect(r.text).toMatch(/could not be checked in time/);
+    expect(r.text).toContain('/node/slow.js');
+  });
+
+  it('fetches at most four assets at a time, with an 8 s deadline and one byte each', async () => {
+    // Twelve at once is what pushed each fetch past its deadline on a ~0.8 s round trip.
+    const urls = Array.from({ length: 12 }, (_, i) => `/node/a${i}.png`);
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    const seen: ProbeRequest[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    ctx.httpProbe = async (req) => {
+      seen.push(req);
+      if (req.path === '/node/') return { status: 200, latencyMs: 4, contentType: 'text/html', body: urls.map((u) => `<img src="${u}">`).join(''), certificate: 'valid' };
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight -= 1;
+      return { status: 200, latencyMs: 4, contentType: 'image/png', body: '', certificate: 'valid' };
+    };
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(peak).toBe(4);
+    const assetRequests = seen.filter((s) => s.path.startsWith('/node/a'));
+    expect(assetRequests).toHaveLength(12);
+    expect(assetRequests.every((s) => s.timeoutMs === 8000 && s.maxBodyBytes === 1)).toBe(true);
+    expect(r.isError).toBeUndefined();
+    expect(r.structured).toMatchObject({ assets: { checked: 12, failed: [], unchecked: [] } });
   });
 
   it('checks no assets for a non-HTML response or when check_assets is off', async () => {

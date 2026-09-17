@@ -3,7 +3,7 @@ import { parseScalarText } from '../client/client.js';
 import type { components } from '../client/generated/types.js';
 import type { ToolContext } from '../core/context.js';
 import { websiteHome } from '../core/identity.js';
-import { extractAssetUrls, httpsProbe, type HttpProbe } from '../core/probe.js';
+import { extractAssetUrls, httpsProbe, mapLimit, type HttpProbe } from '../core/probe.js';
 import { defineTool, type Target, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
@@ -528,22 +528,32 @@ export const persistentAppDelete = defineTool({
 });
 
 interface AssetCheck {
+  /** How many same-origin references the page names, i.e. how many fetches were attempted. */
   checked: number;
-  failed: Array<{ url: string; status: number | null; outsidePrefix: boolean }>;
+  failed: Array<{ url: string; status: number; outsidePrefix: boolean }>;
   /** 401/403: the asset is served but guarded (a login, an IP rule). Reported, never a failure. */
   restricted: Array<{ url: string; status: number }>;
+  /** The fetch never produced a status (timeout, reset). Reported, never a failure — see below. */
+  unchecked: Array<{ url: string; reason: string }>;
   /** Set when the page could not be re-read, so nothing was checked. */
   error?: string;
 }
 
-/** Answers that prove a reference is broken: gone (404/410), or the server failing on it (5xx), or
- *  no answer at all. Every other non-2xx — a 401 or 403 behind auth, a 405, a redirect to a file
- *  that does exist — is not proof of anything, and a probe that fails a healthy deploy is worse
- *  than one that misses a broken reference. */
+/** Answers that prove a reference is broken: gone (404/410), or the server failing on it (5xx).
+ *  Every other non-2xx — a 401 or 403 behind auth, a 405, a redirect to a file that does exist —
+ *  is not proof of anything, and a probe that fails a healthy deploy is worse than one that misses
+ *  a broken reference. No answer at all is not proof either: see checkPageAssets. */
 const RESTRICTED_STATUSES = new Set([401, 403]);
-function assetIsBroken(status: number | null): boolean {
-  return status === null || status === 404 || status === 410 || status >= 500;
+function assetIsBroken(status: number): boolean {
+  return status === 404 || status === 410 || status >= 500;
 }
+
+/** Long enough that a real asset on a slow link answers inside it. The first version used 2 s and
+ *  false-failed two Next.js chunks that answer 200 in 1.1-1.7 s from a distant client. */
+const ASSET_TIMEOUT_MS = 8000;
+/** How many asset fetches are open at once. Each is its own TLS handshake to the same server, and a
+ *  dozen at once is what made every one of them slow enough to time out (live, 2026-09-17). */
+const ASSET_CONCURRENCY = 4;
 
 /**
  * Whether the page's own images, scripts and stylesheets answer. A page can be HTTP 200 while
@@ -552,42 +562,48 @@ function assetIsBroken(status: number | null): boolean {
  * DOMAIN root, where the site's own files live — the user's live case, `/next/` 200 with
  * `/next.svg` 404. A customer must never be the one who discovers that, so the probe asks.
  *
- * One byte of each asset is enough for its status, the fetches run in parallel with a 2 s deadline,
- * and a rejected fetch counts as failed with no status. Same transport as the page: no credential,
- * no header beyond Host.
+ * One byte of each asset is enough for its status, and the fetches run ASSET_CONCURRENCY at a time
+ * with an ASSET_TIMEOUT_MS deadline. A fetch that never produced a status is UNCHECKED, not failed:
+ * the probe reports only what it saw, and a slow link is not a broken deploy. Same transport as the
+ * page: no credential, no header beyond Host.
  */
 async function checkPageAssets(probe: HttpProbe, at: { ip: string; host: string; pageUrl: string; path: string }): Promise<AssetCheck> {
   let html: string;
   try {
     html = (await probe({ ip: at.ip, host: at.host, path: proxyRequestPath(at.path), timeoutMs: 5000, maxBodyBytes: 65536 })).body;
   } catch (e) {
-    return { checked: 0, failed: [], restricted: [], error: safe((e as Error).message) };
+    return { checked: 0, failed: [], restricted: [], unchecked: [], error: safe((e as Error).message) };
   }
   const urls = extractAssetUrls(html, at.pageUrl);
-  const answers = await Promise.allSettled(urls.map((u) => probe({ ip: at.ip, host: at.host, path: u, timeoutMs: 2000, maxBodyBytes: 1 })));
+  const answers = await mapLimit(urls, ASSET_CONCURRENCY, (u) => probe({ ip: at.ip, host: at.host, path: u, timeoutMs: ASSET_TIMEOUT_MS, maxBodyBytes: 1 }));
   const prefix = proxyRequestPath(at.path);
   const failed: AssetCheck['failed'] = [];
   const restricted: AssetCheck['restricted'] = [];
+  const unchecked: AssetCheck['unchecked'] = [];
   answers.forEach((a, i) => {
-    const status = a.status === 'fulfilled' ? a.value.status : null;
     const url = urls[i]!;
-    if (status !== null && RESTRICTED_STATUSES.has(status)) restricted.push({ url, status });
+    if (a.status === 'rejected') {
+      unchecked.push({ url, reason: safe(a.reason instanceof Error ? a.reason.message : String(a.reason)) });
+      return;
+    }
+    const status = a.value.status;
+    if (RESTRICTED_STATUSES.has(status)) restricted.push({ url, status });
     // A whole-site app owns every path, so nothing it references can be "outside" it.
     else if (assetIsBroken(status)) failed.push({ url, status, outsidePrefix: at.path !== '' && !url.startsWith(prefix) });
   });
-  return { checked: urls.length, failed, restricted };
+  return { checked: urls.length, failed, restricted, unchecked };
 }
 
 export const persistentAppProbe = defineTool({
   name: 'persistent_app_probe',
   tier: 'customer',
   risk: 'read',
-  description: `Fetches a persistent app's URL the way the web server serves it: HTTPS to the app server's IP with the primary domain as SNI and Host (the curl --resolve equivalent), so it works before DNS points at the site. Reports status, latency, the first bytes of the body, and whether the domain still has the placeholder certificate. When the page is HTML it also fetches the images, scripts and stylesheets it references and fails when any of them does not answer — a page can be 200 with every image broken, because the proxy strips the path prefix and an absolute reference then lands at the domain root (check_assets=false skips that). Give app_id (from persistent_apps_list) or a proxy_path; a whole-site app (serve_at_root) has no path to pass, so it can only be probed by app_id. ${PROXY_STRIPS_PREFIX} Run it after every Node deploy, before telling anyone the site is live.`,
+  description: `Fetches a persistent app's URL the way the web server serves it: HTTPS to the app server's IP with the primary domain as SNI and Host (the curl --resolve equivalent), so it works before DNS points at the site. Reports status, latency, the first bytes of the body, and whether the domain still has the placeholder certificate. When the page is HTML it also fetches the images, scripts and stylesheets it references and fails when one is definitely missing (404, 410 or 5xx) — a page can be 200 with every image broken, because the proxy strips the path prefix and an absolute reference then lands at the domain root (check_assets=false skips that). An asset fetch that times out is reported as unchecked, never as a failure: a slow link is not a broken deploy. Give app_id (from persistent_apps_list) or a proxy_path; a whole-site app (serve_at_root) has no path to pass, so it can only be probed by app_id. ${PROXY_STRIPS_PREFIX} Run it after every Node deploy, before telling anyone the site is live.`,
   input: z.object({
     website: websiteArg,
     app_id: appIdArg.optional(),
     proxy_path: z.string().min(1).optional(),
-    check_assets: z.boolean().default(true).describe("Also fetch the images, scripts and stylesheets an HTML page references (up to 12, same origin only), and fail when any of them does not answer. This is what catches a page that renders without its assets because they are requested outside the app's path."),
+    check_assets: z.boolean().default(true).describe("Also fetch the images, scripts and stylesheets an HTML page references (up to 12, same origin only, four at a time), and fail when one answers 404, 410 or 5xx. This is what catches a page that renders without its assets because they are requested outside the app's path. Assets that time out come back as unchecked, not as failures."),
   }),
   async handler({ website, app_id, proxy_path, check_assets }, ctx) {
     if (app_id === undefined && proxy_path === undefined) throw new Error('give app_id or proxy_path');
@@ -645,10 +661,16 @@ export const persistentAppProbe = defineTool({
       !assets || assets.restricted.length === 0
         ? ''
         : `\n${assets.restricted.length} of the ${assets.checked} assets answered 401/403: served but access-controlled, not counted as failures (${assets.restricted.map((a) => `${safe(a.url)} → HTTP ${a.status}`).join(', ')}).`;
+    // A fetch that never produced a status proves nothing about the asset, only about the link
+    // between here and the server. Named on its own line, in both paths, and never a failure.
+    const uncheckedLine =
+      !assets || assets.unchecked.length === 0
+        ? ''
+        : `\n${assets.unchecked.length} of the ${assets.checked} assets could not be checked in time, which is not the same as broken — re-run the probe or open the URL (${assets.unchecked.map((a) => `${safe(a.url)}: ${a.reason}`).join(', ')}).`;
     if (assets && assets.failed.length > 0) {
       const broken = assets.failed.map(
         (a) =>
-          `  ${safe(a.url)} → ${a.status === null ? 'no answer' : `HTTP ${a.status}`}: ${
+          `  ${safe(a.url)} → HTTP ${a.status}: ${
             a.outsidePrefix
               ? `requested at the domain root, outside /${safe(path)}/, where this site's own files are served: reference it as /${safe(path)}${safe(a.url)} or move the app to its own website/subdomain (serve_at_root)`
               : 'the app itself does not serve it'
@@ -656,9 +678,19 @@ export const persistentAppProbe = defineTool({
       );
       // The app is up — only its HTML is wrong — so `reachable` stays true while the result fails:
       // a deploy with broken images is not a finished deploy.
-      return fail([s.identity, summary, `the page answered HTTP ${res.status}, but ${assets.failed.length} of the ${assets.checked} assets it references did not:`, ...broken, ...(restrictedLine ? [restrictedLine.trimStart()] : []), tail].join('\n'), { ...structured, assets });
+      return fail(
+        [s.identity, summary, `the page answered HTTP ${res.status}, but ${assets.failed.length} of the ${assets.checked} assets it references did not:`, ...broken, ...(restrictedLine ? [restrictedLine.trimStart()] : []), ...(uncheckedLine ? [uncheckedLine.trimStart()] : []), tail].join('\n'),
+        { ...structured, assets },
+      );
     }
-    const assetLine = !assets ? '' : assets.error !== undefined ? `\nthe page could not be re-read for its asset URLs (${assets.error}), so its images and scripts were not checked.` : assets.checked === 0 ? '\nthe page references no same-origin images, scripts or stylesheets to check.' : `\nall ${assets.checked} assets the page references answered.${restrictedLine}`;
+    const answered = assets ? assets.checked - assets.unchecked.length : 0;
+    const assetLine = !assets
+      ? ''
+      : assets.error !== undefined
+        ? `\nthe page could not be re-read for its asset URLs (${assets.error}), so its images and scripts were not checked.`
+        : assets.checked === 0
+          ? '\nthe page references no same-origin images, scripts or stylesheets to check.'
+          : `\n${assets.unchecked.length === 0 ? `all ${assets.checked} assets the page references answered` : `${answered} of the ${assets.checked} assets the page references answered`}.${restrictedLine}${uncheckedLine}`;
     return ok(`${s.identity}\n${summary}${notFound}${assetLine}\n${tail}`, assets ? { ...structured, assets } : structured);
   },
 });

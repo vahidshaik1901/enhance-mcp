@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyCertificate, collectCapped, extractAssetUrls } from '../../src/core/probe.js';
+import { classifyCertificate, collectCapped, extractAssetUrls, mapLimit } from '../../src/core/probe.js';
 
 describe('classifyCertificate', () => {
   it('is valid when TLS authorised the chain', () => {
@@ -61,6 +61,53 @@ describe('extractAssetUrls', () => {
     const many = Array.from({ length: 20 }, (_, i) => `<script src="/a${i}.js"></script>`).join('');
     expect(extractAssetUrls(`<img src="/dup.png"><img src="/dup.png">`, page)).toEqual(['/dup.png']);
     expect(extractAssetUrls(`<img src="/dup.png"><img src="/dup.png">${many}`, page)).toHaveLength(12);
+  });
+});
+
+describe('mapLimit', () => {
+  const tick = (ms = 1): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  it('keeps results in input order however the calls finish', async () => {
+    // The caller pairs answers with inputs by index, so a fast item must not overtake a slow one.
+    const out = await mapLimit([30, 1, 20, 2], 4, async (ms) => {
+      await tick(ms);
+      return ms;
+    });
+    expect(out).toEqual([30, 1, 20, 2].map((value) => ({ status: 'fulfilled', value })));
+  });
+
+  it('never has more than `limit` calls in flight', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const out = await mapLimit(Array.from({ length: 12 }, (_, i) => i), 4, async (i) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await tick();
+      inFlight -= 1;
+      return i;
+    });
+    expect(peak).toBe(4);
+    expect(out).toHaveLength(12);
+    expect(out.every((r) => r.status === 'fulfilled')).toBe(true);
+  });
+
+  it('surfaces a rejection per item like allSettled instead of failing the batch', async () => {
+    const out = await mapLimit(['ok', 'bad', 'ok'], 2, async (v) => {
+      if (v === 'bad') throw new Error('boom');
+      return v;
+    });
+    expect(out[0]).toEqual({ status: 'fulfilled', value: 'ok' });
+    expect(out[1]).toMatchObject({ status: 'rejected' });
+    expect((out[1] as PromiseRejectedResult).reason).toBeInstanceOf(Error);
+    expect(out[2]).toEqual({ status: 'fulfilled', value: 'ok' });
+  });
+
+  it('handles an empty list and a limit larger than the list', async () => {
+    expect(await mapLimit([], 4, async () => 1)).toEqual([]);
+    expect(await mapLimit([1, 2], 10, async (n) => n * 2)).toEqual([
+      { status: 'fulfilled', value: 2 },
+      { status: 'fulfilled', value: 4 },
+    ]);
   });
 });
 

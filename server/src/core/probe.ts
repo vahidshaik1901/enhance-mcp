@@ -145,6 +145,37 @@ export function extractAssetUrls(html: string, pageUrl: string): string[] {
 }
 
 /**
+ * Pure: `Promise.allSettled` with at most `limit` calls in flight, results in INPUT order so the
+ * caller can pair them with its inputs by index. A rejection is reported per item and never stops
+ * the rest, because one asset that will not answer must not hide the eleven that would.
+ *
+ * The limit is the point. Every one of these calls is its own TLS handshake to the same server, and
+ * firing a dozen at once from a distant client made each of them slow enough to blow its deadline —
+ * the live defect this exists to prevent. Same-thread `next++` is the whole mutual exclusion: each
+ * worker takes the next index and nothing else can take it.
+ */
+export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      try {
+        results[i] = { status: 'fulfilled', value: await fn(items[i] as T, i) };
+      } catch (reason) {
+        results[i] = { status: 'rejected', reason };
+      }
+    }
+  };
+  // At least one worker whenever there is anything to do: a limit of 0 must not silently return a
+  // list of holes that every caller would then read as "nothing answered".
+  const workers = items.length === 0 ? 0 : Math.max(1, Math.min(Math.trunc(limit), items.length));
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return results;
+}
+
+/**
  * The `curl --resolve <host>:443:<ip>` equivalent: TLS to the IP with the domain as SNI. The
  * certificate is inspected and REPORTED, not enforced (`rejectUnauthorized: false`), because a
  * new domain serves the panel's self-signed placeholder until Let's Encrypt issues and the tool
