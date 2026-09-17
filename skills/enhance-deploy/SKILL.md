@@ -86,6 +86,11 @@ Everything below calls `<home>/app` the **`<app dir>`**.
 
 #### Node layout (persistent apps)
 
+**Installing a known CMS or framework rather than the customer's own project?** Use the
+`enhance-apps` skill instead: it has verified end-to-end recipes (Ghost, Payload, EmDash, TanStack
+Start) with the exact commands, the first-admin step and the verification each one needs. Come back
+here for a project the customer wrote.
+
 Stop here unless `website_get` shows `canUse.persistentApps: true`: without it the plan does not
 run Node processes (safety rule 4). `persistent_app_create`, `persistent_app_update` and
 `persistent_app_delete` usually restart the whole website container, not just the app, so expect
@@ -244,6 +249,16 @@ deleted), so decide who owns which path before registering anything.
   file). The registration restarted the container too, so this is the moment to notice anything that
   stopped working.
 - **Timing**: most registrations restart the whole website container, so do it at a quiet moment.
+
+**A subdomain is two different things here.** `domain_add website=<site> kind=subdomain
+document_root=<dir>` maps a subdomain *inside* an existing website: it gets a docroot beside
+`public_html` in the same container, sharing the unix user, PHP version, databases and quota, and no
+website slot is used. That serves static pages and PHP fine — **but a persistent app never answers
+there** (verified live 2026-09-17: the website's app paths returned 404 on such a subdomain, because
+the app proxy binds to the primary domain only). A Node app therefore needs the subdomain to be its
+**own website** (`website_create`), with its own container and unix user, registered with
+`serve_at_root=true`. Offer the customer both and say which their project needs; the `enhance-apps`
+skill walks through that choice for a CMS install.
 
 **The layout choice.** An API or a single-page app under a path is fine. A Node app that is the
 whole site, or any multi-page framework site, goes on its own website or subdomain with
