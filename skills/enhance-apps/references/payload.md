@@ -13,7 +13,8 @@ Ghost for a blog someone just writes in.
 ## Requirements
 
 - Mode B: a website of its own (`website_create`), app registered with `serve_at_root=true`.
-- Node 22 LTS (trial: v22.23.2 via nvm's `default` alias).
+- Node 22 LTS (trial: v22.23.2 via nvm's `default` alias — `node_install` →
+  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`).
 - A database. The trial used **`@payloadcms/db-sqlite`** — a file inside the app directory, nothing
   to provision. Payload's Postgres and MySQL adapters exist; **neither was tried here**, and the
   MySQL one would need `socketPath: '/run/mysqld/mysqld.sock'` (see the skill's "MySQL from Node").
@@ -21,13 +22,23 @@ Ghost for a blog someone just writes in.
 
 ## Scaffold (locally)
 
+**Verified live 2026-09-17** — this exact command:
+
 ```sh
-npx create-payload-app@latest <name>
+npx --yes create-payload-app@latest -n <name> -t blank --db sqlite \
+  --db-connection-string "file:./payload.db" --use-npm --no-deps --no-agent
 ```
 
-The trial used the **blank template with the SQLite adapter** (Payload 3.89, Next 16.3.3,
-`@payloadcms/db-sqlite`); the exact answers to the scaffolder's prompts were not recorded beyond
-that. Generate the migrations locally straight after scaffolding (see "Migrations" — this is the
+It produced **Payload 3.89.0, Next 16.3.3, `@payloadcms/db-sqlite`**, and wrote a local `.env` with
+`DATABASE_URL` and a generated `PAYLOAD_SECRET`.
+
+**`--no-deps` is the trial's choice, not a recommendation.** It skips the install, so the scaffold
+has **no `package-lock.json`** — which is why the server step below is `npm install` and not
+`npm ci`. For a real customer project, **scaffold with dependencies** (drop `--no-deps`) so a
+lockfile exists and the server build is a reproducible `npm ci`. Nothing else about the recipe
+changes.
+
+Generate the migrations locally straight after scaffolding (see "Migrations" — this is the
 trap that cost the trial the most time):
 
 ```sh
@@ -48,6 +59,9 @@ rsync -rltvz --exclude .git --exclude node_modules --exclude .env --exclude .nex
 ssh <user>@<host> '. ~/.nvm/nvm.sh && cd payloadapp && npm install && npm run build'
 ```
 
+`npm install`, **not `npm ci`**, because the trial's `--no-deps` scaffold shipped no lockfile. If
+you scaffolded with dependencies (the recommendation above), upload the lockfile and use `npm ci`.
+
 `npm install` plus `next build` took 36 s in the trial with no out-of-memory kill, on a 3.9 GB
 container with about 2.4 GB free. If the template's build script carries
 `NODE_OPTIONS=--max-old-space-size=8000`, that is a **ceiling, not a requirement** — leave it, it
@@ -61,9 +75,14 @@ DATABASE_URL=file:./payload.db
 PAYLOAD_SECRET=<32+ random characters>
 ```
 
-Next.js loads `.env` from the working directory itself, so `npm start` (`next start`) picks these up
-without `--env-file`. `next start` listens on **3000** unless the script passes `-p`, which is why
-the trial registered port 3000.
+The scaffolder writes this file locally with both values. The trial copied it to the server with a
+single `scp` and **never** let it into the rsync (the rsync excludes `.env`, and a heredoc over SSH
+works just as well). Either way it must never be committed.
+
+Next.js loads `.env` from the working directory itself, so `npm start` picks these up without
+`--env-file`. The template's start script is
+`cross-env NODE_OPTIONS=--no-deprecation next start`, and `next start` listens on **3000** unless
+the script passes `-p` — which is why the trial registered port 3000.
 
 ## Migrations — run them before the first start
 

@@ -13,7 +13,8 @@ browser editing.
 ## Requirements
 
 - Mode B: a website of its own (`website_create`), app registered with `serve_at_root=true`.
-- Node 22 LTS (trial: v22.23.2 via nvm's `default` alias).
+- Node 22 LTS (trial: v22.23.2 via nvm's `default` alias — `node_install` →
+  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`).
 - A **MySQL database and user** on that site — create them with the `enhance-database` skill and
   keep the full `<unixUser>_` prefixed names.
 - **Tell the customer this before installing:** Ghost officially supports **MySQL 8 only**, and the
@@ -23,23 +24,24 @@ browser editing.
 
 ## Install (on the server, not locally)
 
-ghost-cli downloads Ghost itself; there is nothing to scaffold or rsync.
+ghost-cli downloads Ghost itself; there is nothing to scaffold or rsync. **Verified live
+2026-09-17** — this exact command, run over SSH with nvm loaded:
 
 ```sh
-ssh <user>@<host>
-. ~/.nvm/nvm.sh
-npm install -g ghost-cli
-mkdir -p ~/ghost && cd ~/ghost
-ghost install --no-prompt --no-stack --no-setup --no-setup-linux-user
+ssh <user>@<host> '. ~/.nvm/nvm.sh && npx --yes ghost-cli@latest install \
+  --no-prompt --no-stack --no-setup --no-setup-linux-user --dir $HOME/ghost'
 ```
 
-About 40 s in the trial (ghost-cli installs with pnpm under the hood). It lays out
-`<home>/ghost/versions/<version>` with a `current` symlink.
+`npx --yes ghost-cli@latest` avoids a global install; `--dir $HOME/ghost` creates and uses the app
+directory, so no `mkdir`/`cd` is needed. About **40 s** in the trial (ghost-cli installs Ghost
+**6.64.0** with pnpm via corepack under the hood). It lays out `<home>/ghost/versions/<version>`
+with a `current` symlink.
 
 Every flag is load-bearing:
 
-- `--no-setup-linux-user` — **the trap**. Without it ghost-cli refuses with a "not readable by other
-  users" check, because the site home is mode `711`. The fix is this flag, **never** a `chmod` on
+- `--no-setup-linux-user` — **the trap**. The trial's first attempt, without it, failed **both**
+  ghost-cli doctor checks on the mode-`711` site home: the node-version check and the folder
+  permission check ("not readable by other users"). The fix is this flag, **never** a `chmod` on
   the site home: the panel owns those modes and loosening them exposes the container's files.
 - `--no-stack` — no nginx/systemd stack checks; the panel is the web server and the process manager.
 - `--no-setup` / `--no-prompt` — no interactive wizard; the config below is written by hand.
@@ -148,7 +150,7 @@ a copy of `content/` first. **Not verified in the trial.**
 
 | Trap | What you see | Fix |
 |---|---|---|
-| ghost-cli's linux-user check | install refuses: the home "is not readable by other users" (mode 711) | `--no-setup-linux-user`; never chmod the site home |
+| ghost-cli's doctor checks | install refuses on the mode-711 home: node-version check **and** "is not readable by other users" | `--no-setup-linux-user`; never chmod the site home |
 | TCP database connection | Ghost cannot connect; MySQL refuses `127.0.0.1` | `socketPath: "/run/mysqld/mysqld.sock"`, no `host`/`port` |
 | `NODE_ENV` in front of the command | `persistent_app_create` refuses the command | `NODE_ENV=production` in `.env` + `node --env-file=.env current/index.js` |
 | MariaDB, not MySQL 8 | nothing at install time; an unsupported combination | works today (verified); say so in the hand-over |

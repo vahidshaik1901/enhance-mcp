@@ -944,6 +944,68 @@ the container was never a problem on this plan (3.9 GB box, ~2.4 GB free) — Ne
 all built there, and the 8 GB `--max-old-space-size` in Payload's template build script is a ceiling,
 not a requirement.
 
+### Node runtime: the three-step sequence
+
+On each of the four sites, in this order:
+
+```
+node_install website=<site>                          # installs nvm + the newest stable, 26.9.0
+node_version_install website=<site> version=22.23.2
+node_version_set_default website=<site> version=22.23.2
+```
+
+**`node_install` alone is not enough.** It leaves the newest *stable* release (26.9.0 here) as nvm's
+`default` alias, and that is what a persistent app with `nodeVersion: "default"` would run. The two
+further calls put the site on the 22 LTS line; all four apps then ran on **v22.23.2** through the
+alias, with nothing pinned on the app itself.
+
+### Certificates: `domain_ssl_issue` worked on all four
+
+DNS was one wildcard `A *.vahi.dev → 65.98.32.45` at Cloudflare, **DNS only** (proxy off). That was
+enough for HTTP-01 on every subdomain: `domain_ssl_issue` succeeded on **all four** sites, each
+returning a real **Let's Encrypt** certificate whose SANs cover both `<sub>.vahi.dev` and
+`www.<sub>.vahi.dev`, expiring **2026-12-16**. No placeholder certificate survived into any
+hand-over. A wildcard DNS record does not issue anything by itself — each website still needs its own
+`domain_ssl_issue` call.
+
+### Exact commands, as run (2026-09-17)
+
+Verbatim, for the recipes in `skills/enhance-apps/references/`:
+
+- **TanStack Start** (local scaffold):
+  `npx --yes @tanstack/cli create <name> --framework React --deployment nitro --package-manager npm --no-git --no-intent --no-toolchain --no-examples --yes`
+  → Vite 8.3, Nitro 3.0 beta, preset `node-server`. Added `"start": "node --env-file=.env
+  .output/server/index.mjs"`; `.env` held `PORT=3000`; rsync excluded `node_modules .output .env dist
+  build .tanstack .nitro`. Server: `npm ci` 4 s, `npm run build` 2 s.
+  `persistent_app_create command="npm start" working_directory=startapp port=3000
+  serve_at_root=true`; log line `Listening on: http://localhost:3000/ (all interfaces)`; probe 200
+  with 2/2 assets.
+- **Ghost** (on the server, nothing scaffolded or rsynced):
+  `npx --yes ghost-cli@latest install --no-prompt --no-stack --no-setup --no-setup-linux-user --dir $HOME/ghost`
+  → Ghost 6.64.0 in ~40 s (pnpm via corepack). The **first attempt, without
+  `--no-setup-linux-user`**, failed *both* doctor checks on the mode-711 home: the node-version check
+  and the folder-permission check.
+- **Payload** (local scaffold):
+  `npx --yes create-payload-app@latest -n <name> -t blank --db sqlite --db-connection-string "file:./payload.db" --use-npm --no-deps --no-agent`
+  → Payload 3.89.0, Next 16.3.3, `@payloadcms/db-sqlite`. The scaffolder writes `.env`
+  (`DATABASE_URL`, `PAYLOAD_SECRET`), which was copied to the server with **`scp`** and never
+  rsynced. `--no-deps` means **no lockfile**, so the server step was `npm install` (not `npm ci`)
+  then `npm run build`, 36 s. The start script is `cross-env NODE_OPTIONS=--no-deprecation next
+  start` (default port 3000).
+  `persistent_app_create command="npm start" working_directory=payloadapp port=3000
+  serve_at_root=true`. Migration fix: `npm run payload -- migrate:create initial` then
+  `npm run payload -- migrate`. *For a real project the recipe recommends scaffolding **with**
+  dependencies so `npm ci` works — the trial did not do that.*
+- **EmDash** (local scaffold): first
+  `npm create --yes emdash@latest <name> -- --template node:starter --pm npm --yes` (the form the
+  docs show — intentionally unstyled), then the fix
+  `npm create --yes emdash@latest <name> -- --template blog --platform node --pm npm --yes`. Start
+  script changed to `"node --env-file=.env ./dist/server/entry.mjs"`; `.env` held the scaffolder's
+  `EMDASH_ENCRYPTION_KEY` plus `HOST=0.0.0.0` and `PORT=4321`. Server: `npm ci` 12–14 s,
+  `npm run build` ~10 s. `persistent_app_create command="npm start" port=4321 serve_at_root=true`.
+  Switching template = a **new folder**, built there, then
+  `persistent_app_update working_directory=<new>` (restarts the container); the old folder is kept.
+
 ### Traps and fixes
 
 - **Ghost 1 — the home directory is mode 711.** `ghost install` refuses with a "not readable by other
@@ -973,12 +1035,13 @@ not a requirement.
   returned 200 and the error was rendered client-side. Verification must load the **login** page and
   read `persistent_app_log`, not just collect status codes. This is now rule 5 of the
   `enhance-apps` skill.
-- **EmDash — `starter` is intentionally unstyled.** The user reported the site "looks wrong"; assets
-  were all 200 and the deploy was correct — the `starter` template ships "minimal styling … a base
-  you can build on" by design. Fixed by scaffolding `--template blog --platform node` into a second
-  directory and pointing the app at it with `persistent_app_update working_directory=emdashblog`
-  (which restarted it): styled page, ~27 KB of CSS with theme tokens. The new directory means a
-  **fresh database**, so setup had to be redone.
+- **EmDash — `node:starter` is intentionally unstyled.** The user reported the site "looks wrong";
+  assets were all 200 and the deploy was correct — the `node:starter` template, which is the form
+  EmDash's own docs show, ships "minimal styling … a base you can build on" by design. Fixed by
+  scaffolding `--template blog --platform node` into a second directory, building there, and
+  pointing the app at it with `persistent_app_update working_directory=emdashblog` (which restarted
+  it): styled page, ~27 KB of CSS with theme tokens. The old directory was left in place. The new
+  directory means a **fresh database**, so setup had to be redone.
 - **EmDash — log and HTML noise.** `ExperimentalWarning` from `node:sqlite` on every start is
   normal, and the "an error occurred" strings in the admin HTML are the i18n catalogue, not errors.
 - **EmDash — Node ≥ 22.16** is required (`node:sqlite`).

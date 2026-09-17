@@ -77,14 +77,26 @@ the customer has to act outside Claude Code (DNS at their registrar, a setup scr
 4. **SSL.** Once DNS resolves, `domain_ssl_issue`, then `domain_ssl_get` to confirm a real issuer,
    then offer `domain_set_force_ssl enabled=true`. An admin login must not be handed over on a
    placeholder certificate or over plain HTTP.
+   - **Verified live 2026-09-17:** `domain_ssl_issue` succeeded on **all four** trial subdomains —
+     real **Let's Encrypt** certificates whose SANs cover both `<sub>.vahi.dev` and
+     `www.<sub>.vahi.dev`, expiring 2026-12-16 — with DNS a single wildcard `A` record at
+     Cloudflare, **DNS only / proxy off**. A wildcard record is enough; each site still needs its
+     own `domain_ssl_issue`.
 5. **SSH.** `ssh_keys_list`; add the key with `ssh_key_add` if it is missing; `ssh_connection_info`
    for the login line. A mode-B subdomain is a **separate container with its own unix user**, so the
    key has to be added per site. `ssh` and `rsync` need the sandbox disabled (safety rule 7).
 6. **Node runtime.** `node_versions_installed` is a hint only (it omits the version nvm's `default`
-   alias points at); `. ~/.nvm/nvm.sh && nvm ls` over SSH is the truth. No `~/.nvm` → `node_install`
-   (allow a minute). Then put the site on the **Node 22 LTS line** unless the recipe says otherwise:
-   `node_version_install website=<site> version=22.x.y` then
-   `node_version_set_default website=<site> version=22.x.y`. All four trial stacks ran on v22.23.2.
+   alias points at); `. ~/.nvm/nvm.sh && nvm ls` over SSH is the truth. The **verified sequence**
+   (2026-09-17, on all four trial sites):
+   ```
+   node_install website=<site>                                   # nvm + newest stable
+   node_version_install website=<site> version=22.23.2           # the LTS line
+   node_version_set_default website=<site> version=22.23.2
+   ```
+   `node_install` alone is **not enough**: it installs nvm plus the newest **stable** release and
+   leaves that as the `default` alias — 26.9.0 in the trial — which is not what these apps want. All
+   three steps, in that order; then all four stacks ran on v22.23.2 through the `default` alias with
+   nothing pinned on the app. Allow a minute for `node_install`.
 7. **Database**, only when the recipe needs one. Use the `enhance-database` skill: `db_create`,
    `db_user_create` (password shown once), `db_user_set_privileges grants=["all"]`. Keep the **full
    prefixed names**. Read "MySQL from Node" below before writing the config.
@@ -102,10 +114,14 @@ the customer has to act outside Claude Code (DNS at their registrar, a setup scr
    never the home root. Never upload a local `.env` or a local database file.
 10. **Install and build on the server**, over SSH in the `<app dir>` with nvm loaded
     (`. ~/.nvm/nvm.sh && cd <app dir> && …`): `npm ci` (frameworks need dev dependencies to build,
-    so not `--omit=dev`), then the build. Building in the container is fine on this plan — the trial
-    built Next.js, Astro and Nitro on a 3.9 GB box with no memory kill.
-11. **Write `.env` on the server** (heredoc over SSH, never rsync one up, never commit it). It holds
-    the port, the database credentials and any secret key the scaffolder generated.
+    so not `--omit=dev`), then the build. `npm ci` needs a lockfile — a scaffold created without
+    dependencies has none, and then it is `npm install` (Payload's recipe; prefer scaffolding *with*
+    dependencies so `npm ci` works). Building in the container is fine on this plan — the trial built
+    Next.js, Astro and Nitro on a 3.9 GB box with no memory kill.
+11. **Put `.env` on the server** — a heredoc over SSH, or `scp` of the file the scaffolder generated
+    (Payload). **Never in the rsync**, never committed. It holds the port, the database credentials
+    and any secret key the scaffolder generated (EmDash's `EMDASH_ENCRYPTION_KEY` must be the same
+    value on every redeploy).
 12. **Migrations, before the first start.** Recipes that need them say so. An app that starts
     against an empty database can answer 200 and still be broken (Payload did exactly that).
 13. **Register the app:**

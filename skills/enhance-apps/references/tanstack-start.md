@@ -12,25 +12,29 @@ they want to write content in a browser.
 ## Requirements
 
 - Mode B: a website of its own (`website_create`), app registered with `serve_at_root=true`.
-- Node 22 LTS. The trial ran on v22.23.2 through nvm's `default` alias; nothing was pinned on the
+- Node 22 LTS. The trial ran on v22.23.2 through nvm's `default` alias (`node_install` →
+  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`); nothing was pinned on the
   app.
 - No database. Add one with the `enhance-database` skill only if the app needs it.
 - `canUse.persistentApps` true, `featureSSH` on the subscription.
 
 ## Scaffold (locally)
 
-Use the project's current create command and select the **Nitro deployment target**:
+**Verified live 2026-09-17** — this exact command:
 
 ```sh
-npx create-start-app@latest <name>    # check the current command in the TanStack docs
-# what matters: --deployment nitro
+npx --yes @tanstack/cli create <name> --framework React --deployment nitro \
+  --package-manager npm --no-git --no-intent --no-toolchain --no-examples --yes
 ```
 
-The `--deployment nitro` target is the one that produces a plain Node server entry
+It produced Vite 8.3 and Nitro 3.0 beta with the **`node-server` preset**. The `--no-*` flags just
+keep the scaffolder non-interactive and the tree minimal; the load-bearing one is
+**`--deployment nitro`**, the target that produces a plain Node server entry
 (`.output/server/index.mjs`). Other targets build for other hosts and may produce no Node entry at
 all — the trial used nitro; nothing else was tried.
 
-Add the start script to `package.json` before uploading:
+The scaffold ships no `start` script, so add this one to `package.json` before uploading
+(**verified live 2026-09-17**):
 
 ```json
 "scripts": { "start": "node --env-file=.env .output/server/index.mjs" }
@@ -38,16 +42,21 @@ Add the start script to `package.json` before uploading:
 
 ## Upload and build
 
+The exclude list the trial used (**verified live 2026-09-17**):
+
 ```sh
 # local, sandbox disabled
-rsync -rltvz --exclude .git --exclude node_modules --exclude .env --exclude .output \
+rsync -rltvz --exclude .git --exclude node_modules --exclude .output --exclude .env \
+  --exclude dist --exclude build --exclude .tanstack --exclude .nitro \
   <src>/ <user>@<host>:startapp/
 
 # on the server
 ssh <user>@<host> '. ~/.nvm/nvm.sh && cd startapp && npm ci && npm run build'
 ```
 
-Trial timings on the container: `npm ci` 4 s, build 2 s. The build writes `.output/`.
+`.tanstack` and `.nitro` are build caches; uploading them wastes time and can confuse the build.
+
+Trial timings on the container: `npm ci` 4 s, `npm run build` 2 s. The build writes `.output/`.
 
 ## Env file (`<app dir>/.env`, written on the server)
 
@@ -85,7 +94,8 @@ handing over the URL.
 
 - `persistent_app_probe website=<site> app_id=<id>` → HTTP 200, certificate valid, assets all
   answered (2/2 in the trial).
-- `persistent_app_log` → the listening line, no stack traces.
+- `persistent_app_log` → the listening line
+  (`Listening on: http://localhost:3000/ (all interfaces)` in the trial), no stack traces.
 - `curl -sS -o /dev/null -w '%{http_code}' https://<domain>/` and one client-side route.
 
 ## What to back up

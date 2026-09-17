@@ -13,29 +13,34 @@ newsletter/membership publication, Payload when the content model is written in 
 ## Requirements
 
 - Mode B: a website of its own (`website_create`), app registered with `serve_at_root=true`.
-- **Node ≥ 22.16** — it uses `node:sqlite`. The trial ran v22.23.2 through nvm's `default` alias;
-  pin it on the app with `node_version=` if the site's default may move below 22.16.
+- **Node ≥ 22.16** — it uses `node:sqlite`. The trial ran v22.23.2 through nvm's `default` alias
+  (`node_install` → `node_version_install 22.23.2` → `node_version_set_default 22.23.2`); pin it on
+  the app with `node_version=` if the site's default may move below 22.16.
 - No database to provision: SQLite in a file inside the app directory.
 - `canUse.persistentApps`, `featureSSH`.
 
 ## Scaffold (locally) — pick a finished template
 
-Use EmDash's own create command (check its docs for the current name) with:
+**Verified live 2026-09-17** — this exact command:
 
+```sh
+npm create --yes emdash@latest <name> -- --template blog --platform node --pm npm --yes
 ```
---template blog --platform node
-```
 
-- Templates: **`blog`**, `starter`, `marketing`, `portfolio`. Platforms: `node`, `cloudflare` — on
-  Enhance it is always `node`.
-- **Never `starter` for a customer install.** It is intentionally unstyled ("minimal styling … a
-  base you can build on", per its own README). The trial deployed it and the customer read the
-  unstyled page as a broken install — correctly, from their side. `blog` ships a real theme
-  (~27 KB of CSS with theme tokens).
-- The scaffolder generates an **`EMDASH_ENCRYPTION_KEY`**. Keep it: it encrypts stored secrets, so
-  the same value has to travel to the server and stay the same across redeploys.
+- The trial's **first** scaffold was
+  `npm create --yes emdash@latest <name> -- --template node:starter --pm npm --yes`, the form
+  **EmDash's own docs show** — and `node:starter` is **intentionally unstyled** ("minimal styling …
+  a base you can build on", per its own README). The trial deployed it and the customer read the
+  unstyled page as a broken install — correctly, from their side. The `--template blog
+  --platform node` form above is the verified fix and ships a real theme (~27 KB of CSS with theme
+  tokens).
+- **Never a bare starter for a customer install.** Other finished templates: `marketing`,
+  `portfolio`. Platforms: `node`, `cloudflare` — on Enhance it is always `node`.
+- The scaffolder generates an **`EMDASH_ENCRYPTION_KEY`** into the local `.env`. Keep it: it
+  encrypts stored secrets, so the same value has to travel to the server and stay the same across
+  redeploys.
 
-Add or confirm the start script:
+Change the start script to load the env file (the scaffold's own script does not):
 
 ```json
 "scripts": { "start": "node --env-file=.env ./dist/server/entry.mjs" }
@@ -105,14 +110,24 @@ and offer to park the app (`persistent_app_update … start_mode=manual`) until 
 - Do **not** grep the admin HTML for "error": it carries the whole i18n catalogue, "an error
   occurred" strings included, and they mean nothing.
 
-## Changing the template later
+## Changing the template later — the verified procedure
 
-A different template means a **fresh database**: the trial scaffolded `blog` into a second directory
-and pointed the app at it with `persistent_app_update website=<site> app_id=<id>
-working_directory=emdashblog` (which restarted it). The site came up styled, with the setup wizard
-open again — the earlier setup did not carry over. So **decide the template before the customer
-claims the site**, and if you must switch afterwards, warn them that the admin account and any
-content are being left behind in the old directory.
+A different template means a **fresh database**, so never edit the running app directory in place.
+The trial did this (**verified live 2026-09-17**):
+
+1. Scaffold the new template into a **new local folder** with the create command above.
+2. Copy the same `EMDASH_ENCRYPTION_KEY` into its `.env`, rsync it to a **new directory on the
+   server** (`emdashblog`, alongside the old one), then `npm ci && npm run build` there.
+3. Point the app at it: `persistent_app_update website=<site> app_id=<id>
+   working_directory=emdashblog`. This restarts the container.
+4. **The old folder is kept**, untouched, with its database and uploads — it is the rollback, and
+   the only copy of whatever was in the old admin. Remove it over SSH only when the customer says
+   the new site is right.
+
+The site came up styled, with the setup wizard **open again** — the earlier setup did not carry
+over. So **decide the template before the customer claims the site**, and if you must switch
+afterwards, warn them first that the admin account and any content stay behind in the old
+directory.
 
 ## What to back up
 
@@ -126,7 +141,7 @@ content are being left behind in the old directory.
 
 | Trap | What you see | Fix |
 |---|---|---|
-| `starter` template | a correct deploy that looks broken: an unstyled page | scaffold `--template blog` (or another finished theme) for any customer install |
+| `node:starter` template (what the docs show) | a correct deploy that looks broken: an unstyled page | scaffold `--template blog --platform node` (or another finished theme) for any customer install |
 | Node below 22.16 | the app fails to start on `node:sqlite` | install and default the Node 22 LTS line; pin `node_version` on the app |
 | Missing `HOST=0.0.0.0` | the proxy gets nothing; 502/503 on the domain | `HOST` and `PORT` in `.env`, loaded by `--env-file` in the start script |
 | Passkey setup skipped "for later" | the setup wizard stays open to the internet | claim it immediately, or park the app with `start_mode=manual` |
