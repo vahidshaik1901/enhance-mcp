@@ -87,6 +87,15 @@ function firstSrcsetCandidate(value: string): string | undefined {
   return first.split(/\s+/)[0];
 }
 
+export interface AssetUrls {
+  /** At most MAX_ASSETS paths, in document order, deduplicated. */
+  urls: string[];
+  /** More same-origin references were found than `urls` holds, so some were never fetched. */
+  truncated: boolean;
+  /** Every distinct same-origin reference on the page, cap or no cap. */
+  totalFound: number;
+}
+
 /**
  * Pure: every reference in `html` that the browser would fetch from the page's own origin, as a
  * path on that origin (`/next.svg?a=1`), in document order, deduplicated and capped.
@@ -97,13 +106,16 @@ function firstSrcsetCandidate(value: string): string | undefined {
  * A missed attribute costs one unchecked asset; a reference read here that the browser would never
  * request costs a FALSE failure, which is the worse error — so comments and the bodies of
  * `<script>` and `<style>` are removed before anything is matched.
+ *
+ * The cap is reported rather than applied silently: a caller that says "all 12 assets answered"
+ * about a page naming thirty has told the customer something that is not true.
  */
-export function extractAssetUrls(html: string, pageUrl: string): string[] {
+export function extractAssetUrls(html: string, pageUrl: string): AssetUrls {
   let origin: string;
   try {
     origin = new URL(pageUrl).origin;
   } catch {
-    return [];
+    return { urls: [], truncated: false, totalFound: 0 };
   }
   // Script and style bodies first: a `"<!--"` string inside one would otherwise open a comment
   // that swallows the real markup after it.
@@ -111,7 +123,7 @@ export function extractAssetUrls(html: string, pageUrl: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   const add = (raw: string | undefined): void => {
-    if (raw === undefined || out.length >= MAX_ASSETS) return;
+    if (raw === undefined) return;
     // `&amp;` is how a query string is written in HTML; fetching it verbatim would 404 on a URL
     // that works perfectly in a browser.
     const ref = raw.trim().replace(/&amp;/gi, '&');
@@ -126,7 +138,9 @@ export function extractAssetUrls(html: string, pageUrl: string): string[] {
     const path = `${u.pathname}${u.search}`;
     if (seen.has(path)) return;
     seen.add(path);
-    out.push(path);
+    // Counting past the cap is the only reason to keep going: `seen` is what makes `totalFound`
+    // a count of distinct references rather than of tags.
+    if (out.length < MAX_ASSETS) out.push(path);
   };
   for (const tag of markup.matchAll(ASSET_TAG_RE)) {
     const name = tag[1]!.toLowerCase();
@@ -141,7 +155,7 @@ export function extractAssetUrls(html: string, pageUrl: string): string[] {
     // app serves that family of images at all.
     if (attrs['srcset'] !== undefined) add(firstSrcsetCandidate(attrs['srcset']));
   }
-  return out;
+  return { urls: out, truncated: seen.size > out.length, totalFound: seen.size };
 }
 
 /**
@@ -168,9 +182,13 @@ export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (it
       }
     }
   };
-  // At least one worker whenever there is anything to do: a limit of 0 must not silently return a
-  // list of holes that every caller would then read as "nothing answered".
-  const workers = items.length === 0 ? 0 : Math.max(1, Math.min(Math.trunc(limit), items.length));
+  // At least one worker whenever there is anything to do: a limit of 0 — or a NaN, which every
+  // comparison here would carry through to `Array.from({ length: NaN })` — must not silently
+  // return a list of holes that every caller would then read as "nothing answered".
+  // Infinity falls in here too and means one worker, not "unbounded": the one thing this function
+  // exists to prevent is a burst of parallel fetches.
+  const wanted = Number.isFinite(limit) ? Math.trunc(limit) : 1;
+  const workers = items.length === 0 ? 0 : Math.max(1, Math.min(wanted, items.length));
   await Promise.all(Array.from({ length: workers }, () => worker()));
   return results;
 }
@@ -190,6 +208,11 @@ export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (it
  * within `timeoutMs` whatever the server does. And once `maxBodyBytes` are collected there is
  * nothing left to learn, so the response is settled and the socket destroyed rather than read to
  * the end. The `settled` flag makes the promise settle exactly once across all of those paths.
+ *
+ * COVERAGE: no unit test reaches a real TLS socket — the tools inject a fake probe through
+ * `ctx.httpProbe`, and the pure parts above are tested on their own. This function's coverage of
+ * record is `test/e2e/milestone-c.e2e.test.ts`, which probes the live site over TLS; change it and
+ * run that suite.
  */
 export const httpsProbe: HttpProbe = (req) =>
   new Promise((resolve, reject) => {

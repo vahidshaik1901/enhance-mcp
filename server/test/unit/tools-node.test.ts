@@ -85,6 +85,15 @@ describe('compareSemverDesc', () => {
     expect(first).toEqual(second);
     expect(first.filter((v) => !v.startsWith('v'))).toEqual(['26.8.1', '22.23.2', '4.9.1']);
   });
+
+  it('falls back DESCENDING, like the rest of the comparator', () => {
+    // The fallback is a string compare, and this comparator is "newest first": ascending there
+    // would sort the unparseable strings the opposite way from everything around them.
+    expect(compareSemverDesc('vA', 'vB')).toBeGreaterThan(0);
+    expect(compareSemverDesc('vB', 'vA')).toBeLessThan(0);
+    expect(compareSemverDesc('vA', 'vA')).toBe(0);
+    expect(['va.1.0', 'vc.1.0', 'vb.1.0'].sort(compareSemverDesc)).toEqual(['vc.1.0', 'vb.1.0', 'va.1.0']);
+  });
 });
 
 describe('node_versions_available', () => {

@@ -53,7 +53,7 @@ export const dbCreate = defineTool({
   name: 'db_create',
   tier: 'customer',
   risk: 'write',
-  description: 'Creates a MySQL database. The panel prefixes the name with the unix user, so "shop" becomes "<unixUser>_shop"; the full name is returned. Apps connect with host "localhost" (the unix socket), never 127.0.0.1.',
+  description: 'Creates a MySQL database. The panel prefixes the name with the unix user, so "shop" becomes "<unixUser>_shop"; the full name is returned. PHP apps connect with host localhost (the unix socket), never 127.0.0.1; Node clients need socketPath /run/mysqld/mysqld.sock and no host, because a Node driver reads "localhost" as TCP and the server refuses that (verified live).',
   input: z.object({ website: websiteArg, name: nameArg }),
   async handler({ website, name }, ctx) {
     const s = await dbSite(ctx, website);
@@ -70,6 +70,7 @@ export const dbCreate = defineTool({
         `database ${safe(full)} created.`,
         kv([
           ['connect from PHP', 'host DB_HOST=localhost, socket; not 127.0.0.1'],
+          ['connect from Node', "socketPath '/run/mysqld/mysqld.sock', no host: a Node driver reads localhost as TCP and the server refuses it"],
           ['next', `db_user_create website=${safe(website)} to add a login, then db_user_set_privileges`],
         ]),
       ].join('\n'),
@@ -260,7 +261,7 @@ export const dbUserCreate = defineTool({
   name: 'db_user_create',
   tier: 'customer',
   risk: 'write',
-  description: 'Creates a MySQL user. The panel prefixes the name with the unix user. When no password is given a strong one is generated and returned once, in structuredContent. Apps connect with host "localhost".',
+  description: 'Creates a MySQL user. The panel prefixes the name with the unix user. When no password is given a strong one is generated and returned once, in structuredContent. PHP apps connect with host localhost (the unix socket); Node clients need socketPath /run/mysqld/mysqld.sock and no host.',
   input: z.object({ website: websiteArg, username: userArg, password: z.string().min(8).optional().describe('Optional; a strong password is generated when omitted') }),
   async handler({ website, username, password }, ctx) {
     const s = await dbSite(ctx, website);
@@ -278,6 +279,7 @@ export const dbUserCreate = defineTool({
         kv([
           ['password', 'shown once, in structuredContent.password; store it now'],
           ['connect from PHP', 'host DB_HOST=localhost'],
+          ['connect from Node', "socketPath '/run/mysqld/mysqld.sock', no host"],
           ['next', `db_user_set_privileges website=${safe(website)} username=${safe(short)} database=<db> grants=all`],
         ]),
       ].join('\n'),

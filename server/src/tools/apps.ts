@@ -205,8 +205,11 @@ export async function pathPreflight(ctx: ToolContext, w: Website, path: string):
   return { status: 404, path: hits[0]!.path, taken: false, detail: 'HTTP 404' };
 }
 
-const pathClashRefusal = (url: string, seen: string): string =>
-  `Registering this app would replace what ${url} serves today (${seen}). Nothing was sent to the panel. Pick a path that returns 404 now, or pass replace_existing_path=true if replacing it is intended.`;
+/** `subject` names the edit that hit the clash: a create registers an app, an update moves the
+ *  proxy of one that already exists, and telling an updater it is "registering" is a small lie
+ *  that sends them looking for an app they think they just made. */
+const pathClashRefusal = (url: string, seen: string, subject: 'create' | 'move'): string =>
+  `${subject === 'create' ? 'Registering this app' : "Moving this app's proxy here"} would replace what ${url} serves today (${seen}). Nothing was sent to the panel. Pick a path that returns 404 now, or pass replace_existing_path=true if replacing it is intended.`;
 const rootClashRefusal = (seen: string): string =>
   `This website already serves content at its root (${seen}). A root app takes over the ENTIRE site, including every PHP and static page. Nothing was sent to the panel. Use a dedicated website or subdomain for a whole-site Node app, or pass replace_existing_path=true.`;
 const replacedNote = (url: string, seen: string): string => `this app replaced what ${url} served before (${seen}); that content is no longer reachable while the app is registered`;
@@ -241,10 +244,12 @@ const DELETE_RESTART_NOTE = "Deleting also restarts the website container, so th
 
 const appIdArg = z.string().uuid().describe('Persistent app id from persistent_apps_list');
 const startModeArg = z.enum(['automatic', 'manual']);
-const commandArg = z
+export const commandArg = z
   .string()
   .min(1)
-  .describe('Command to run, exec\'d as argv without a shell, e.g. "node server.js" or "npm start". No "VAR=value" prefixes, pipes, redirection or quoted arguments containing spaces — put those in an npm script or a wrapper script.');
+  // Everything validateCommand refuses, named here: the refusal message arrives after the model has
+  // already guessed, and a list that leaves a character out invites a second broken guess.
+  .describe('Command to run, exec\'d as argv without a shell, e.g. "node server.js" or "npm start". Refused: a leading "VAR=value"; any of the characters | & ; < > $ ` anywhere in it (an "=>" arrow is fine); and a quoted segment containing whitespace such as -e "const x = 1". Put the port, the environment and anything needing a shell in an npm script or a wrapper script and run that.');
 const portArg = z
   .number()
   .int()
@@ -296,7 +301,7 @@ export const persistentAppCreate = defineTool({
   name: 'persistent_app_create',
   tier: 'customer',
   risk: 'write',
-  description: `Registers a persistent app: a command the panel starts in the website container, keeps running, and (with proxy_path and port) exposes at https://<primary domain>/<proxy_path>/. The command runs without a shell — it is split on whitespace and exec'd as argv, so "VAR=value" prefixes, pipes, redirection and quoted arguments with spaces are refused here; put the port and any environment in an npm script or a wrapper script and use "npm start" or "node server.js". Nothing injects PORT, so the app must listen on the port given here by its own configuration, and ${PROXY_SHADOWS_DOCROOT}. ${PROXY_STRIPS_PREFIX} Before registering a proxy this tool fetches both /<proxy_path> and /<proxy_path>/ on the live site and refuses unless both answer 404, naming what it would replace (an existing directory shows only on the bare form, as a 301 to the trailing slash); replace_existing_path=true proceeds anyway and the result records what was replaced. serve_at_root=true instead gives the app the WHOLE domain (the panel's empty proxy path): it receives the full request path with nothing stripped, and public_html stops being served — use it only on a website or subdomain dedicated to the app. The panel refuses a proxy path another app already uses (409 already_exists) but does not check ports, so pick a free one from persistent_apps_list. working_directory is relative to the site home (never absolute); proxy_path never starts with "/". node_version defaults to "default", nvm's default alias: an app created without a Node version never starts (verified live: "exec: node: not found"). Registering the app restarts the whole website container, so the site's PHP and static pages are interrupted for a second or two. Requires persistent apps on the plan and Node installed (node_install). The preview domain never proxies apps.`,
+  description: `Registers a persistent app: a command the panel starts in the website container, keeps running, and (with proxy_path and port) exposes at https://<primary domain>/<proxy_path>/. The command runs without a shell — it is split on whitespace and exec'd as argv, so "VAR=value" prefixes, pipes, redirection and quoted arguments with spaces are refused here; put the port and any environment in an npm script or a wrapper script and use "npm start" or "node server.js". Nothing injects PORT, so the app must listen on the port given here by its own configuration, and ${PROXY_SHADOWS_DOCROOT}. ${PROXY_STRIPS_PREFIX} Before registering a proxy this tool fetches both /<proxy_path> and /<proxy_path>/ on the live site (two probes in parallel, so up to about 5 s) and refuses unless both answer 404, naming what it would replace (an existing directory shows only on the bare form, as a 301 to the trailing slash); replace_existing_path=true proceeds anyway and the result records what was replaced. serve_at_root=true instead gives the app the WHOLE domain (the panel's empty proxy path): it receives the full request path with nothing stripped, and public_html stops being served — use it only on a website or subdomain dedicated to the app. The panel refuses a proxy path another app already uses (409 already_exists) but does not check ports, so pick a free one from persistent_apps_list. working_directory is relative to the site home (never absolute); proxy_path never starts with "/". node_version defaults to "default", nvm's default alias: an app created without a Node version never starts (verified live: "exec: node: not found"). Registering the app restarts the whole website container, so the site's PHP and static pages are interrupted for a second or two. Requires persistent apps on the plan and Node installed (node_install). The preview domain never proxies apps.`,
   input: z.object({
     website: websiteArg,
     command: commandArg,
@@ -335,7 +340,7 @@ export const persistentAppCreate = defineTool({
       const target = safe(appUrl(s.w, proxy.path));
       const pre = await pathPreflight(ctx, s.w, proxy.path);
       if (pre.taken && !args.replace_existing_path) {
-        return fail(`${s.identity}\n${proxy.path === '' ? rootClashRefusal(pre.detail) : pathClashRefusal(target, pre.detail)}`, { created: false, url: appUrl(s.w, proxy.path), pathStatus: pre.status });
+        return fail(`${s.identity}\n${proxy.path === '' ? rootClashRefusal(pre.detail) : pathClashRefusal(target, pre.detail, 'create')}`, { created: false, url: appUrl(s.w, proxy.path), pathStatus: pre.status });
       }
       if (pre.taken) {
         notes.push(replacedNote(target, pre.detail));
@@ -349,7 +354,17 @@ export const persistentAppCreate = defineTool({
     await ctx.client.call('POST', '/websites/{website_id}/apps/persistent', () => ctx.client.api.POST('/websites/{website_id}/apps/persistent', { params: { path: { website_id: s.id } }, body }));
     // The create answers 201 with no body, so the id comes from the listing: the newest app whose
     // command, working directory and proxy path match what was just sent.
-    const match = (await listApps(ctx, s.id)).filter((a) => a.command === body.command && (a.workingDirectory ?? undefined) === body.workingDirectory && (a.proxyDetails?.path ?? undefined) === body.proxyDetails?.path).at(-1);
+    //
+    // That read is a convenience, and the write it follows has already landed. A blip on it — a
+    // 5xx, a reset, the client's own timeout — must not come back as an error result: a caller
+    // told "this failed" creates the app a second time. The app is reported without its id instead.
+    let match: ListedApp | undefined;
+    let lookupError: string | undefined;
+    try {
+      match = (await listApps(ctx, s.id)).filter((a) => a.command === body.command && (a.workingDirectory ?? undefined) === body.workingDirectory && (a.proxyDetails?.path ?? undefined) === body.proxyDetails?.path).at(-1);
+    } catch (e) {
+      lookupError = safe((e as Error).message);
+    }
     const url = appUrl(s.w, proxy?.path);
     const lines = [
       s.identity,
@@ -370,7 +385,7 @@ export const persistentAppCreate = defineTool({
     if (proxy?.path === '') lines.push(rootAppNote(safe(url)));
     else if (proxy) lines.push(PROXY_SHADOWS_DOCROOT);
     lines.push(...notes);
-    if (!match) lines.push('the panel accepted it but the listing did not show a matching app yet; run persistent_apps_list to find its id.');
+    if (!match) lines.push(`the panel accepted it but the listing did not show a matching app yet; run persistent_apps_list to find its id.${lookupError ? ` The listing could not be read: ${lookupError}` : ''}`);
     lines.push(`next: persistent_app_log${match ? ` app_id=${match.id}` : ''} until it reports listening, then persistent_app_probe. ${PREVIEW_NOTE}`);
     return ok(lines.join('\n'), { id: match?.id ?? null, url, created: true, ...(replaced ? { replaced } : {}), ...(notes.length > 0 ? { note: notes.join(' ') } : {}) });
   },
@@ -380,7 +395,7 @@ export const persistentAppUpdate = defineTool({
   name: 'persistent_app_update',
   tier: 'customer',
   risk: 'write',
-  description: `Changes a persistent app: command, working directory, start mode, Node version, proxy path, port or WebSocket flag. Only the fields given are sent and the rest keep their current value; a new proxy path or port is merged with the current proxy. Moving the proxy to a different path fetches both /<path> and /<path>/ on the live site first and refuses unless both answer 404; replace_existing_path=true proceeds anyway. clear_proxy unexposes the app; clear_node_version returns the app to nvm's default alias by setting node_version to "default" (the panel's unset form is not used because an app with no Node version at all never starts, verified live). The command runs without a shell, under the same rules as persistent_app_create. ${UPDATE_RESTART_NOTE}`,
+  description: `Changes a persistent app: command, working directory, start mode, Node version, proxy path, port or WebSocket flag. Only the fields given are sent and the rest keep their current value; a new proxy path or port is merged with the current proxy. Moving the proxy to a different path fetches both /<path> and /<path>/ on the live site first (two probes in parallel, so up to about 5 s) and refuses unless both answer 404; replace_existing_path=true proceeds anyway. This tool cannot make an existing app whole-site or take one off the root: the panel's empty proxy path is only settable at create time, so delete the app and recreate it with serve_at_root=true (or with a proxy_path) instead. clear_proxy unexposes the app; clear_node_version returns the app to nvm's default alias by setting node_version to "default" (the panel's unset form is not used because an app with no Node version at all never starts, verified live). The command runs without a shell, under the same rules as persistent_app_create. ${UPDATE_RESTART_NOTE}`,
   input: z.object({
     website: websiteArg,
     app_id: appIdArg,
@@ -399,7 +414,7 @@ export const persistentAppUpdate = defineTool({
     const s = await appsSite(ctx, args.website, 'Persistent apps');
     if (!s.ok) return s.result;
     const current = findApp(await listApps(ctx, s.id), args.app_id);
-    if (!current) return fail(`${s.identity}\nno persistent app with id ${safe(args.app_id)} on this website; run persistent_apps_list.`, { updated: false });
+    if (!current) return fail(`${s.identity}\nno persistent app with id ${safe(args.app_id)} on this website; run persistent_apps_list. Nothing was changed.`, { updated: false });
     const patch: AppPatch = {};
     const notes: string[] = [];
     /** Set only when the proxy moves to a path the app does not already hold: that is the one edit
@@ -446,7 +461,7 @@ export const persistentAppUpdate = defineTool({
     if (movedTo !== undefined) {
       const target = safe(appUrl(s.w, movedTo));
       const pre = await pathPreflight(ctx, s.w, movedTo);
-      if (pre.taken && !args.replace_existing_path) return fail(`${s.identity}\n${pathClashRefusal(target, pre.detail)}`, { updated: false, url: appUrl(s.w, movedTo), pathStatus: pre.status });
+      if (pre.taken && !args.replace_existing_path) return fail(`${s.identity}\n${pathClashRefusal(target, pre.detail, 'move')}`, { updated: false, url: appUrl(s.w, movedTo), pathStatus: pre.status });
       if (pre.taken) {
         notes.push(replacedNote(target, pre.detail));
         replaced = { status: pre.status, path: pre.path };
@@ -476,7 +491,7 @@ export const persistentAppLog = defineTool({
     const s = await appsSite(ctx, website, 'Persistent apps');
     if (!s.ok) return s.result;
     const current = findApp(await listApps(ctx, s.id), app_id);
-    if (!current) return fail(`${s.identity}\nno persistent app with id ${safe(app_id)} on this website; run persistent_apps_list.`, { bytes: 0 });
+    if (!current) return fail(`${s.identity}\nno persistent app with id ${safe(app_id)} on this website; run persistent_apps_list. Nothing was read.`, { bytes: 0 });
     // The panel sends the log as a JSON string; read it as text and unquote it, as php_error_log does.
     const raw = await ctx.client.call<string>('GET', '/websites/{website_id}/apps/persistent/{app_id}', () =>
       ctx.client.api.GET('/websites/{website_id}/apps/persistent/{app_id}', { params: { path: { website_id: s.id, app_id } }, parseAs: 'text' }),
@@ -493,13 +508,16 @@ export const persistentAppLog = defineTool({
 });
 
 /** Convention 12: the target id is `<websiteId>:<appId>`, the same shape the database tools use,
- *  so `dbTargetSite` does the split and the re-read by id; this adds the plan gate and the app
- *  lookup. Preview and handler both go through it, never re-resolving the `website` string. */
-async function appTarget(ctx: ToolContext, target: Target): Promise<{ site: DbSite; w: Website; appId: string; app: ListedApp | undefined }> {
+ *  so `dbTargetSite` does the split and the re-read by id; this adds the plan gate and, when asked,
+ *  the app lookup. Preview and handler both go through it, never re-resolving the `website` string.
+ *
+ *  `lookupApp` is off for the handler: it deletes by id and prints nothing about the app, so the
+ *  listing it used to fetch there was a request issued and thrown away. */
+async function appTarget(ctx: ToolContext, target: Target, lookupApp = true): Promise<{ site: DbSite; w: Website; appId: string; app: ListedApp | undefined }> {
   const { site, name: appId, website: w } = await dbTargetSite(ctx, target);
   const gate = persistentAppsGate(site, w, 'Persistent apps');
   if (gate) throw new Error("Persistent apps are not enabled for this website's plan");
-  return { site, w, appId, app: findApp(await listApps(ctx, w.id), appId) };
+  return { site, w, appId, app: lookupApp ? findApp(await listApps(ctx, w.id), appId) : undefined };
 }
 
 export const persistentAppDelete = defineTool({
@@ -521,15 +539,22 @@ export const persistentAppDelete = defineTool({
     return `${site.identity}\nThis will stop persistent app ${safe(appId)} (${what}) and remove it from the panel. The URL stops answering immediately; the files in the container stay. ${DELETE_RESTART_NOTE}`;
   },
   async handler(_args, ctx, target) {
-    const { site, w, appId } = await appTarget(ctx, target!);
+    const { site, w, appId } = await appTarget(ctx, target!, false);
     await ctx.client.call('DELETE', '/websites/{website_id}/apps/persistent/{app_id}', () => ctx.client.api.DELETE('/websites/{website_id}/apps/persistent/{app_id}', { params: { path: { website_id: w.id, app_id: appId } } }));
     return ok(`${site.identity}\npersistent app ${safe(appId)} stopped and removed. Its log file persistent_app_${safe(appId)}.log stays in ${websiteHome(w)}; remove it over SSH if you do not want it.`, { id: appId, deleted: true });
   },
 });
 
 interface AssetCheck {
-  /** How many same-origin references the page names, i.e. how many fetches were attempted. */
+  /** How many references were fetched: the page's same-origin references, capped at MAX_ASSETS. */
+  attempted: number;
+  /** Of those, how many produced a definite status — `attempted` minus the unchecked ones. This
+   *  is the denominator of every claim the probe makes about assets. */
   checked: number;
+  /** The page names more same-origin references than were fetched, so nothing above covers them. */
+  truncated: boolean;
+  /** Distinct same-origin references on the page, cap or no cap. */
+  totalFound: number;
   failed: Array<{ url: string; status: number; outsidePrefix: boolean }>;
   /** 401/403: the asset is served but guarded (a login, an IP rule). Reported, never a failure. */
   restricted: Array<{ url: string; status: number }>;
@@ -572,9 +597,9 @@ async function checkPageAssets(probe: HttpProbe, at: { ip: string; host: string;
   try {
     html = (await probe({ ip: at.ip, host: at.host, path: proxyRequestPath(at.path), timeoutMs: 5000, maxBodyBytes: 65536 })).body;
   } catch (e) {
-    return { checked: 0, failed: [], restricted: [], unchecked: [], error: safe((e as Error).message) };
+    return { attempted: 0, checked: 0, truncated: false, totalFound: 0, failed: [], restricted: [], unchecked: [], error: safe((e as Error).message) };
   }
-  const urls = extractAssetUrls(html, at.pageUrl);
+  const { urls, truncated, totalFound } = extractAssetUrls(html, at.pageUrl);
   const answers = await mapLimit(urls, ASSET_CONCURRENCY, (u) => probe({ ip: at.ip, host: at.host, path: u, timeoutMs: ASSET_TIMEOUT_MS, maxBodyBytes: 1 }));
   const prefix = proxyRequestPath(at.path);
   const failed: AssetCheck['failed'] = [];
@@ -591,28 +616,42 @@ async function checkPageAssets(probe: HttpProbe, at: { ip: string; host: string;
     // A whole-site app owns every path, so nothing it references can be "outside" it.
     else if (assetIsBroken(status)) failed.push({ url, status, outsidePrefix: at.path !== '' && !url.startsWith(prefix) });
   });
-  return { checked: urls.length, failed, restricted, unchecked };
+  return { attempted: urls.length, checked: urls.length - unchecked.length, truncated, totalFound, failed, restricted, unchecked };
+}
+
+/**
+ * The one sentence the asset check is entitled to: how many of how many answered, and — when the
+ * page names more references than the cap allows — that the rest were never looked at. "All 12
+ * assets answered" about a page naming thirty is the failure this wording exists to prevent.
+ */
+function assetsAnswered(a: AssetCheck): string {
+  const scope = `${a.truncated ? `the first ${a.attempted}` : `the ${a.attempted}`} assets the page references`;
+  const more = a.truncated ? `; more were not checked (the page names ${a.totalFound})` : '';
+  if (a.unchecked.length === 0) return a.truncated ? `${scope} answered${more}` : `all ${a.attempted} assets the page references answered`;
+  return `${a.checked} of ${scope} answered${more}`;
 }
 
 export const persistentAppProbe = defineTool({
   name: 'persistent_app_probe',
   tier: 'customer',
   risk: 'read',
-  description: `Fetches a persistent app's URL the way the web server serves it: HTTPS to the app server's IP with the primary domain as SNI and Host (the curl --resolve equivalent), so it works before DNS points at the site. Reports status, latency, the first bytes of the body, and whether the domain still has the placeholder certificate. When the page is HTML it also fetches the images, scripts and stylesheets it references and fails when one is definitely missing (404, 410 or 5xx) — a page can be 200 with every image broken, because the proxy strips the path prefix and an absolute reference then lands at the domain root (check_assets=false skips that). An asset fetch that times out is reported as unchecked, never as a failure: a slow link is not a broken deploy. The asset check usually adds a few seconds, and on a site whose assets hang it can take up to about half a minute (12 assets, four at a time, 8 s each). Give app_id (from persistent_apps_list) or a proxy_path; a whole-site app (serve_at_root) has no path to pass, so it can only be probed by app_id. ${PROXY_STRIPS_PREFIX} Run it after every Node deploy, before telling anyone the site is live.`,
+  description: `Fetches a persistent app's URL the way the web server serves it: HTTPS to the app server's IP with the primary domain as SNI and Host (the curl --resolve equivalent), so it works before DNS points at the site. Reports status, latency, the first bytes of the body, and whether the domain still has the placeholder certificate. When the page is HTML it also fetches the first 12 images, scripts and stylesheets it references — saying so when the page names more, so a capped check is never read as a clean bill of health — and fails when one is definitely missing (404, 410 or 5xx) — a page can be 200 with every image broken, because the proxy strips the path prefix and an absolute reference then lands at the domain root (check_assets=false skips that). An asset fetch that times out is reported as unchecked, never as a failure: a slow link is not a broken deploy. The asset check usually adds a few seconds, and on a site whose assets hang it can take up to about half a minute (12 assets, four at a time, 8 s each). Give app_id (from persistent_apps_list) or a proxy_path; a whole-site app (serve_at_root) has no path to pass, so it can only be probed by app_id. ${PROXY_STRIPS_PREFIX} Run it after every Node deploy, before telling anyone the site is live.`,
   input: z.object({
     website: websiteArg,
     app_id: appIdArg.optional(),
     proxy_path: z.string().min(1).optional(),
-    check_assets: z.boolean().default(true).describe("Also fetch the images, scripts and stylesheets an HTML page references (up to 12, same origin only, four at a time), and fail when one answers 404, 410 or 5xx. This is what catches a page that renders without its assets because they are requested outside the app's path. Assets that time out come back as unchecked, not as failures."),
+    check_assets: z.boolean().default(true).describe("Also fetch the images, scripts and stylesheets an HTML page references (the first 12, same origin only, four at a time) and fail when one answers 404, 410 or 5xx. This is what catches a page that renders without its assets because they are requested outside the app's path. A page naming more than 12 is reported as truncated; assets that time out come back as unchecked and assets behind a 401/403 as restricted, neither of them a failure."),
   }),
   async handler({ website, app_id, proxy_path, check_assets }, ctx) {
-    if (app_id === undefined && proxy_path === undefined) throw new Error('give app_id or proxy_path');
     const s = await appsSite(ctx, website, 'Persistent apps');
     if (!s.ok) return s.result;
+    // After the identity block, and in the same shape as every other refusal: a throw here would
+    // reach the caller as a bare exception with no sign of which website it was about.
+    if (app_id === undefined && proxy_path === undefined) return fail(`${s.identity}\ngive app_id or proxy_path: there is nothing to probe without one (app_id comes from persistent_apps_list). Nothing was probed.`, { reachable: false });
     let path: string;
     if (app_id !== undefined) {
       const app = findApp(await listApps(ctx, s.id), app_id);
-      if (!app) return fail(`${s.identity}\nno persistent app with id ${safe(app_id)} on this website; run persistent_apps_list.`, { reachable: false });
+      if (!app) return fail(`${s.identity}\nno persistent app with id ${safe(app_id)} on this website; run persistent_apps_list. Nothing was probed.`, { reachable: false });
       if (!app.proxyDetails) return fail(`${s.identity}\napp ${safe(app_id)} has no proxy path, so it is not reachable from the web; give it one with persistent_app_update proxy_path=… port=….`, { reachable: false });
       path = app.proxyDetails.path;
     } else {
@@ -660,13 +699,16 @@ export const persistentAppProbe = defineTool({
     const restrictedLine =
       !assets || assets.restricted.length === 0
         ? ''
-        : `\n${assets.restricted.length} of the ${assets.checked} assets answered 401/403: served but access-controlled, not counted as failures (${assets.restricted.map((a) => `${safe(a.url)} → HTTP ${a.status}`).join(', ')}).`;
+        : `\n${assets.restricted.length} of the ${assets.checked} assets that answered were 401/403: served but access-controlled, not counted as failures (${assets.restricted.map((a) => `${safe(a.url)} → HTTP ${a.status}`).join(', ')}).`;
     // A fetch that never produced a status proves nothing about the asset, only about the link
     // between here and the server. Named on its own line, in both paths, and never a failure.
     const uncheckedLine =
       !assets || assets.unchecked.length === 0
         ? ''
-        : `\n${assets.unchecked.length} of the ${assets.checked} assets could not be checked in time, which is not the same as broken — re-run the probe or open the URL (${assets.unchecked.map((a) => `${safe(a.url)}: ${a.reason}`).join(', ')}).`;
+        : `\n${assets.unchecked.length} of the ${assets.attempted} assets could not be checked in time, which is not the same as broken — re-run the probe or open the URL (${assets.unchecked.map((a) => `${safe(a.url)}: ${a.reason}`).join(', ')}).`;
+    // The cap has to travel with every claim about assets: "12 answered" on a page that names
+    // thirty is a clean bill of health nobody checked.
+    const truncationLine = !assets?.truncated ? '' : `\nonly the first ${assets.attempted} of the ${assets.totalFound} assets the page references were fetched; the rest were not checked and may be broken too.`;
     if (assets && assets.failed.length > 0) {
       const broken = assets.failed.map(
         (a) =>
@@ -679,18 +721,24 @@ export const persistentAppProbe = defineTool({
       // The app is up — only its HTML is wrong — so `reachable` stays true while the result fails:
       // a deploy with broken images is not a finished deploy.
       return fail(
-        [s.identity, summary, `the page answered HTTP ${res.status}, but ${assets.failed.length} of the ${assets.checked} assets it references did not:`, ...broken, ...(restrictedLine ? [restrictedLine.trimStart()] : []), ...(uncheckedLine ? [uncheckedLine.trimStart()] : []), tail].join('\n'),
+        [
+          s.identity,
+          summary,
+          `the page answered HTTP ${res.status}, but ${assets.failed.length} of the ${assets.checked} assets that answered are broken:`,
+          ...broken,
+          ...[truncationLine, restrictedLine, uncheckedLine].filter((l) => l !== '').map((l) => l.trimStart()),
+          tail,
+        ].join('\n'),
         { ...structured, assets },
       );
     }
-    const answered = assets ? assets.checked - assets.unchecked.length : 0;
     const assetLine = !assets
       ? ''
       : assets.error !== undefined
         ? `\nthe page could not be re-read for its asset URLs (${assets.error}), so its images and scripts were not checked.`
-        : assets.checked === 0
+        : assets.attempted === 0
           ? '\nthe page references no same-origin images, scripts or stylesheets to check.'
-          : `\n${assets.unchecked.length === 0 ? `all ${assets.checked} assets the page references answered` : `${answered} of the ${assets.checked} assets the page references answered`}.${restrictedLine}${uncheckedLine}`;
+          : `\n${assetsAnswered(assets)}.${restrictedLine}${uncheckedLine}`;
     return ok(`${s.identity}\n${summary}${notFound}${assetLine}\n${tail}`, assets ? { ...structured, assets } : structured);
   },
 });

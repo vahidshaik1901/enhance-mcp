@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { HttpProbe, ProbeRequest, ProbeResponse } from '../../src/core/probe.js';
-import { tools, validateCommand, validateProxyPath, validateWorkingDirectory } from '../../src/tools/apps.js';
+import { commandArg, tools, validateCommand, validateProxyPath, validateWorkingDirectory } from '../../src/tools/apps.js';
 import { APP_ID, base, ORG_ID, persistentApp, persistentApps, SERVER_IP, websiteDetail, WEBSITE_ID } from '../fixtures/panel.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
 import type { Route } from '../helpers/fakeFetch.js';
@@ -242,6 +242,32 @@ describe('persistent_app_create', () => {
     expect(r.text).toContain('persistent_apps_list');
   });
 
+  it('stays a success when the follow-up listing fails, because the app was already created', async () => {
+    // The POST landed; only the read that looks up its id failed. Reporting that as an error would
+    // tell the caller nothing was created and invite a second create of the same app.
+    const { ctx } = await makeContext([...base(), { method: 'POST', path: appsPath, status: 201 }, { method: 'GET', path: appsPath, status: 500, body: { code: 'internal', message: 'listing is down' } }]);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node other.js' }, ctx);
+    expect(r.isError, r.text).toBeUndefined();
+    expect(r.structured).toMatchObject({ created: true, id: null });
+    expect(r.text).toContain('persistent_apps_list');
+    expect(r.text).toContain('listing is down');
+  });
+
+  it("lists every command shape the validator refuses in the argument's own description", () => {
+    // The model reads this before it writes a command; the refusal text arrives too late.
+    const d = commandArg.description ?? '';
+    expect(d).toMatch(/VAR=value/);
+    for (const op of ['|', '&', ';', '<', '>', '$', '`']) expect(d, op).toContain(op);
+    expect(d).toMatch(/quoted/);
+  });
+
+  it('states what the preflight costs, in both writing tools', () => {
+    for (const name of ['persistent_app_create', 'persistent_app_update']) {
+      expect(byName(tools, name).description, name).toMatch(/parallel/);
+      expect(byName(tools, name).description, name).toMatch(/5 s|5 seconds/);
+    }
+  });
+
   it('warns about the duplicate-path 409 and the unchecked port in its description', () => {
     const d = byName(tools, 'persistent_app_create').description;
     expect(d).toMatch(/409/);
@@ -272,6 +298,7 @@ describe('persistent_app_create path preflight', () => {
     expect(r.text).toContain(websiteLine);
     expect(r.text).toContain('HTTP 200 on /node/');
     expect(r.text).toContain('https://vahi.dev/node/');
+    expect(r.text).toContain('Registering this app would replace');
     expect(r.text).toContain('replace_existing_path');
     expect(r.text).toMatch(/Nothing was sent to the panel/);
     // Both forms are asked, because they answer differently on a real site.
@@ -465,6 +492,9 @@ describe('persistent_app_update', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toContain('HTTP 200 on /demo-login/');
     expect(r.text).toContain('replace_existing_path');
+    // The same clash, worded for the edit that caused it: this app already exists, it is moving.
+    expect(r.text).toContain("Moving this app's proxy here would replace");
+    expect(r.text).not.toContain('Registering this app');
     expect(seen.map((s) => s.path)).toEqual(['/demo-login', '/demo-login/']);
     expect(f.calls.some((c) => c.method === 'PATCH')).toBe(false);
     expect(r.structured).toMatchObject({ updated: false });
@@ -497,6 +527,31 @@ describe('persistent_app_update', () => {
   it('mentions the restart behaviour and the preflight in its description', () => {
     expect(byName(tools, 'persistent_app_update').description).toMatch(/restart/);
     expect(byName(tools, 'persistent_app_update').description).toMatch(/replace_existing_path/);
+    // There is no patch that turns a path app into a whole-site app: the panel's empty path can
+    // only be set at create time through serve_at_root, so the description has to say so.
+    expect(byName(tools, 'persistent_app_update').description).toMatch(/serve_at_root/);
+    expect(byName(tools, 'persistent_app_update').description).toMatch(/delete/i);
+  });
+});
+
+describe('an unknown app id', () => {
+  it('is refused the same way by update, log and probe, each saying nothing happened', async () => {
+    // Every other refusal in this server ends by saying what did not happen; these three said only
+    // "no persistent app", leaving a reader to wonder whether the call had any effect.
+    for (const [name, args] of [
+      ['persistent_app_update', { command: 'node app.js' }],
+      ['persistent_app_log', {}],
+      ['persistent_app_probe', {}],
+    ] as const) {
+      const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+      ctx.httpProbe = async () => {
+        throw new Error('must not be called');
+      };
+      const r = await callTool(byName(tools, name), { website: 'vahi.dev', app_id: '00000000-0000-4000-8000-000000000000', ...args }, ctx);
+      expect(r.isError, name).toBe(true);
+      expect(r.text, name).toMatch(/no persistent app/);
+      expect(r.text, name).toMatch(/[Nn]othing was (sent|changed|read|probed)/);
+    }
   });
 });
 
@@ -549,6 +604,19 @@ describe('persistent_app_delete', () => {
     expect(deleted).toBe(APP_ID);
     expect(r.structured).toMatchObject({ id: APP_ID, deleted: true });
     expect(r.text).toContain(`persistent_app_${APP_ID}.log`);
+  });
+
+  it('does not re-read the app listing between the confirmation and the DELETE', async () => {
+    // target() already looked the app up; the handler needs only the site, the id and the plan
+    // gate, so a second listing GET is a request that is issued and then thrown away.
+    const { ctx, f } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }, { method: 'DELETE', path: appPath }]);
+    const del = byName(tools, 'persistent_app_delete');
+    const args = del.input.parse({ website: 'vahi.dev', app_id: APP_ID });
+    const target = await del.target!(args, ctx);
+    const before = f.calls.length;
+    const r = await del.handler(args, ctx, target);
+    expect(r.structured).toMatchObject({ deleted: true });
+    expect(f.calls.slice(before).filter((c) => c.method === 'GET' && c.path.endsWith('/apps/persistent'))).toHaveLength(0);
   });
 
   it('refuses at target() for an unknown app or a plan without persistent apps, sending nothing', async () => {
@@ -726,7 +794,48 @@ describe('persistent_app_probe', () => {
     expect(r.isError).toBeUndefined();
     expect(r.text).toMatch(/1 asset.? could not be checked in time/);
     expect(r.text).toContain('/node/slow.png');
-    expect(r.structured).toMatchObject({ assets: { checked: 1, failed: [], restricted: [], unchecked: [{ url: '/node/slow.png', reason: 'no response within 8000 ms' }] } });
+    // `checked` counts assets that produced a definite status: a timed-out fetch is not one of them.
+    expect(r.structured).toMatchObject({ assets: { attempted: 1, checked: 0, failed: [], restricted: [], unchecked: [{ url: '/node/slow.png', reason: 'no response within 8000 ms' }] } });
+  });
+
+  it('says so instead of claiming a clean bill of health when the page references more than twelve assets', async () => {
+    // The cap is what keeps the probe from crawling a site, but a silent cap turns "12 assets
+    // answered" into a claim about a page that names thirty.
+    const urls = Array.from({ length: 14 }, (_, i) => `/node/a${i}.png`);
+    const answers: Record<string, number | Partial<ProbeResponse>> = { '/node/': { status: 200, body: urls.map((u) => `<img src="${u}">`).join('') } };
+    for (const u of urls) answers[u] = 200;
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    ctx.httpProbe = pathProbe(answers);
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.structured).toMatchObject({ assets: { attempted: 12, checked: 12, truncated: true, totalFound: 14, failed: [] } });
+    expect(r.text).toContain('the first 12 assets the page references answered');
+    expect(r.text).toContain('more were not checked');
+    expect(r.text).not.toMatch(/all 12 assets/);
+  });
+
+  it('does not imply the unchecked assets are healthy when a truncated page has a broken one', async () => {
+    const urls = Array.from({ length: 14 }, (_, i) => `/node/a${i}.png`);
+    const answers: Record<string, number | Partial<ProbeResponse>> = { '/node/': { status: 200, body: urls.map((u) => `<img src="${u}">`).join('') }, '/node/a3.png': 404 };
+    for (const u of urls) answers[u] ??= 200;
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    ctx.httpProbe = pathProbe(answers);
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('/node/a3.png');
+    expect(r.text).toMatch(/not checked/);
+    expect(r.structured).toMatchObject({ assets: { attempted: 12, checked: 12, truncated: true, totalFound: 14 } });
+  });
+
+  it('does not call an exactly-twelve-asset page truncated', async () => {
+    const urls = Array.from({ length: 12 }, (_, i) => `/node/b${i}.png`);
+    const answers: Record<string, number | Partial<ProbeResponse>> = { '/node/': { status: 200, body: urls.map((u) => `<img src="${u}">`).join('') } };
+    for (const u of urls) answers[u] = 200;
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    ctx.httpProbe = pathProbe(answers);
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.structured).toMatchObject({ assets: { attempted: 12, checked: 12, truncated: false, totalFound: 12 } });
+    expect(r.text).toContain('all 12 assets the page references answered');
   });
 
   it('fails on a definite 404 while a timed-out asset in the same page stays unchecked', async () => {
@@ -801,7 +910,12 @@ describe('persistent_app_probe', () => {
     const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/no proxy/);
-    await expect(callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev' }, ctx)).rejects.toThrow(/app_id or proxy_path/);
+    // Missing arguments are a refusal like any other: the identity block first, then the reason.
+    const neither = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev' }, ctx);
+    expect(neither.isError).toBe(true);
+    expect(neither.text).toContain(websiteLine);
+    expect(neither.text).toMatch(/app_id or proxy_path/);
+    expect(neither.structured).toMatchObject({ reachable: false });
   });
   it('maps 503 and 504 like 502: the web server answered, the app did not', async () => {
     for (const status of [503, 504]) {

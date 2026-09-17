@@ -44,10 +44,11 @@ export function compareSemverDesc(a: string, b: string): number {
   const [x, y] = [num(a), num(b)];
   for (let i = 0; i < 3; i += 1) {
     const [xi, yi] = [x[i] ?? 0, y[i] ?? 0];
-    // A segment the panel returns in some other shape (`v22.1.0`, say) parses to NaN, and every
-    // NaN comparison is false — which would make the sort order depend on the input order. Fall
-    // back to a plain string compare so the result stays deterministic.
-    if (Number.isNaN(xi) || Number.isNaN(yi)) return a < b ? -1 : a > b ? 1 : 0;
+    // A segment the panel returns in some other shape (`v22.1.0`, say) parses to NaN, and `yi - xi`
+    // is then NaN, which Array.prototype.sort treats as 0 — "these two are equal" — so the order of
+    // everything around them depended on the input order. Fall back to a string compare, DESCENDING
+    // like the rest of this comparator, so the result is both deterministic and consistent.
+    if (Number.isNaN(xi) || Number.isNaN(yi)) return a < b ? 1 : a > b ? -1 : 0;
     if (yi !== xi) return yi - xi;
   }
   return a.includes('-') === b.includes('-') ? 0 : a.includes('-') ? 1 : -1;
