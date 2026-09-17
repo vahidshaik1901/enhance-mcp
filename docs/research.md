@@ -747,7 +747,7 @@ Findings:
 
 Driver: the milestone C e2e suite (`server/test/e2e/milestone-c.e2e.test.ts`) calling the tool
 handlers (and, for the delete, the real gate) against the live panel with a fresh session JWT as the
-`id0` cookie, inside the existing site vahi.dev. Every write was a per-run `mcpc<5 hex>` app on a
+`id0` cookie, inside the existing site vahi.dev. Every write was a per-run `mcpc-<5 hex>` app on a
 port picked free from the live listing; the app is one inline `node -e` script with no whitespace in
 it (finding 9 above), so nothing has to be uploaded.
 

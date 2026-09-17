@@ -8,7 +8,7 @@ delete a site by accident.
 
 ## Current status (2026-09-17)
 
-**Phase: milestone C CODE-COMPLETE and E2E-VERIFIED on branch `feat/milestone-c` (all 8 tasks of
+**Phase: milestone C CODE-COMPLETE and E2E-VERIFIED on branch `feat/milestone-c` (Tasks 0-8 of
 `docs/superpowers/plans/2026-09-16-milestone-c-node.md` done except the walkthrough half of Task 8).
 82 tools are registered (a client lists 83 with `confirm_action`): milestones A and B plus
 `node_install`, `node_versions_available`, `node_versions_installed`, `node_version_install`,
