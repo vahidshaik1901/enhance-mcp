@@ -48,6 +48,74 @@ export function collectCapped(chunks: Buffer[], max: number): { body: string; hi
   return { body: joined.subarray(0, max).toString('utf8'), hitCap: joined.length >= max };
 }
 
+/** `<img>`, `<script>` and `<link>` open tags, with their attribute text. */
+const ASSET_TAG_RE = /<(img|script|link)\b([^>]*)>/gi;
+/** One `name="value"`, `name='value'` or `name=value` pair inside a tag. */
+const ATTR_RE = /([A-Za-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
+/** The `rel` values whose target the browser fetches as part of rendering the page. */
+const FETCHED_REL = new Set(['stylesheet', 'icon', 'preload']);
+/** Assets checked per page. A dozen covers a page's CSS, JS and hero images; the cap is what keeps
+ *  one bad page from turning the probe into a crawl of the whole site. */
+const MAX_ASSETS = 12;
+
+function attributes(tag: string): Record<string, string> {
+  const found: Record<string, string> = {};
+  for (const m of tag.matchAll(ATTR_RE)) found[m[1]!.toLowerCase()] = m[2] ?? m[3] ?? m[4] ?? '';
+  return found;
+}
+
+/**
+ * Pure: every reference in `html` that the browser would fetch from the page's own origin, as a
+ * path on that origin (`/next.svg?a=1`), in document order, deduplicated and capped.
+ *
+ * Only same-origin references are returned: another host's 404 is not this deploy's problem, and
+ * a `data:` URI, a fragment or a `javascript:` handler is nothing to fetch. A regex rather than a
+ * DOM parser because the question is "which URLs does this page name", not "what does it mean" —
+ * a missed attribute costs one unchecked asset, never a wrong verdict.
+ */
+export function extractAssetUrls(html: string, pageUrl: string): string[] {
+  let origin: string;
+  try {
+    origin = new URL(pageUrl).origin;
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (raw: string | undefined): void => {
+    if (raw === undefined || out.length >= MAX_ASSETS) return;
+    // `&amp;` is how a query string is written in HTML; fetching it verbatim would 404 on a URL
+    // that works perfectly in a browser.
+    const ref = raw.trim().replace(/&amp;/gi, '&');
+    if (ref === '' || ref.startsWith('#')) return;
+    let u: URL;
+    try {
+      u = new URL(ref, pageUrl);
+    } catch {
+      return;
+    }
+    if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.origin !== origin) return;
+    const path = `${u.pathname}${u.search}`;
+    if (seen.has(path)) return;
+    seen.add(path);
+    out.push(path);
+  };
+  for (const tag of html.matchAll(ASSET_TAG_RE)) {
+    const name = tag[1]!.toLowerCase();
+    const attrs = attributes(tag[2] ?? '');
+    if (name === 'link') {
+      const rel = (attrs['rel'] ?? '').toLowerCase().split(/\s+/);
+      if (rel.some((r) => FETCHED_REL.has(r))) add(attrs['href']);
+      continue;
+    }
+    add(attrs['src']);
+    // A srcset lists `<url> <descriptor>` candidates: the first one is enough to tell whether the
+    // app serves that family of images at all.
+    if (attrs['srcset'] !== undefined) add(attrs['srcset'].split(',')[0]?.trim().split(/\s+/)[0]);
+  }
+  return out;
+}
+
 /**
  * The `curl --resolve <host>:443:<ip>` equivalent: TLS to the IP with the domain as SNI. The
  * certificate is inspected and REPORTED, not enforced (`rejectUnauthorized: false`), because a

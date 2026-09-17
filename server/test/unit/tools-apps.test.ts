@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { HttpProbe, ProbeRequest } from '../../src/core/probe.js';
+import type { HttpProbe, ProbeRequest, ProbeResponse } from '../../src/core/probe.js';
 import { tools, validateCommand, validateProxyPath, validateWorkingDirectory } from '../../src/tools/apps.js';
 import { APP_ID, base, ORG_ID, persistentApp, persistentApps, SERVER_IP, websiteDetail, WEBSITE_ID } from '../fixtures/panel.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
@@ -25,6 +25,19 @@ function captureBody(route: Omit<Route, 'handler'>, sink: { body?: unknown; path
       sink.path = url.pathname.replace(/^\/api/, '');
       return new Response(null, { status });
     },
+  };
+}
+
+/**
+ * A probe that answers by request path, which is what both new probe users key on: the create /
+ * update preflight (one request for the candidate path) and the probe's asset check (the page,
+ * then one request per asset URL). Anything not listed answers 404, the "nothing serves this" case.
+ */
+function pathProbe(answers: Record<string, number | Partial<ProbeResponse>>, seen: ProbeRequest[] = []): HttpProbe {
+  return async (req) => {
+    seen.push(req);
+    const answer = answers[req.path] ?? 404;
+    return { status: 200, latencyMs: 4, contentType: 'text/html', body: '', certificate: 'valid', ...(typeof answer === 'number' ? { status: answer } : answer) };
   };
 }
 
@@ -127,6 +140,16 @@ describe('persistent_apps_list', () => {
     expect(r.text).toMatch(/no persistent apps/);
     expect(r.text).toContain('persistent_app_create');
     expect(r.structured).toMatchObject({ total: 0, items: [] });
+  });
+
+  it('renders an app with the empty proxy path as the whole site', async () => {
+    // Verified live: the panel accepts an empty proxy path and the app then owns every URL on the
+    // domain, so the cell must not render as a blank path next to a port.
+    const root = { ...persistentApp, proxyDetails: { path: '', port: 3000, allowWebSocketUpgrade: false } };
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: [root] }]);
+    const r = await callTool(byName(tools, 'persistent_apps_list'), { website: 'vahi.dev' }, ctx);
+    expect(r.text).toContain('/ (whole site) → :3000');
+    expect(r.structured).toMatchObject({ items: [{ proxy: { path: '', port: 3000 }, url: 'https://vahi.dev/' }] });
   });
 
   it('says an app with no Node version will not start rather than calling it the default', async () => {
@@ -232,6 +255,116 @@ describe('persistent_app_create', () => {
   });
 });
 
+describe('persistent_app_create path preflight', () => {
+  /** Create routes plus whatever the follow-up listing should return. */
+  const routes = (sink: { body?: unknown; path?: string }, listing: unknown = persistentApps): Route[] => [...base(), captureBody({ method: 'POST', path: appsPath }, sink, 201), { method: 'GET', path: appsPath, body: listing }];
+  const rootApp = { ...persistentApp, workingDirectory: undefined, proxyDetails: { path: '', port: 3000, allowWebSocketUpgrade: false } };
+
+  it('refuses a proxy path that already serves something, and sends nothing', async () => {
+    // Verified live: the proxy shadows a real public_html directory, so a path that answers
+    // anything but 404 today is a page this create would silently take off the web.
+    const sink: { body?: unknown } = {};
+    const seen: ProbeRequest[] = [];
+    const { ctx, f } = await makeContext(routes(sink));
+    ctx.httpProbe = pathProbe({ '/node/': 200 }, seen);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(websiteLine);
+    expect(r.text).toContain('HTTP 200');
+    expect(r.text).toContain('https://vahi.dev/node/');
+    expect(r.text).toContain('replace_existing_path');
+    expect(r.text).toMatch(/Nothing was sent to the panel/);
+    expect(seen.map((s) => s.path)).toEqual(['/node/']);
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+    expect(r.structured).toMatchObject({ created: false });
+  });
+
+  it('creates without a word about replacing when the path answers 404 today', async () => {
+    const sink: { body?: unknown } = {};
+    const seen: ProbeRequest[] = [];
+    const { ctx, f } = await makeContext(routes(sink));
+    ctx.httpProbe = pathProbe({}, seen);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', working_directory: 'nodeapp', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(seen.map((s) => s.path)).toEqual(['/node/']);
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(true);
+    expect(r.text).not.toMatch(/would replace|replaced/);
+    expect(r.text).not.toMatch(/could not be checked/);
+  });
+
+  it('proceeds with replace_existing_path and records what the app replaced', async () => {
+    const sink: { body?: unknown } = {};
+    const { ctx, f } = await makeContext(routes(sink));
+    ctx.httpProbe = pathProbe({ '/node/': 301 });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', working_directory: 'nodeapp', proxy_path: 'node', port: 3000, replace_existing_path: true }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(true);
+    expect(r.text).toMatch(/replaced/);
+    expect(r.text).toContain('HTTP 301');
+  });
+
+  it('creates anyway when the preflight cannot run, and says the path was not checked', async () => {
+    const sink: { body?: unknown } = {};
+    const { ctx, f } = await makeContext(routes(sink));
+    ctx.httpProbe = async () => {
+      throw new Error('no response within 5000 ms');
+    };
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', working_directory: 'nodeapp', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(true);
+    expect(r.text).toMatch(/could not be checked/);
+    expect(r.text).toContain('no response within 5000 ms');
+  });
+
+  it('serve_at_root sends the empty proxy path, owns the domain root, and probes "/"', async () => {
+    // Verified live on an empty site: an app holding the empty path answered on /, /index.html and
+    // /anything/deep, and the docroot came back only when the app was deleted.
+    const sink: { body?: unknown } = {};
+    const seen: ProbeRequest[] = [];
+    const { ctx } = await makeContext(routes(sink, [rootApp]));
+    ctx.httpProbe = pathProbe({}, seen);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', serve_at_root: true, port: 3000 }, ctx);
+    expect(seen.map((s) => s.path)).toEqual(['/']);
+    expect(sink.body).toEqual({ command: 'npm start', startMode: 'automatic', nodeVersion: 'default', proxyDetails: { path: '', port: 3000, allowWebSocketUpgrade: false } });
+    expect(r.isError).toBeUndefined();
+    expect(r.structured).toMatchObject({ id: APP_ID, url: 'https://vahi.dev/', created: true });
+    expect(r.text).toContain('whole domain');
+    expect(r.text).toContain('public_html');
+  });
+
+  it('refuses serve_at_root on a site that already serves its root, in stronger words', async () => {
+    const sink: { body?: unknown } = {};
+    const { ctx, f } = await makeContext(routes(sink, [rootApp]));
+    ctx.httpProbe = pathProbe({ '/': 200 });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', serve_at_root: true, port: 3000 }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('ENTIRE site');
+    expect(r.text).toContain('HTTP 200');
+    expect(r.text).toMatch(/subdomain/);
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('refuses serve_at_root together with proxy_path without probing or sending anything', async () => {
+    const sink: { body?: unknown } = {};
+    const { ctx, f } = await makeContext(routes(sink));
+    ctx.httpProbe = async () => {
+      throw new Error('must not be called');
+    };
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', serve_at_root: true, proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/serve_at_root/);
+    expect(r.text).toMatch(/Nothing was sent to the panel/);
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('says in its description what the preflight does and what the two new flags mean', () => {
+    const d = byName(tools, 'persistent_app_create').description;
+    expect(d).toMatch(/404/);
+    expect(d).toMatch(/replace_existing_path/);
+    expect(d).toMatch(/serve_at_root/);
+  });
+});
+
 describe('persistent_app_update', () => {
   it('patches only the given fields and merges the proxy with the current one', async () => {
     const sink: { body?: unknown; path?: string } = {};
@@ -280,8 +413,36 @@ describe('persistent_app_update', () => {
     expect(f.calls.some((c) => c.method === 'PATCH')).toBe(false);
   });
 
-  it('mentions the restart behaviour in its description', () => {
+  it('refuses to move the proxy onto a path that already serves something, without patching', async () => {
+    const seen: ProbeRequest[] = [];
+    const { ctx, f } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }, { method: 'PATCH', path: appPath }]);
+    ctx.httpProbe = pathProbe({ '/demo-login/': 200 }, seen);
+    const r = await callTool(byName(tools, 'persistent_app_update'), { website: 'vahi.dev', app_id: APP_ID, proxy_path: 'demo-login' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('HTTP 200');
+    expect(r.text).toContain('replace_existing_path');
+    expect(seen.map((s) => s.path)).toEqual(['/demo-login/']);
+    expect(f.calls.some((c) => c.method === 'PATCH')).toBe(false);
+    expect(r.structured).toMatchObject({ updated: false });
+  });
+
+  it('does not preflight an update that leaves the proxy path where it is', async () => {
+    const { ctx, f } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }, { method: 'PATCH', path: appPath }]);
+    ctx.httpProbe = async () => {
+      throw new Error('must not be called');
+    };
+    // A port-only edit, and a re-send of the path the app already holds: neither can newly shadow
+    // anything, so neither is worth a request to the site.
+    for (const args of [{ port: 3100 }, { proxy_path: 'node', port: 3100 }]) {
+      const r = await callTool(byName(tools, 'persistent_app_update'), { website: 'vahi.dev', app_id: APP_ID, ...args }, ctx);
+      expect(r.isError, r.text).toBeUndefined();
+    }
+    expect(f.calls.filter((c) => c.method === 'PATCH')).toHaveLength(2);
+  });
+
+  it('mentions the restart behaviour and the preflight in its description', () => {
     expect(byName(tools, 'persistent_app_update').description).toMatch(/restart/);
+    expect(byName(tools, 'persistent_app_update').description).toMatch(/replace_existing_path/);
   });
 });
 
@@ -392,7 +553,7 @@ describe('persistent_app_probe', () => {
     expect(r.structured).toMatchObject({ status: 502, reachable: false, certificate: 'placeholder' });
   });
 
-  it('reads a 404 as the app not serving "/" behind the prefix-stripping proxy, and stays reachable', async () => {
+  it('reads a 404 under a registered app as the app not serving "/" behind the prefix-stripping proxy', async () => {
     // Verified live 2026-09-17: a Next.js app built with basePath answered its own 404 page,
     // because the proxy hands it "/" and it only serves /<path>/…. That is a build mistake, not
     // an unreachable app, so it must stay a success result carrying the hint.
@@ -401,9 +562,69 @@ describe('persistent_app_probe', () => {
     ctx.httpProbe = fakeProbe({ status: 404, body: 'This page could not be found.' }, seen);
     const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
     expect(r.isError).toBeUndefined();
-    expect(r.text).toMatch(/404 came from the app itself/);
+    expect(r.text).toMatch(/most likely the app's own/);
+    expect(r.text).toMatch(/strips the \/node prefix/);
     expect(r.text).toMatch(/assetPrefix, not basePath/);
     expect(r.structured).toMatchObject({ status: 404, reachable: true });
+  });
+
+  it('reads a 404 on a path no app owns as the docroot answering, not the app', async () => {
+    // Seen live after clear_proxy and after every delete: the same 404 the docroot returns for any
+    // path that does not exist. Calling that "the app's own" sent a reader hunting a build bug.
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: [] }]);
+    ctx.httpProbe = fakeProbe({ status: 404, body: '' }, []);
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', proxy_path: 'node' }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toMatch(/no persistent app is registered on \/node\//);
+    expect(r.text).toMatch(/docroot/);
+    expect(r.text).not.toMatch(/assetPrefix/);
+  });
+
+  it('checks the page assets and stays a success when every one answers', async () => {
+    const seen: ProbeRequest[] = [];
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    const html = '<html><body><img src="/node/logo.svg"><script src="/node/app.js"></script></body></html>';
+    ctx.httpProbe = pathProbe({ '/node/': { status: 200, body: html, contentType: 'text/html; charset=utf-8' }, '/node/logo.svg': 200, '/node/app.js': 200 }, seen);
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.structured).toMatchObject({ reachable: true, assets: { checked: 2, failed: [] } });
+    // The page is read twice on purpose: 512 bytes for the report, then 64 KB to find the assets,
+    // and one byte of each asset is all the status needs.
+    expect(seen.map((s) => [s.path, s.maxBodyBytes])).toEqual([
+      ['/node/', 512],
+      ['/node/', 65536],
+      ['/node/logo.svg', 1],
+      ['/node/app.js', 1],
+    ]);
+  });
+
+  it('fails the probe when a page asset 404s at the domain root and names the prefixed URL', async () => {
+    // The user's live case: /next/ was 200 while its <img src="/next.svg"> was 404 at the domain
+    // root, because assetPrefix covers only the framework's own bundles.
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    ctx.httpProbe = pathProbe({ '/node/': { status: 200, body: '<img src="/next.svg">' }, '/next.svg': 404 });
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('/next.svg');
+    expect(r.text).toContain('/node/next.svg');
+    expect(r.text).toMatch(/outside \/node\//);
+    // The app itself is up: only its HTML is wrong, and the structured content has to keep saying so.
+    expect(r.structured).toMatchObject({ status: 200, reachable: true, assets: { checked: 1, failed: [{ url: '/next.svg', status: 404, outsidePrefix: true }] } });
+  });
+
+  it('checks no assets for a non-HTML response or when check_assets is off', async () => {
+    for (const [args, answer] of [
+      [{}, { status: 200, body: '{"ok":true}', contentType: 'application/json' }],
+      [{ check_assets: false }, { status: 200, body: '<img src="/next.svg">', contentType: 'text/html' }],
+    ] as const) {
+      const seen: ProbeRequest[] = [];
+      const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+      ctx.httpProbe = pathProbe({ '/node/': answer }, seen);
+      const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID, ...args }, ctx);
+      expect(r.isError).toBeUndefined();
+      expect(seen).toHaveLength(1);
+      expect(r.structured).not.toHaveProperty('assets');
+    }
   });
 
   it('reports a connection failure as an error result with the reason', async () => {

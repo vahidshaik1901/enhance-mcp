@@ -3,7 +3,7 @@ import { parseScalarText } from '../client/client.js';
 import type { components } from '../client/generated/types.js';
 import type { ToolContext } from '../core/context.js';
 import { websiteHome } from '../core/identity.js';
-import { httpsProbe } from '../core/probe.js';
+import { extractAssetUrls, httpsProbe, type HttpProbe } from '../core/probe.js';
 import { defineTool, type Target, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
@@ -101,10 +101,62 @@ export function findApp(apps: ListedApp[], appId: string): ListedApp | undefined
   return apps.find((a) => a.id === appId);
 }
 
-/** Where a proxied app answers: the primary domain only (verified live: the preview alias 404s). */
+/** Where a proxied app answers: the primary domain only (verified live: the preview alias 404s).
+ *  The panel's empty path is the whole-site app, which owns the domain root. */
 export function appUrl(w: Website, path: string | undefined): string | null {
-  return path ? `https://${w.domain.domain}/${path}/` : null;
+  if (path === undefined) return null;
+  return path === '' ? `https://${w.domain.domain}/` : `https://${w.domain.domain}/${path}/`;
 }
+
+/** The app server this website's traffic lands on, primary first. */
+function serverIp(w: Website): string | undefined {
+  return (w.serverIps?.find((x) => x.isPrimary) ?? w.serverIps?.[0])?.ip;
+}
+
+/** The URL path the web server serves a proxy path at: `/node/`, or `/` for a whole-site app. */
+function proxyRequestPath(path: string): string {
+  return path === '' ? '/' : `/${path}/`;
+}
+
+export interface PathClashCheck {
+  /** What the path answers today, or null when the check could not run at all. */
+  status: number | null;
+  /** Something other than a 404 answers there, so registering the app would replace it. */
+  taken: boolean;
+  /** `HTTP 404`, or why the check could not run. */
+  detail: string;
+}
+
+/**
+ * What the site serves at `path` right now, asked exactly the way the web server will serve the
+ * app: HTTPS to the app server's IP with the primary domain as SNI and Host. It carries no
+ * credential (the probe transport never sends one) and reads 512 bytes.
+ *
+ * Verified live: a proxy path shadows a same-named `public_html` directory and answers 503 while
+ * the app is merely registered, so a path that answers anything but 404 today is a page the
+ * registration would silently take off the web. A 404 means there is nothing to lose. A check that
+ * cannot run — no server IP, no answer — never blocks the write; it is reported instead, because
+ * refusing a deploy over an unreachable probe would be worse than the clash it guards against.
+ */
+export async function pathPreflight(ctx: ToolContext, w: Website, path: string): Promise<PathClashCheck> {
+  const ip = serverIp(w);
+  if (!ip) return { status: null, taken: false, detail: 'this website has no server IP recorded' };
+  try {
+    const res = await (ctx.httpProbe ?? httpsProbe)({ ip, host: w.domain.domain, path: proxyRequestPath(path), timeoutMs: 5000, maxBodyBytes: 512 });
+    return { status: res.status, taken: res.status !== 404, detail: `HTTP ${res.status}` };
+  } catch (e) {
+    return { status: null, taken: false, detail: safe((e as Error).message) };
+  }
+}
+
+const pathClashRefusal = (url: string, status: number): string =>
+  `Registering this app would replace what ${url} serves today (HTTP ${status}). Nothing was sent to the panel. Pick a path that returns 404 now, or pass replace_existing_path=true if replacing it is intended.`;
+const rootClashRefusal = (status: number): string =>
+  `This website already serves content at its root (HTTP ${status}). A root app takes over the ENTIRE site, including every PHP and static page. Use a dedicated website or subdomain for a whole-site Node app, or pass replace_existing_path=true.`;
+const replacedNote = (url: string, status: number): string => `this app replaced what ${url} served before (HTTP ${status}); that content is no longer reachable while the app is registered`;
+const uncheckedPathNote = (url: string, detail: string): string => `the path could not be checked before the write (${detail}), so ${url} may already serve something — open it and confirm nothing was replaced`;
+const rootAppNote = (url: string): string =>
+  `This app owns the whole domain: every URL under ${url} goes to it, and the PHP and static files in public_html are not served while it is registered (delete the app to get them back).`;
 
 const PRIMARY_DOMAIN_ONLY = 'Persistent apps answer on the primary domain only; the *.mystaging.site preview URL does not proxy them (verified live).';
 export const PREVIEW_NOTE = `${PRIMARY_DOMAIN_ONLY} Before DNS resolves, verify with persistent_app_probe.`;
@@ -177,7 +229,9 @@ export const persistentAppsList = defineTool({
     }
     // Verified live: an app with no nodeVersion never starts ("exec: node: not found"), so the
     // node cell says that outright instead of the reassuring "default".
-    const rows = items.map((i) => ({ id: i.id, kind: i.kind, command: i.command, 'working dir': i.workingDirectory ?? '(home)', node: i.nodeVersion ?? '(none: will not start; set node_version)', start: i.startMode, proxy: i.proxy ? `${i.proxy.path} → :${i.proxy.port}${i.proxy.websocket ? ' (ws)' : ''}` : 'none', url: i.url ?? '-' }));
+    // An app on the panel's empty path owns every URL on the domain (verified live), which a blank
+    // proxy cell would hide.
+    const rows = items.map((i) => ({ id: i.id, kind: i.kind, command: i.command, 'working dir': i.workingDirectory ?? '(home)', node: i.nodeVersion ?? '(none: will not start; set node_version)', start: i.startMode, proxy: i.proxy ? `${i.proxy.path === '' ? '/ (whole site)' : i.proxy.path} → :${i.proxy.port}${i.proxy.websocket ? ' (ws)' : ''}` : 'none', url: i.url ?? '-' }));
     return ok([s.identity, `persistent apps (${items.length}):`, table(rows, ['id', 'kind', 'command', 'working dir', 'node', 'start', 'proxy', 'url']), PREVIEW_NOTE].join('\n'), { total: items.length, items });
   },
 });
@@ -186,12 +240,14 @@ export const persistentAppCreate = defineTool({
   name: 'persistent_app_create',
   tier: 'customer',
   risk: 'write',
-  description: `Registers a persistent app: a command the panel starts in the website container, keeps running, and (with proxy_path and port) exposes at https://<primary domain>/<proxy_path>/. The command runs without a shell — it is split on whitespace and exec'd as argv, so "VAR=value" prefixes, pipes, redirection and quoted arguments with spaces are refused here; put the port and any environment in an npm script or a wrapper script and use "npm start" or "node server.js". Nothing injects PORT, so the app must listen on the port given here by its own configuration, and ${PROXY_SHADOWS_DOCROOT}. ${PROXY_STRIPS_PREFIX} The panel refuses a proxy path another app already uses (409 already_exists) but does not check ports, so pick a free one from persistent_apps_list. working_directory is relative to the site home (never absolute); proxy_path never starts with "/". node_version defaults to "default", nvm's default alias: an app created without a Node version never starts (verified live: "exec: node: not found"). Registering the app restarts the whole website container, so the site's PHP and static pages are interrupted for a second or two. Requires persistent apps on the plan and Node installed (node_install). The preview domain never proxies apps.`,
+  description: `Registers a persistent app: a command the panel starts in the website container, keeps running, and (with proxy_path and port) exposes at https://<primary domain>/<proxy_path>/. The command runs without a shell — it is split on whitespace and exec'd as argv, so "VAR=value" prefixes, pipes, redirection and quoted arguments with spaces are refused here; put the port and any environment in an npm script or a wrapper script and use "npm start" or "node server.js". Nothing injects PORT, so the app must listen on the port given here by its own configuration, and ${PROXY_SHADOWS_DOCROOT}. ${PROXY_STRIPS_PREFIX} Before registering a proxy this tool fetches the path on the live site and refuses when anything but a 404 answers there, naming what it would replace; replace_existing_path=true proceeds anyway and the result records what was replaced. serve_at_root=true instead gives the app the WHOLE domain (the panel's empty proxy path): it receives the full request path with nothing stripped, and public_html stops being served — use it only on a website or subdomain dedicated to the app. The panel refuses a proxy path another app already uses (409 already_exists) but does not check ports, so pick a free one from persistent_apps_list. working_directory is relative to the site home (never absolute); proxy_path never starts with "/". node_version defaults to "default", nvm's default alias: an app created without a Node version never starts (verified live: "exec: node: not found"). Registering the app restarts the whole website container, so the site's PHP and static pages are interrupted for a second or two. Requires persistent apps on the plan and Node installed (node_install). The preview domain never proxies apps.`,
   input: z.object({
     website: websiteArg,
     command: commandArg,
     working_directory: z.string().min(1).optional().describe('Directory under the site home to run in, e.g. "nodeapp" (relative, never absolute)'),
     proxy_path: z.string().min(1).optional().describe('URL path the web server proxies to the app, e.g. "node" or "api/v1" (no leading slash, and never a directory name public_html already serves)'),
+    serve_at_root: z.boolean().default(false).describe('Gives the app the whole domain instead of a path: every URL goes to it, it receives the full request path, and public_html is no longer served. Mutually exclusive with proxy_path; still needs port. For a website or subdomain dedicated to this app.'),
+    replace_existing_path: z.boolean().default(false).describe('Registers the app even though the path already serves something today. Whatever answers there now (a PHP page, a static file, another app) stops being reachable.'),
     port: portArg.optional(),
     allow_websocket: z.boolean().default(false),
     start_mode: startModeArg.default('automatic'),
@@ -206,11 +262,25 @@ export const persistentAppCreate = defineTool({
     try {
       command = validateCommand(args.command);
       if (args.working_directory !== undefined) workingDirectory = validateWorkingDirectory(args.working_directory);
-      if (args.proxy_path !== undefined) proxy = validateProxyPath(args.proxy_path);
+      if (args.serve_at_root && args.proxy_path !== undefined) throw new Error('serve_at_root and proxy_path cannot both be given: serve_at_root hands the app the whole domain, proxy_path hands it one path under it');
+      // The empty path is the panel's whole-site app (verified live); validateProxyPath keeps
+      // rejecting "" so it can only ever be reached through serve_at_root.
+      if (args.serve_at_root) proxy = { path: '' };
+      else if (args.proxy_path !== undefined) proxy = validateProxyPath(args.proxy_path);
       // Refused like any other bad input, in the same shape: nothing reaches the panel.
-      if (proxy && args.port === undefined) throw new Error('port is required when proxy_path is given: it is the port the app listens on');
+      if (proxy && args.port === undefined) throw new Error('port is required when the app is exposed (proxy_path or serve_at_root): it is the port the app listens on');
     } catch (e) {
       return fail(`${s.identity}\n${(e as Error).message}. Nothing was sent to the panel.`, { created: false });
+    }
+    const notes: string[] = [];
+    if (proxy) {
+      const target = safe(appUrl(s.w, proxy.path));
+      const pre = await pathPreflight(ctx, s.w, proxy.path);
+      if (pre.taken && !args.replace_existing_path) {
+        return fail(`${s.identity}\n${proxy.path === '' ? rootClashRefusal(pre.status!) : pathClashRefusal(target, pre.status!)}`, { created: false, url: appUrl(s.w, proxy.path), pathStatus: pre.status });
+      }
+      if (pre.taken) notes.push(replacedNote(target, pre.status!));
+      else if (pre.status === null) notes.push(uncheckedPathNote(target, pre.detail));
     }
     // nodeVersion is always sent: verified live, an app created without one never starts.
     const body: NewApp = { command, startMode: args.start_mode, nodeVersion: args.node_version };
@@ -229,16 +299,16 @@ export const persistentAppCreate = defineTool({
         ['working directory', workingDirectory ? `${websiteHome(s.w)}/${workingDirectory}` : `${websiteHome(s.w)} (the site home)`],
         ['node version', args.node_version === 'default' ? "default (nvm's default alias)" : args.node_version],
         ['start mode', args.start_mode],
-        ['proxy', proxy ? `/${proxy.path}/ → port ${args.port}${args.allow_websocket ? ', WebSocket upgrades allowed' : ''}` : 'none (not reachable from the web)'],
+        ['proxy', proxy ? `${proxy.path === '' ? '/ (whole site)' : `/${proxy.path}/`} → port ${args.port}${args.allow_websocket ? ', WebSocket upgrades allowed' : ''}` : 'none (not reachable from the web)'],
         ['url', url ?? '-'],
       ]),
     ];
-    const notes: string[] = [];
     if (proxy?.note) notes.push(proxy.note);
     // Arguments that only mean something with a proxy path: say they were dropped rather than
     // letting the caller believe the app is exposed on that port.
     if (!proxy && (args.port !== undefined || args.allow_websocket)) notes.push(IGNORED_PROXY_ARGS_NOTE);
-    if (proxy) lines.push(PROXY_SHADOWS_DOCROOT);
+    if (proxy?.path === '') lines.push(rootAppNote(url!));
+    else if (proxy) lines.push(PROXY_SHADOWS_DOCROOT);
     lines.push(...notes);
     if (!match) lines.push('the panel accepted it but the listing did not show a matching app yet; run persistent_apps_list to find its id.');
     lines.push(`next: persistent_app_log${match ? ` app_id=${match.id}` : ''} until it reports listening, then persistent_app_probe. ${PREVIEW_NOTE}`);
@@ -250,7 +320,7 @@ export const persistentAppUpdate = defineTool({
   name: 'persistent_app_update',
   tier: 'customer',
   risk: 'write',
-  description: `Changes a persistent app: command, working directory, start mode, Node version, proxy path, port or WebSocket flag. Only the fields given are sent and the rest keep their current value; a new proxy path or port is merged with the current proxy. clear_proxy unexposes the app; clear_node_version returns the app to nvm's default alias by setting node_version to "default" (the panel's unset form is not used because an app with no Node version at all never starts, verified live). The command runs without a shell, under the same rules as persistent_app_create. ${UPDATE_RESTART_NOTE}`,
+  description: `Changes a persistent app: command, working directory, start mode, Node version, proxy path, port or WebSocket flag. Only the fields given are sent and the rest keep their current value; a new proxy path or port is merged with the current proxy. Moving the proxy to a different path fetches that path on the live site first and refuses when anything but a 404 answers there; replace_existing_path=true proceeds anyway. clear_proxy unexposes the app; clear_node_version returns the app to nvm's default alias by setting node_version to "default" (the panel's unset form is not used because an app with no Node version at all never starts, verified live). The command runs without a shell, under the same rules as persistent_app_create. ${UPDATE_RESTART_NOTE}`,
   input: z.object({
     website: websiteArg,
     app_id: appIdArg,
@@ -261,6 +331,7 @@ export const persistentAppUpdate = defineTool({
     proxy_path: z.string().min(1).optional(),
     port: portArg.optional(),
     allow_websocket: z.boolean().optional(),
+    replace_existing_path: z.boolean().default(false).describe('Moves the proxy onto a path that already serves something today. Whatever answers there now stops being reachable.'),
     clear_proxy: z.boolean().default(false).describe('Unexposes the app: removes its proxy path so the URL falls back to the docroot while the process keeps running (verified live).'),
     clear_node_version: z.boolean().default(false).describe('Returns the app to nvm\'s default alias by setting node_version to "default"; it wins over an explicit node_version. The panel\'s unset form is not used because an app with no Node version at all never starts (verified live).'),
   }),
@@ -271,6 +342,9 @@ export const persistentAppUpdate = defineTool({
     if (!current) return fail(`${s.identity}\nno persistent app with id ${safe(args.app_id)} on this website; run persistent_apps_list.`, { updated: false });
     const patch: AppPatch = {};
     const notes: string[] = [];
+    /** Set only when the proxy moves to a path the app does not already hold: that is the one edit
+     *  that can newly shadow something, and the only one worth a request to the live site. */
+    let movedTo: string | undefined;
     try {
       if (args.command !== undefined) patch.command = validateCommand(args.command);
       if (args.working_directory !== undefined) patch.workingDirectory = validateWorkingDirectory(args.working_directory);
@@ -299,12 +373,22 @@ export const persistentAppUpdate = defineTool({
         if (merged.path === undefined || merged.port === undefined) throw new Error('this app has no proxy yet: give both proxy_path and port to expose it');
         patch.proxyDetails = { path: merged.path, port: merged.port, allowWebSocketUpgrade: merged.allowWebSocketUpgrade };
         // Only when the path itself moves: a port-only edit cannot newly shadow a directory.
-        if (args.proxy_path !== undefined) notes.push(PROXY_SHADOWS_DOCROOT);
+        if (args.proxy_path !== undefined) {
+          notes.push(PROXY_SHADOWS_DOCROOT);
+          if (merged.path !== current.proxyDetails?.path) movedTo = merged.path;
+        }
       }
     } catch (e) {
       return fail(`${s.identity}\n${(e as Error).message}. Nothing was sent to the panel.`, { updated: false });
     }
     if (Object.keys(patch).length === 0) return fail(`${s.identity}\nnothing to change: give at least one field. Nothing was sent to the panel.`, { updated: false });
+    if (movedTo !== undefined) {
+      const target = safe(appUrl(s.w, movedTo));
+      const pre = await pathPreflight(ctx, s.w, movedTo);
+      if (pre.taken && !args.replace_existing_path) return fail(`${s.identity}\n${pathClashRefusal(target, pre.status!)}`, { updated: false, url: appUrl(s.w, movedTo), pathStatus: pre.status });
+      if (pre.taken) notes.push(replacedNote(target, pre.status!));
+      else if (pre.status === null) notes.push(uncheckedPathNote(target, pre.detail));
+    }
     await ctx.client.call('PATCH', '/websites/{website_id}/apps/persistent/{app_id}', () => ctx.client.api.PATCH('/websites/{website_id}/apps/persistent/{app_id}', { params: { path: { website_id: s.id, app_id: args.app_id } }, body: patch }));
     const proxyAfter = args.clear_proxy ? undefined : patch.proxyDetails && 'path' in patch.proxyDetails ? patch.proxyDetails.path : current.proxyDetails?.path;
     const url = appUrl(s.w, proxyAfter);
@@ -380,13 +464,55 @@ export const persistentAppDelete = defineTool({
   },
 });
 
+interface AssetCheck {
+  checked: number;
+  failed: Array<{ url: string; status: number | null; outsidePrefix: boolean }>;
+  /** Set when the page could not be re-read, so nothing was checked. */
+  error?: string;
+}
+
+/**
+ * Whether the page's own images, scripts and stylesheets answer. A page can be HTTP 200 while
+ * every image on it is broken: under a proxy path the prefix is stripped, so anything the app
+ * references by absolute URL (`/logo.svg`, a file in Next.js's `public/`) is requested at the
+ * DOMAIN root, where the site's own files live — the user's live case, `/next/` 200 with
+ * `/next.svg` 404. A customer must never be the one who discovers that, so the probe asks.
+ *
+ * One byte of each asset is enough for its status, the fetches run in parallel with a 2 s deadline,
+ * and a rejected fetch counts as failed with no status. Same transport as the page: no credential,
+ * no header beyond Host.
+ */
+async function checkPageAssets(probe: HttpProbe, at: { ip: string; host: string; pageUrl: string; path: string }): Promise<AssetCheck> {
+  let html: string;
+  try {
+    html = (await probe({ ip: at.ip, host: at.host, path: proxyRequestPath(at.path), timeoutMs: 5000, maxBodyBytes: 65536 })).body;
+  } catch (e) {
+    return { checked: 0, failed: [], error: safe((e as Error).message) };
+  }
+  const urls = extractAssetUrls(html, at.pageUrl);
+  const answers = await Promise.allSettled(urls.map((u) => probe({ ip: at.ip, host: at.host, path: u, timeoutMs: 2000, maxBodyBytes: 1 })));
+  const prefix = proxyRequestPath(at.path);
+  const failed = answers.flatMap((a, i) => {
+    const status = a.status === 'fulfilled' ? a.value.status : null;
+    if (status !== null && status < 400) return [];
+    // A whole-site app owns every path, so nothing it references can be "outside" it.
+    return [{ url: urls[i]!, status, outsidePrefix: at.path !== '' && !urls[i]!.startsWith(prefix) }];
+  });
+  return { checked: urls.length, failed };
+}
+
 export const persistentAppProbe = defineTool({
   name: 'persistent_app_probe',
   tier: 'customer',
   risk: 'read',
-  description: `Fetches a persistent app's URL the way the web server serves it: HTTPS to the app server's IP with the primary domain as SNI and Host (the curl --resolve equivalent), so it works before DNS points at the site. Reports status, latency, the first bytes of the body, and whether the domain still has the placeholder certificate. Give app_id (from persistent_apps_list) or a proxy_path. ${PROXY_STRIPS_PREFIX}`,
-  input: z.object({ website: websiteArg, app_id: appIdArg.optional(), proxy_path: z.string().min(1).optional() }),
-  async handler({ website, app_id, proxy_path }, ctx) {
+  description: `Fetches a persistent app's URL the way the web server serves it: HTTPS to the app server's IP with the primary domain as SNI and Host (the curl --resolve equivalent), so it works before DNS points at the site. Reports status, latency, the first bytes of the body, and whether the domain still has the placeholder certificate. When the page is HTML it also fetches the images, scripts and stylesheets it references and fails when any of them does not answer — a page can be 200 with every image broken, because the proxy strips the path prefix and an absolute reference then lands at the domain root (check_assets=false skips that). Give app_id (from persistent_apps_list) or a proxy_path. ${PROXY_STRIPS_PREFIX} Run it after every Node deploy, before telling anyone the site is live.`,
+  input: z.object({
+    website: websiteArg,
+    app_id: appIdArg.optional(),
+    proxy_path: z.string().min(1).optional(),
+    check_assets: z.boolean().default(true).describe("Also fetch the images, scripts and stylesheets an HTML page references (up to 12, same origin only), and fail when any of them does not answer. This is what catches a page that renders without its assets because they are requested outside the app's path."),
+  }),
+  async handler({ website, app_id, proxy_path, check_assets }, ctx) {
     if (app_id === undefined && proxy_path === undefined) throw new Error('give app_id or proxy_path');
     const s = await appsSite(ctx, website, 'Persistent apps');
     if (!s.ok) return s.result;
@@ -403,14 +529,14 @@ export const persistentAppProbe = defineTool({
         return fail(`${s.identity}\n${(e as Error).message}.`, { reachable: false });
       }
     }
-    const ip = (s.w.serverIps?.find((x) => x.isPrimary) ?? s.w.serverIps?.[0])?.ip;
+    const ip = serverIp(s.w);
     if (!ip) return fail(`${s.identity}\nthis website has no server IP recorded, so there is nothing to connect to.`, { reachable: false });
     const host = s.w.domain.domain;
     const url = appUrl(s.w, path)!;
     const probe = ctx.httpProbe ?? httpsProbe;
     let res;
     try {
-      res = await probe({ ip, host, path: `/${path}/`, timeoutMs: 5000, maxBodyBytes: 512 });
+      res = await probe({ ip, host, path: proxyRequestPath(path), timeoutMs: 5000, maxBodyBytes: 512 });
     } catch (e) {
       return fail(`${s.identity}\n${safe(url)} via ${safe(ip)}: connection failed (${safe((e as Error).message)}). The app server did not answer at all; check website_get serverIps and that the site is active.`, { url, ip, reachable: false });
     }
@@ -421,13 +547,37 @@ export const persistentAppProbe = defineTool({
     if (gateway) {
       return fail(`${s.identity}\n${summary}\nthe web server answered but the app is not listening on its port (HTTP ${res.status}): read persistent_app_log for the startup error, and check the app really listens on the proxy's port — nothing injects PORT, so the app must choose that port itself. ${PRIMARY_DOMAIN_ONLY}`, structured);
     }
-    // A 404 here is the app's own, not the web server's (that would be a gateway status): verified
-    // live when a Next.js build with basePath answered its 404 page for the proxy's "/".
-    const notFound =
-      res.status === 404
-        ? `\nHTTP 404 came from the app itself: the proxy strips the /${safe(path)} prefix, so the app received "/" — check it serves "/" (Next.js: assetPrefix, not basePath).`
-        : '';
-    return ok(`${s.identity}\n${summary}${notFound}\n${PRIMARY_DOMAIN_ONLY} This probe connected straight to the app server with the domain as Host, so an answer here does not prove that public DNS resolves to this site yet.`, structured);
+    // A 404 has two sources that look identical from here: the app's own 404 page (verified live
+    // when a Next.js build with basePath answered the proxy's "/"), and the site's docroot, which
+    // returns the same 404 for a path NO app owns (seen live after clear_proxy and after a delete).
+    // Naming the wrong one sends the reader hunting a build bug that does not exist.
+    let notFound = '';
+    if (res.status === 404) {
+      const proxied = app_id !== undefined || (await listApps(ctx, s.id)).some((a) => a.proxyDetails?.path === path);
+      notFound = !proxied
+        ? `\nno persistent app is registered on /${safe(path)}/, so this 404 is the site's own docroot answering.`
+        : path === ''
+          ? `\nHTTP 404 is most likely the app's own (the web server's failures are 502/503/504): this app owns the whole domain, so it received the request path unchanged — check it serves "/".`
+          : `\nHTTP 404 is most likely the app's own (the web server's failures are 502/503/504): the proxy strips the /${safe(path)} prefix, so the app received "/" — check it serves "/" (Next.js: assetPrefix, not basePath).`;
+    }
+    const html = (res.contentType ?? '').includes('text/html') && res.status >= 200 && res.status < 300;
+    const assets = check_assets && html ? await checkPageAssets(probe, { ip, host, pageUrl: url, path }) : undefined;
+    const tail = `${PRIMARY_DOMAIN_ONLY} This probe connected straight to the app server with the domain as Host, so an answer here does not prove that public DNS resolves to this site yet.`;
+    if (assets && assets.failed.length > 0) {
+      const broken = assets.failed.map(
+        (a) =>
+          `  ${safe(a.url)} → ${a.status === null ? 'no answer' : `HTTP ${a.status}`}: ${
+            a.outsidePrefix
+              ? `requested at the domain root, outside /${safe(path)}/, where this site's own files are served: reference it as /${safe(path)}${safe(a.url)} or move the app to its own website/subdomain (serve_at_root)`
+              : 'the app itself does not serve it'
+          }`,
+      );
+      // The app is up — only its HTML is wrong — so `reachable` stays true while the result fails:
+      // a deploy with broken images is not a finished deploy.
+      return fail([s.identity, summary, `the page answered HTTP ${res.status}, but ${assets.failed.length} of the ${assets.checked} assets it references did not:`, ...broken, tail].join('\n'), { ...structured, assets });
+    }
+    const assetLine = !assets ? '' : assets.error !== undefined ? `\nthe page could not be re-read for its asset URLs (${assets.error}), so its images and scripts were not checked.` : assets.checked === 0 ? '\nthe page references no same-origin images, scripts or stylesheets to check.' : `\nall ${assets.checked} assets the page references answered.`;
+    return ok(`${s.identity}\n${summary}${notFound}${assetLine}\n${tail}`, assets ? { ...structured, assets } : structured);
   },
 });
 

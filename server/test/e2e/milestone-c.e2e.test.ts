@@ -124,6 +124,21 @@ suite('milestone C against the live panel', () => {
      */
     const command = `node -e require('http').createServer((q,s)=>s.end('${marker}')).listen(${port})`;
 
+    // Optional, because it needs a path this particular site already serves: on vahi.dev
+    // ENHANCE_E2E_TAKEN_PATH=demo-login is the live PHP page whose 200 the preflight must refuse to
+    // replace (the clash that turned that page into a 503 during the Task 1 probe). Unset, the
+    // suite stays site-agnostic and skips it.
+    const takenPath = process.env['ENHANCE_E2E_TAKEN_PATH'];
+    if (takenPath) {
+      const clash = await call(tool(tools, 'persistent_app_create'), { website: site, command, proxy_path: takenPath, port });
+      expect(clash.isError, `the preflight let a create through on ${takenPath}, which already serves something: ${clash.text}`).toBe(true);
+      expect(clash.text).toMatch(/would replace what/);
+      expect(clash.text).toContain('replace_existing_path');
+      expect((clash.structured as { created: boolean }).created).toBe(false);
+      // Nothing may have reached the panel, so there is no app to clean up here.
+      expect((await listedRows()).some((a) => a.proxy?.path === takenPath), 'the refused create registered an app anyway').toBe(false);
+    }
+
     const created = await call(tool(tools, 'persistent_app_create'), { website: site, command, proxy_path: slug, port });
     expect(created.isError, created.text).toBeFalsy();
     appId = (created.structured as { id: string | null }).id ?? undefined;
