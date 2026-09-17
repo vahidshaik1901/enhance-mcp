@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parse, stringify } from 'yaml';
 
-/** How many `type: int` occurrences the vendored 12.25.8 spec is known to contain. */
+/** How many `type: int` occurrences the vendored 12.25.11 spec is known to contain. */
 export const EXPECTED_INT_OCCURRENCES = 2;
 
 export function patchSpec(yamlText: string): { text: string; patched: number } {

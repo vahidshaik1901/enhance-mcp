@@ -52,4 +52,4 @@ This applies to every enhance tool, not just `doctor`: the plugin always runs th
 
 ## After connecting
 
-Offer the next step: "Want me to deploy something? I can take a static site, PHP or WordPress project, or a Node app from this folder to one of your sites." Then use the `enhance-deploy` skill.
+Offer the next step, both halves of it: "Want me to deploy something? I can take a static site, PHP or WordPress project, or a Node app from this folder to one of your sites — or install a ready-made app for you, like Ghost or a CMS, on a domain or subdomain." Deploying what is in the folder is the `enhance-deploy` skill; installing a ready-made app or a fresh scaffold is `enhance-apps`.

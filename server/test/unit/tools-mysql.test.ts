@@ -78,6 +78,8 @@ describe('db_create', () => {
     expect(sent).toEqual({ name: 'demo' });
     expect(r.structured).toMatchObject({ database: MYSQL_DB, created: true });
     expect(r.text).toContain('DB_HOST=localhost');
+    // Node is the other half of this: the same "localhost" is TCP to a Node driver and refused.
+    expect(r.text).toContain('/run/mysqld/mysqld.sock');
   });
 
   it('strips the prefix the user typed rather than sending it twice', async () => {
@@ -399,6 +401,8 @@ describe('db_user_create', () => {
     expect(body.password).toMatch(/^Db[A-Za-z0-9_-]{32}9x$/);
     expect(r.structured).toMatchObject({ user: MYSQL_USER, password: body.password });
     expect(r.text).toContain('DB_HOST=localhost');
+    // Node is the other half of this: the same "localhost" is TCP to a Node driver and refused.
+    expect(r.text).toContain('/run/mysqld/mysqld.sock');
     expect(r.text).toContain('shown once');
     // The password itself belongs in structuredContent only, like the phpMyAdmin sign-on URL.
     expect(r.text).not.toContain(body.password);

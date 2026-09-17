@@ -2,6 +2,7 @@ import type { EnhanceClient } from '../client/client.js';
 import type { Config } from '../config.js';
 import type { AuditLog } from './audit.js';
 import type { ConfirmationGate } from './gate.js';
+import type { HttpProbe } from './probe.js';
 import { safe } from './respond.js';
 import type { Resolver } from './resolver.js';
 
@@ -12,6 +13,8 @@ export interface ToolContext {
   gate: ConfirmationGate;
   audit: AuditLog;
   now?: () => number;
+  /** Test seam for persistent_app_probe; production falls back to httpsProbe. */
+  httpProbe?: HttpProbe;
 }
 
 export class OrgRequiredError extends Error {

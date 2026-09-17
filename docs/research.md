@@ -517,7 +517,8 @@ the `MySQLDBsFullListing` type.
   confirmed `node -v` = v22.23.2, npm 10.9.8.
 - **Bug: `GET .../apps/node/versions` is out of sync.** After installing 22.23.2 via the API and
   setting it default, the list returned only `["26.8.1"]`, omitting 22.23.2, though `nvm ls`
-  shows both and default -> 22.23.2. A tool must not present this list as authoritative.
+  shows both and default -> 22.23.2. A tool must not present this list as authoritative (rule
+  pinned in the Task 1 probe below: it omits the `default`-alias version).
 - Persistent apps `GET/POST /websites/{id}/apps/persistent`,
   `PATCH/DELETE .../apps/persistent/{app_id}`, `GET .../apps/persistent/{app_id}` returns the
   **startup+stdout log** (nvm load, node version, app output) as a string.
@@ -534,6 +535,177 @@ the `MySQLDBsFullListing` type.
     deploys are verified on the primary domain (via `--resolve` until DNS resolves), unlike
     static and PHP which serve on the preview URL. Record this in the deploy skill for mode A.
   - A `persistent_app_<id>.log` file remains in the home directory after the app is deleted.
+
+#### Milestone C Task 1 probe (2026-09-16)
+
+Probed live on vahi.dev with a session JWT. Every app created here was deleted again, the
+`persistent_app_*.log` files were removed, the app listing is back to `[]` and
+`https://vahi.dev/demo-login/` answers 200 from PHP. nvm was left installed.
+
+1. Second `installNvm`: HTTP 200 in ~0.5 s with an empty body, and a **no-op** — `nvm ls` and the
+   mtimes of `~/.nvm` and `~/.nvm/nvm.sh` were unchanged (still 2026-09-05). The panel's
+   `/usr/bin/install_nvm_and_node.sh` prints "NVM already installed" and exits 0 when
+   `~/.nvm/nvm.sh` exists, so a repeat call never reinstalls nvm and never installs a node
+   version. It is safe to call again. `GET .../apps/node/versions` after it: still disagrees with
+   `nvm ls`, and the rule is now known — **it lists the installed versions except the one nvm's
+   `default` alias points at**. With default -> 22.23.2 and v22.23.2, v26.8.1, v26.8.2 installed
+   it returned `["26.8.1","26.8.2"]`; after `nvm alias default 26.8.1` the same set returned
+   `["22.23.2","26.8.2"]` (the alias was restored afterwards). The version the nvm `default` alias
+   points at is exactly the one missing from the list; apps that pin `nodeVersion` explicitly are
+   unaffected by this (finding 6's app ran v26.8.2 while the list still contained 26.8.2). Either
+   way the list must never be presented as authoritative.
+2. Restart: **every `PATCH` restarts the app, even a no-change one** — with one exception found
+   later in the walkthrough, item 11 below — and it restarts the whole website container with it. `PATCH {"startMode":"automatic"}` on an app already `automatic`
+   returned HTTP 200, and one second later both the container's PID 1 (`appinit ... lsphp`) and
+   the `node server.js` process showed fresh start times (16:53:13 and 16:53:14 for a PATCH issued
+   at 16:53:13; before it they had started at 16:51:56 and 16:51:57). **The pid is not a restart
+   signal**: the app lands on pid 5 in every fresh container, so the probe page printed the same
+   `probe-5` before and after; only `ps -eo pid,lstart,etimes` tells the truth. `startMode:
+   "manual"` stops the process — the proxy path answered HTTP 503 at 5 s and at 20 s. Back to
+   `"automatic"` starts a new process (200 again within 8 s, new start time). A partial PATCH is
+   field-safe: after sending only `startMode`, the listing still carried `command`,
+   `workingDirectory`, `nodeVersion` and `proxyDetails` unchanged. Create and delete bounce the
+   container the same way, so the site's PHP process (PID 1 is `appinit` running `lsphp`) is
+   restarted on every persistent-app write, not just the app.
+3. Duplicate port: **accepted**, HTTP 201 — a second app on port 3077 while a live app already
+   used 3077 was created without complaint, so the panel does not validate ports. The duplicate
+   was created with `startMode: "manual"` and never started, so what happens when both try to
+   listen was not observed; presumably the second fails to bind. Proxy path colliding with a
+   docroot directory (`demo-login`, a live PHP page): **accepted, HTTP 201, and the proxy wins.**
+   With the app merely registered and `startMode: "manual"` (nothing listening),
+   `https://vahi.dev/demo-login/` went from 200 to **503**; the PHP page returned to 200 within
+   seconds of deleting the app. So a proxy path silently shadows a real directory under
+   `public_html`, and an app that is not running turns that URL into a 503. A path that collides
+   with **another app** is the one case the panel refuses: HTTP 409
+   `{"code":"already_exists","detail":"website","message":"An app already exists with this path"}`.
+4. Log endpoint: **capped tail of 262144 bytes (256 KiB)**, cut mid-line. A 5,100,608-byte log file
+   came back as exactly 262144 decoded bytes (267287 bytes on the wire as a JSON string), starting
+   in the middle of a line and ending at the file's last line. A small log comes back whole (a
+   608-byte file returned a 608-byte string). The file is also **truncated on every app restart**,
+   so it only ever holds the current run, and it outlives the app's deletion.
+5. `appKind`: `generic` on our app — the panel returns the field, it is not sent on create.
+   `openclaw` is a panel-provided app kind the tools display but never create.
+6. `nodeVersion: "stable"` on create: **accepted**, HTTP 201, stored and echoed back as
+   `"stable"`. At start the runner does `nvm install stable; nvm use stable`, which resolved to
+   v26.8.2 and installed it on the fly (nvm held 22.23.2 and 26.8.1 before). POST body: **empty** —
+   HTTP 201 with `content-length: 0` and no `Location` header, so the new id must come from a
+   follow-up `GET .../apps/persistent`. `workingDirectory` may be omitted entirely (stored as
+   `null`). A successful `DELETE .../apps/persistent/{app_id}` answers HTTP 200 with an empty body
+   (every delete in this probe did).
+
+Two further behaviours this probe uncovered, both of which the tools must guard:
+
+- **`command` is word-split, not shell-parsed.** The runner seen in `ps` is
+  `bash -l -c 'date; install_nvm_and_node.sh; ... nvm install stable; nvm use stable; exec "$@"' -- ` followed
+  by the command words, so quoting inside `command` does not survive. `node -e "const s=require(...)"`
+  reached node as the argv `node`, `-e`, `"const`, `s=require(...)` and crash-looped every few
+  seconds with `[eval]:1 / "const / Unterminated string constant / SyntaxError: Invalid or
+  unexpected token`. The same app written as `node server.js` with `workingDirectory:
+  "mcpprobe-app"` started and served on the first try. The tools and the skill must point
+  `command` at a script or an npm script, never at an inline one-liner with quoted arguments.
+- **`workingDirectory: ""` is accepted (HTTP 201) but the app never starts.** Its log stopped
+  after the `Starting app with params ... working_directory: Some(RelativePathBuf(""))` header —
+  not even the runner's first `date` ran — and the proxy path was still 503 on every check over
+  the three minutes it was left up. Omit the field or send a real relative directory; the create tool should reject an
+  empty string rather than pass it through.
+
+Two follow-up probes by the controller (same day, throwaway apps `mcpenv`, deleted; demo-login 200 after each):
+
+7. **The runner injects no `PORT`** (or any app-specific variable): an app that printed its
+   environment, filtered to variable names matching /port|app|proxy|enhance|nvm/i, saw only
+   `NVM_INC`, `NVM_DIR`, `NVM_CD_FLAGS` and `NVM_BIN` — the filter, not the environment, is why
+   `PATH` and `HOME` do not appear; cwd = the site home when `workingDirectory` is unset. The
+   proxy port is not passed to the process, so the app must read its port from its own config: an
+   npm script (`"start": "node --env-file=.env server.js"`, `"start": "next start -p 3002"`) or a
+   hard-coded value. `VAR=value` prefixes in `command` cannot work because the command is exec'd
+   as argv, not through a shell.
+8. **An app created without `nodeVersion` never starts**: the runner skips the nvm load and logs
+   `exec: node: not found`. `nodeVersion: "default"` works (nvm prints a harmless
+   `Version 'default' not found` from its install step, then `Now using node v22.23.2`, the
+   default alias). So the create tool must always send a `nodeVersion`, defaulting to `"default"`.
+   The 2026-09-05 bullet above, where an app with `workingDirectory: "nodeapp"` started and logged
+   "listening on 3000", did not record what `nodeVersion` that create sent, so it does not
+   contradict this.
+9. **A quoted segment with no whitespace inside it survives the word-split** (Task 7 e2e,
+   2026-09-17). What crash-looped in the "`command` is word-split" bullet above is the
+   *whitespace*, not the quotes: the runner splits on whitespace and never strips quotes, so a
+   quote character simply travels into the argv word it sits in. The command
+   `node -e require('http').createServer((q,s)=>s.end('mcp-c-ok-<slug>')).listen(<port>)` is three
+   argv words, the whole script being the third; it started on the first try and the proxy path
+   answered HTTP 200 with the marker as its body, twice. The milestone C e2e uses exactly this
+   shape, with the port hard-coded because nothing injects `PORT` (finding 7). It is a test
+   fixture, not a pattern to recommend: `validateCommand` still refuses the quoted-with-space
+   form, and real apps belong in a script or an npm script.
+
+Two more from the Task 8 walkthrough (2026-09-17; the full run is under "Live test C" below):
+
+10. **The proxy strips the `/<path>` prefix before forwarding.** An Express app that echoed the URL
+    it received reported `/` for `https://vahi.dev/express/` and `/foo/bar?x=1` for
+    `https://vahi.dev/express/foo/bar?x=1`; `https://vahi.dev/express` without the trailing slash
+    also answered 200, `Host` stayed `vahi.dev` and `x-forwarded-for` carried the client IP. So an
+    app serves its routes at `/` and must not mount itself under the proxy path, while its asset
+    URLs still need the prefix: a Next.js build with `basePath: '/next'` returned its own 404 page
+    (the probe read status 404 with `reachable: true`), and the same app rebuilt with
+    `assetPrefix: '/next'` and no `basePath` served the page and its `/next/_next/static/…` assets
+    at 200.
+11. **A `proxyDetails`-only PATCH did not restart the container.** Re-exposing an app whose proxy
+    had just been cleared (`proxy_path` + `port`, nothing else in the body) answered 200 on the URL
+    while PID 1 and both app processes kept their earlier start times — no restart at all. **One
+    observation**; in the same session the start-mode PATCH, the `clear_proxy` PATCH, the creates
+    and the deletes all bounced the container as item 2 describes. Treat a restart as the usual
+    outcome and a no-restart as a possibility, never the other way round: to restart on purpose,
+    resend a field the app already has (`start_mode=automatic`).
+
+Three more from the follow-up probes after the walkthrough (2026-09-17), which Task 9 turns into
+guardrails (item 14 came out of its review, and corrected the guard):
+
+12. **An empty proxy path is accepted and hands the app the whole site.** On the empty site
+    vahid2.dev, an app created with `proxyDetails.path = ""` owned every URL: `/`,
+    `/anything/deep` and `/index.html` all answered **503** while the app was stopped, and the
+    docroot's own 404 came back only after the app was deleted. `"/"` and `"."` are refused with a
+    400 — "Invalid proxy path, must only contain alphanumeric characters and underscores. Hyphens,
+    dots and slashes allowed in the middle." — so the empty string is the *only* way to say "the
+    whole domain". That is the right layout for a Node app that is the whole site (on its own
+    website or subdomain) and a site-wide outage anywhere else, which is why `serve_at_root` is a
+    separate argument with its own preflight and `validateProxyPath` still rejects `""`.
+13. **`assetPrefix` does not cover a framework's `public/` files.** Under a path the proxy strips
+    the prefix, so anything the app references by absolute URL is requested at the DOMAIN root.
+    Next.js's `assetPrefix: '/next'` rewrites only its own `/_next/static/…` bundles: the page at
+    `https://vahi.dev/next/` still referenced `/next.svg` (a file in `public/`), which was **404**
+    at the domain root while `/next/next.svg` was **200**. The user found this as broken images
+    after a deploy that every other check called healthy, which is why `persistent_app_probe` now
+    fetches a page's assets itself. The same applies to links the app generates
+    (`<Link href="/about">`) and to absolute `fetch('/api')` calls.
+14. **A directory only shows on the BARE path, and answers 404 with the trailing slash.** Probed on
+    vahi.dev (2026-09-17) against the live docroot, with no app registered:
+    - an existing directory with **no index file** answers **404 on `/dir/`**, whether it is empty
+      or holds files — so the trailing-slash probe alone cannot see it at all;
+    - the bare `/dir` answers **301 → `https://vahi.dev/dir/`** for *every* existing directory,
+      empty, non-empty, or with an index page (`demo-login` redirects exactly the same way);
+    - a file answers **200 on `/file`** and **404 on `/file/`**;
+    - a path that exists nowhere answers **404 on both** `/x` and `/x/`;
+    - a path a persistent app owns answers **200 on both** `/express` and `/express/`.
+
+    So "does anything live here?" needs both requests, and the bare-path 301 whose `Location` is
+    the same path plus `/` is the signal for "existing directory". `pathPreflight` asks both forms
+    and treats the path as free only when both answer 404 (the root app asks `/` alone); the refusal
+    quotes which form answered, e.g. `HTTP 301 on /assets: an existing directory in public_html`.
+    Before this, an empty or index-less directory read as free and the app would have shadowed it.
+15. **The asset check's own first version false-failed a healthy page** (found by the user on
+    `https://vahi.dev/next/`, 2026-09-17). It fetched up to 12 assets **in parallel** with a
+    **2 s** deadline. From a client about **0.8 s** of round trip away from the server, the twelve
+    simultaneous TLS handshakes made each fetch take **1.6-3.8 s**, so half of them blew the
+    deadline, were rejected, and were reported as failed with `status: null` ("no answer: the app
+    itself does not serve it"). Two Next.js chunks that answer **200 in 1.1-1.7 s** were called
+    broken and the whole probe came back `isError` on a deploy that was fine. The same run made a
+    **genuine** catch that must keep working: `/favicon.ico?favicon…`, referenced absolutely, was
+    **404 at the domain root** while `/next/favicon.ico` was 200.
+
+    The rule this fixes: **a false failure is worse than a missed one, and a timeout is not
+    evidence that an asset is broken.** Asset fetches now run **4 at a time** with an **8 s**
+    deadline, and a fetch that never produced a status is **unchecked**, reported on its own line
+    and never a failure. Only a definite 404, 410 or 5xx fails a probe; `failed`, `restricted`
+    (401/403) and `unchecked` are disjoint in `structured.assets`.
 
 ## Live test B: databases, PHP, cron and the gate on vahi.dev (2026-09-11)
 
@@ -617,3 +789,345 @@ Findings:
   copy at the old commit), so a rebuild or pull needs
   `claude plugin uninstall enhance@enhance-mcp && claude plugin install enhance@enhance-mcp`
   (verified: the cache's recorded commit moved to the checkout's HEAD) or a version bump first.
+
+## Spec re-vendored: 12.25.8 → 12.25.11 (2026-09-16)
+
+- `server/spec/oas3-api.yaml` and `docs/enhance-api/oas3-api.yaml` now carry 12.25.11; the
+  `spec-drift` CI job is green again (`npm run check:spec` went from
+  "upstream spec (version 12.25.11) differs …" / exit 1 to "vendored spec matches upstream" / exit 0).
+- Paths added: none. Paths removed: none. 302 paths before and after; `diff` of the sorted path
+  lists is empty.
+- Schema changes that touched a tool: none; all 313 tests passed unchanged, `tsc --noEmit` is clean
+  and `tsup` builds. No tool source was edited.
+- Milestone C endpoints (`/websites/{id}/apps/node…`, `/websites/{id}/apps/persistent…`) are
+  unchanged apart from nothing: all six of `/websites/{website_id}/apps/persistent`,
+  `/websites/{website_id}/apps/persistent/{app_id}`, `/websites/{website_id}/apps/node`,
+  `/websites/{website_id}/apps/node/possible_versions`, `/websites/{website_id}/apps/node/versions`
+  and `/websites/{website_id}/apps/node/versions/default` are byte-identical to the 12.25.8 copy.
+- **The 12.25.11 spec is byte-identical to 12.25.8 apart from the `info.version` line.** The only
+  diff in either vendored YAML is `version: 12.25.8` → `version: 12.25.11`, so
+  `openapi-typescript` regenerated `server/src/client/generated/types.ts` with zero content change
+  (git reports no diff for it). Upstream bumped the orchd release without touching the OpenAPI
+  surface; the drift job was flagging a version-string mismatch, not an API change.
+- The non-standard `type: int` count is still exactly 2, so `EXPECTED_INT_OCCURRENCES` in
+  `server/scripts/patch-spec.ts` (and the `test/unit/spec.test.ts` assertion that reads it) needed
+  no change.
+
+## Live test C: Node runtime and persistent apps on vahi.dev (2026-09-16/17)
+
+Driver: the milestone C e2e suite (`server/test/e2e/milestone-c.e2e.test.ts`) calling the tool
+handlers (and, for the delete, the real gate) against the live panel with a fresh session JWT as the
+`id0` cookie, inside the existing site vahi.dev. Every write was a per-run `mcpc-<5 hex>` app on a
+port picked free from the live listing; the app is one inline `node -e` script with no whitespace in
+it (finding 9 above), so nothing has to be uploaded.
+
+| Test | Tools | What it proves |
+|---|---|---|
+| Node runtime reads | `node_versions_available`, `node_versions_installed` (and `node_install` only if the installed list is empty) | >10 available versions, newest a bare semver; the installed list carries the "as reported by the panel" hedge |
+| Persistent app round trip | `persistent_apps_list`, `persistent_app_create`, `persistent_app_probe`, `persistent_app_log`, `persistent_app_update`, `persistent_app_delete` through `ctx.gate` | create recovers the id from the follow-up listing (201 has no body); the probe reaches the app over HTTPS-to-IP with the domain as SNI/Host and gets the marker; the log is non-empty for a fresh app; a partial `PATCH` merges (`command`, `proxy.path`, `proxy.port`, `nodeVersion` survive an `allow_websocket`-only update); the gate refuses a mistyped domain (`mismatch`) and the typed primary domain deletes exactly that app, which then leaves the listing |
+
+Three passing runs, 2/2 each:
+
+| Run | Duration | Notes |
+|---|---|---|
+| 1 | 17.74 s | first live run, default reporter |
+| 2 | 25.47 s | verbose: Node reads 3.84 s, app round trip 18.41 s |
+| 3 | 15.67 s | after the review fixes (`713078f`): Node reads 2.66 s, app round trip 12.02 s |
+
+No 401/403 and no `invalid_session_token` on any run; the cookie was never printed. Node reads at
+~3 s mean nvm was already installed, so the 60 s `node_install` branch never ran. **No tool needed
+fixing** — every live assertion passed on the first attempt, so milestone C has no live-bug commit
+(unlike milestone B's `db_import_sql` fix). After each run `persistent_apps_list` was `[]` and both
+`https://vahi.dev/` and `https://vahi.dev/demo-login/` answered 200.
+
+Known leftovers:
+
+- One `persistent_app_<id>.log` per run stays in the website home; only SSH removes it (the same
+  trade-off as milestone B's `sql_backup_….sql.gz` dumps). Documented in the test and `.env.example`.
+- `clear_proxy` (the `proxyDetails: Unset` path of `persistent_app_update`) is not exercised by the
+  e2e suite; the walkthrough below covered it live instead, and `src/tools/apps.ts` now records
+  that result.
+- The `node_install` branch is untested live, because vahi.dev has had nvm since the Task 1 probe.
+- Each run bounces the website container three times (create, update, delete), which is why
+  `ENHANCE_E2E_SITE` must never name a production site.
+
+### Walkthrough (2026-09-17): Express, Next.js and the typed-domain delete
+
+Task 8 of the milestone C plan, run by the controller with the user inside Claude Code with the
+plugin reinstalled from `feat/milestone-c`, on vahi.dev. Everything went through the MCP tools and
+the `enhance-deploy` skill; ssh/rsync ran with the sandbox disabled. The panel was left clean.
+
+| Step | Tools / commands | Result |
+|---|---|---|
+| Express app | rsync of a small Express app (`"start": "node --env-file=.env server.js"`, `.env` carrying `PORT=3001`), then `persistent_app_create website=vahi.dev command="npm start" working_directory=express proxy_path=express port=3001` | the log showed `Now using node v22.23.2` (nvm's `default` alias) and `expresswalk listening on 3001`; `persistent_app_probe` → HTTP 200, certificate valid, ~850 ms |
+| What the app actually receives | the Express app echoed the URL it saw | `https://vahi.dev/express/` arrived as `/` and `https://vahi.dev/express/foo/bar?x=1` as `/foo/bar?x=1`; `https://vahi.dev/express` without the trailing slash also answered 200; `Host` stayed `vahi.dev` and `x-forwarded-for` carried the client IP |
+| Next.js build on the server | `npm ci` (9 s) and `next build` (11 s) over SSH, Next.js 16.3.5, start script `next start -p 3002` | built in the container (3.9 GB box), no memory kill |
+| Next.js with `basePath: '/next'` | `persistent_app_create … proxy_path=next port=3002`, then `persistent_app_probe` | status **404**, `reachable: true` — the app's own 404 page: it serves only `/next/…` while the proxy hands it `/` |
+| Next.js with `assetPrefix: '/next'` and no `basePath` | rebuild (6 s), then `persistent_app_update … start_mode=automatic` to restart | `https://vahi.dev/next/` → 200, and the page's `/next/_next/static/…` CSS and JS → 200 |
+| Deliberate restart | `persistent_app_update website=vahi.dev app_id=<id> start_mode=automatic` (resending a field the app already had) | restarted the app, which picked up the new build |
+| Unexpose | `persistent_app_update … clear_proxy=true` | the listing came back with `proxy: null`, the URL fell through to the docroot (404) and the Node process kept running, with command, working directory, Node version and start mode unchanged; that PATCH **did** restart the container (PID 1 start time changed) |
+| Re-expose | `persistent_app_update … proxy_path=express port=3001` — a PATCH carrying only `proxyDetails`, on an app whose proxy was `null` | the URL answered 200 again and **nothing restarted**: PID 1 and both app processes kept their earlier start times |
+| Typed-domain delete | `persistent_app_delete` for both apps | the typed-domain prompt appeared inside Claude Code both times and the user typed `vahi.dev`; both apps were removed. The mismatch refusal was not re-shown here — the live e2e gate round trip and the MCP-level unit test cover it |
+| Cleanup | `persistent_apps_list`, SSH | 0 apps, no Node processes left in the container, `/express/` and `/next/` → 404, `https://vahi.dev/demo-login/` → 200 and the site root → 200; the app directories and seven `persistent_app_*.log` files were removed over SSH |
+| Installed-versions hedge | `node_versions_installed` | `["26.8.2","26.8.1"]` while nvm's `default` alias pointed at 22.23.2 — the documented omission (finding 1 above), seen again |
+
+Findings:
+
+- **The reverse proxy strips the path prefix before forwarding.** `/express/` reaches the app as
+  `/` and `/express/foo/bar?x=1` as `/foo/bar?x=1` (the app echoed them). So an app serves its
+  routes at `/` and must *not* mount itself under `/<path>`; only the asset URLs in its HTML need
+  the prefix, because the browser asks for those at the public path.
+- **Next.js behind this proxy wants `assetPrefix`, not `basePath`.** With `basePath: '/next'` the
+  app answered its own 404 page (probe: status 404, `reachable: true`) because it only serves
+  `/next/…`. Rebuilt with `assetPrefix: '/next'` and no `basePath`, the page and its
+  `/next/_next/static/…` assets were all 200. Caveat: links the app generates itself
+  (`<Link href="/about">`) are **not** prefixed by `assetPrefix`, so a multi-page framework app
+  needs prefix-aware links or a domain or subdomain of its own instead of a path.
+- **`clear_proxy` is verified live.** `proxyDetails: Unset` removed the proxy (`proxy: null`), the
+  URL fell through to the docroot and the process kept running untouched; the app was re-exposed
+  afterwards with a plain `proxy_path`/`port` update.
+- **Not every update restarts the container.** Re-exposing the app with a `proxyDetails`-only PATCH
+  (on an app whose proxy was `null`) left PID 1 and both app processes with their earlier start
+  times, while the start-mode PATCH, the `clear_proxy` PATCH, the creates and the deletes all
+  bounced the container. **One observation**, not a rule: the tools and the skill now say an update
+  *usually* restarts, and name `start_mode=automatic` as the way to restart on purpose.
+- **Building Next.js on the server is fine on this plan**: `npm ci` 9 s, `next build` 11 s, and the
+  `assetPrefix` rebuild 6 s, on a 3.9 GB container with no memory kill — so the skill's
+  "build locally if the build is killed" branch stayed unused.
+- **Cleanup**: the walkthrough left nothing behind — no apps, no Node processes, no app
+  directories and no `persistent_app_*.log` files (seven of them, including the e2e leftovers,
+  were removed over SSH); the PHP demo page and the site root still answer 200.
+- **An empty proxy path hands the app the whole site** (finding 12 above, probed on vahid2.dev
+  after the walkthrough): `/`, `/anything/deep` and `/index.html` all answered 503 while a stopped
+  app held `""`, and the docroot returned only when the app was deleted; `"/"` and `"."` are a 400.
+  Task 9 exposes it as `serve_at_root`, guarded by a preflight, and `validateProxyPath` still
+  rejects `""`.
+- **`assetPrefix` does not cover `public/` files** (finding 13 above): the user's broken images on
+  `https://vahi.dev/next/` were `/next.svg`, a 404 at the domain root, while `/next/next.svg` was
+  200 — a page that is itself 200 can be wholly broken. Task 9 makes `persistent_app_probe` fetch a
+  page's images, scripts and stylesheets and fail the result when any of them does not answer, and
+  makes `persistent_app_create` refuse a proxy path that already serves something.
+
+## Live test C3: popular Node stacks as one-click installs (2026-09-17)
+
+Run by the controller with the product owner inside Claude Code, with the plugin installed from
+`feat/milestone-c` (Task 9 code: path-clash preflight, `serve_at_root`, asset check). Four popular
+Node stacks were installed on four **new websites** on subscription 686, each subdomain of vahi.dev
+being its own website and each app registered with `serve_at_root=true`. DNS was a wildcard
+`A *.vahi.dev → 65.98.32.45` at Cloudflare (DNS only). Everything went through the MCP tools plus
+`ssh`/`rsync` with the sandbox disabled. The purpose was to find out whether "install Ghost on
+blog.example.com" can be a verified recipe rather than an improvisation; the four recipes now live
+in `skills/enhance-apps/`.
+
+### Sites created
+
+| Subdomain | Website id | Unix user | App id |
+|---|---|---|---|
+| start.vahi.dev | 51128ca6-62c2-45d6-a86b-2e99481d6fb8 | start_va1 | 335be440-72a3-4f72-90af-c186e0eee6ed |
+| ghost.vahi.dev | 303180c8-d4d4-44d3-8ec1-17b21ee76a0b | ghost_va1 | d78b5a45-8d95-4f7f-bea7-cacab1ad5191 |
+| payload.vahi.dev | 81a59c9b-b2a5-46eb-bd82-f00171966661 | payload_1 | 51ad27b0-af44-4851-9ed6-c432e0f88085 |
+| emdash.vahi.dev | 2f0cb7fb-3fdf-4903-9010-178199e22719 | emdash_v1 | d4e3c49c-9e23-45c3-bc90-8e22fdc99822 |
+
+One deploy key (`enhance_vahi_dev_ed25519`) was authorised on all four through `ssh_key_add`.
+
+### Results
+
+| Stack | Version | URL (all `serve_at_root`) | Database | Install + build on the server | Result |
+|---|---|---|---|---|---|
+| TanStack Start | Start on Nitro, Node 22.23.2 | https://start.vahi.dev/ — port 3000, `npm start` = `node --env-file=.env .output/server/index.mjs` | none | `npm ci` 4 s, build 2 s | **live first try**; probe 200, certificate valid, 2/2 assets OK |
+| Ghost | 6.64.0 (ghost-cli, pnpm) | https://ghost.vahi.dev/ — port 2368, `node --env-file=.env current/index.js`, `working_directory=ghost` | MySQL `ghost_va1_ghost` on MariaDB 11.4, over the socket | `ghost install` ~40 s, boot 4.9 s incl. its own migrations + seed | **live after two traps**; `/`, `/ghost/`, `/rss/` 200; probe 200, 7/7 assets OK |
+| Payload | 3.89 + Next 16.3.3 + `@payloadcms/db-sqlite` | https://payload.vahi.dev/ — port 3000, `npm start`, `working_directory=payloadapp` | SQLite `file:./payload.db` | `npm install` + `next build` 36 s, no OOM | **live after the migration trap**; `/` 200, `/admin/login` + `/admin/create-first-user` 200, `/api/users` 403 (correct) |
+| EmDash | 0.38 + Astro 7.3 + `@astrojs/node` standalone | https://emdash.vahi.dev/ — port 4321, `npm start` = `node --env-file=.env ./dist/server/entry.mjs` | SQLite `file:./data.db` via `node:sqlite` | `npm ci` 12–14 s, `astro build` ~10 s | **live after a template swap**; DB auto-migrates and auto-seeds on the first request |
+
+All four ran on Node v22.23.2 through nvm's `default` alias; none pinned `node_version`. Building in
+the container was never a problem on this plan (3.9 GB box, ~2.4 GB free) — Next.js, Astro and Nitro
+all built there, and the 8 GB `--max-old-space-size` in Payload's template build script is a ceiling,
+not a requirement.
+
+### Node runtime: the three-step sequence
+
+On each of the four sites, in this order:
+
+```
+node_install website=<site>                          # installs nvm + the newest stable, 26.9.0
+node_version_install website=<site> version=22.23.2
+node_version_set_default website=<site> version=22.23.2
+```
+
+**`node_install` alone is not enough.** It leaves the newest *stable* release (26.9.0 here) as nvm's
+`default` alias, and that is what a persistent app with `nodeVersion: "default"` would run. The two
+further calls put the site on the 22 LTS line; all four apps then ran on **v22.23.2** through the
+alias, with nothing pinned on the app itself.
+
+### Certificates: `domain_ssl_issue` worked on all four
+
+DNS was one wildcard `A *.vahi.dev → 65.98.32.45` at Cloudflare, **DNS only** (proxy off). That was
+enough for HTTP-01 on every subdomain: `domain_ssl_issue` succeeded on **all four** sites, each
+returning a real **Let's Encrypt** certificate whose SANs cover both `<sub>.vahi.dev` and
+`www.<sub>.vahi.dev`, expiring **2026-12-16**. No placeholder certificate survived into any
+hand-over. A wildcard DNS record does not issue anything by itself — each website still needs its own
+`domain_ssl_issue` call.
+
+### Exact commands, as run (2026-09-17)
+
+Verbatim, for the recipes in `skills/enhance-apps/references/`:
+
+- **TanStack Start** (local scaffold):
+  `npx --yes @tanstack/cli create <name> --framework React --deployment nitro --package-manager npm --no-git --no-intent --no-toolchain --no-examples --yes`
+  → Vite 8.3, Nitro 3.0 beta, preset `node-server`. Added `"start": "node --env-file=.env
+  .output/server/index.mjs"`; `.env` held `PORT=3000`; rsync excluded `node_modules .output .env dist
+  build .tanstack .nitro`. Server: `npm ci` 4 s, `npm run build` 2 s.
+  `persistent_app_create command="npm start" working_directory=startapp port=3000
+  serve_at_root=true`; log line `Listening on: http://localhost:3000/ (all interfaces)`; probe 200
+  with 2/2 assets.
+- **Ghost** (on the server, nothing scaffolded or rsynced):
+  `npx --yes ghost-cli@latest install --no-prompt --no-stack --no-setup --no-setup-linux-user --dir $HOME/ghost`
+  → Ghost 6.64.0 in ~40 s (pnpm via corepack). The **first attempt, without
+  `--no-setup-linux-user`**, failed *both* doctor checks on the mode-711 home: the node-version check
+  and the folder-permission check.
+- **Payload** (local scaffold):
+  `npx --yes create-payload-app@latest -n <name> -t blank --db sqlite --db-connection-string "file:./payload.db" --use-npm --no-deps --no-agent`
+  → Payload 3.89.0, Next 16.3.3, `@payloadcms/db-sqlite`. The scaffolder writes `.env`
+  (`DATABASE_URL`, `PAYLOAD_SECRET`), which was copied to the server with **`scp`** and never
+  rsynced. `--no-deps` means **no lockfile**, so the server step was `npm install` (not `npm ci`)
+  then `npm run build`, 36 s. The start script is `cross-env NODE_OPTIONS=--no-deprecation next
+  start` (default port 3000).
+  `persistent_app_create command="npm start" working_directory=payloadapp port=3000
+  serve_at_root=true`. Migration fix: `npm run payload -- migrate:create initial` then
+  `npm run payload -- migrate`. *For a real project the recipe recommends scaffolding **with**
+  dependencies so `npm ci` works — the trial did not do that.*
+- **EmDash** (local scaffold): first
+  `npm create --yes emdash@latest <name> -- --template node:starter --pm npm --yes` (the form the
+  docs show — intentionally unstyled), then the fix
+  `npm create --yes emdash@latest <name> -- --template blog --platform node --pm npm --yes`. Start
+  script changed to `"node --env-file=.env ./dist/server/entry.mjs"`; `.env` held the scaffolder's
+  `EMDASH_ENCRYPTION_KEY` plus `HOST=0.0.0.0` and `PORT=4321`. Server: `npm ci` 12–14 s,
+  `npm run build` ~10 s. `persistent_app_create command="npm start" port=4321 serve_at_root=true`.
+  Switching template = a **new folder** with its **own** generated
+  `EMDASH_ENCRYPTION_KEY` and a fresh database, built there, then
+  `persistent_app_update working_directory=<new>` (restarts the container); the old folder is kept.
+  Carrying the old database (and with it the old key) into the new folder was **not tried**.
+
+### Traps and fixes
+
+- **Ghost 1 — the home directory is mode 711.** `ghost install` refuses with a "not readable by other
+  users" check. The correct fix is the flag **`--no-setup-linux-user`** (it skips ghost-cli's
+  directory checks), **not** a `chmod` on the site home: the panel owns those modes. Full flag set
+  used: `--no-prompt --no-stack --no-setup --no-setup-linux-user`.
+- **Ghost 2 — MySQL is socket-only from Node.** MariaDB answers on `/run/mysqld/mysqld.sock` inside
+  the container and `127.0.0.1` is refused; a Node client treats `localhost` as TCP, so
+  `database.connection.socketPath` (mysql2/knex) is required and `host`/`port` must be absent. PHP's
+  `localhost` resolves to the socket by itself (milestone B), Node's does not.
+- **Ghost 3 — MariaDB 11.4 vs "MySQL 8 only".** `canUse.mysqlKind` is `mariaDbLts`; Ghost documents
+  MySQL 8 only. Ghost 6.64.0 ran on it anyway: migrations, seeding and the admin all worked. Works
+  today, unsupported upstream — worth saying to a customer, not worth refusing the install over.
+- **Ghost 4 — `NODE_ENV`.** The panel execs the command as argv with no shell, so
+  `NODE_ENV=production node …` is impossible; the variable goes in `.env` and the command loads it
+  with `--env-file`. `config.production.json` is only read when `NODE_ENV=production`.
+- **Ghost 5 — benign boot error.** An ActivityPub webhook self-fetch fails at boot, before the site
+  is being served. Not a failure.
+- **Payload — an empty database under `next start`.** The SQLite adapter only pushes the schema in
+  *development*. In production the db file was created **0 bytes** and the blank template ships no
+  migrations, so `/admin` answered **HTTP 200** while the browser showed "This page couldn't load"
+  and the log said `SQLITE_ERROR: no such table: users`. Fix on the server:
+  `npm run payload -- migrate:create initial` then `npm run payload -- migrate` (75 ms), then restart
+  with `persistent_app_update start_mode=automatic`. **In the trial the migration therefore ran after
+  the first start, as the repair**; the recipe's corrected order is install → migrate → build, so the
+  app never serves a request against an empty database. **Rule:** generate migrations locally when the
+  scaffold has its dependencies (commit and upload them), otherwise create them on the server after
+  `npm install`, and run `payload migrate` **before the build**.
+- **Payload — the verification lesson.** The controller's own check had missed this because `/admin`
+  returned 200 and the error was rendered client-side. Verification must load the **login** page and
+  read `persistent_app_log`, not just collect status codes. This is now **section 4** of the
+  `enhance-apps` skill, and it runs **before** the first-admin step (section 5), so a customer is
+  never sent to a setup URL nobody has loaded.
+- **EmDash — `node:starter` is intentionally unstyled.** The user reported the site "looks wrong";
+  assets were all 200 and the deploy was correct — the `node:starter` template, which is the form
+  EmDash's own docs show, ships "minimal styling … a base you can build on" by design. Fixed by
+  scaffolding `--template blog --platform node` into a second directory, building there, and
+  pointing the app at it with `persistent_app_update working_directory=emdashblog` (which restarted
+  it): styled page, ~27 KB of CSS with theme tokens. The old directory was left in place. The new
+  directory means a **fresh database**, so setup had to be redone.
+- **EmDash — log and HTML noise.** `ExperimentalWarning` from `node:sqlite` on every start is
+  normal, and the "an error occurred" strings in the admin HTML are the i18n catalogue, not errors.
+- **EmDash — Node ≥ 22.16** is the floor **EmDash's own documentation** states (docs.emdashcms.com)
+  for its use of `node:sqlite`. It is upstream documentation, not a trial finding: the trial ran
+  v22.23.2 and nothing lower was tested.
+
+### The subdomain-mode probe
+
+The product owner asked for both subdomain layouts to be offered as a choice, so mode A was probed
+on vahi.dev: `domain_add kind=subdomain domain=apptest.vahi.dev document_root=apptest`.
+
+- The docroot was created at `<home>/apptest`, a **sibling of `public_html`**, mode 750, group 33.
+- A static page answered **200 on `https://apptest.vahi.dev/`** with the placeholder certificate.
+- **The website's persistent apps did not answer there**: `/express/` and `/next/` returned 404 on
+  the subdomain while both were 200 on the primary domain. `/demo-login/` also 404s there, because
+  the docroot is a different directory.
+- The test subdomain was removed again with `domain_remove`.
+
+So the two modes are genuinely different products:
+
+| | A. subdomain inside a website (`domain_add kind=subdomain`) | B. subdomain as its own website (`website_create`) |
+|---|---|---|
+| Container, unix user, PHP version, databases, quota | shared with the parent site | its own |
+| Website slot | none | one |
+| Static and PHP | yes | yes |
+| Persistent Node apps | **no — verified 404** | yes, with `serve_at_root=true` |
+
+Every C3 recipe therefore uses mode B, and the skill asks the customer which they want before
+anything is created.
+
+### First admin: every installer was unclaimed
+
+The moment each site answered, its installer was open to anyone on the internet: Ghost's `/ghost/`
+owner screen, Payload's `/admin` "Create first user", EmDash's setup wizard
+(`GET /_emdash/api/setup/status` → `needsSetup: true`). The product owner's requirement out of this
+trial: **a recipe must create or guide the first admin and present the login once at the end, never
+leave an installer unclaimed.** EmDash's first admin is a **browser passkey** and cannot be
+automated at all, which is why the skill's rule is "stay with the customer until it is claimed, or
+park the app with `start_mode=manual`". The Payload admin was created during the trial and the user
+confirmed it works.
+
+### Other findings
+
+- **Parallel `website_create` calls time out client-side while succeeding.** Four issued at once
+  returned two "operation was aborted due to timeout" errors although the panel had created both
+  sites; `domain_check` then reported `inUseCurrentOrg` for them. Create sites one at a time, and on
+  a timeout re-check with `domain_check` instead of retrying. (Minor for the final review:
+  `website_create` could do that re-check itself and report the real outcome.)
+- **A stale cached tool schema is not the running server.** After the restart, `ToolSearch` showed a
+  `persistent_app_create` schema without `serve_at_root`, while the running server (repo `dist`,
+  Task 9) accepted the argument and enforced the preflight. Trust behaviour, not the cached schema.
+- **The asset check was calibrated by this trial**, not by a unit test: twelve parallel fetches on a
+  2 s deadline from a ~0.8 s-RTT client reported healthy Next.js chunks as missing, while making one
+  genuine catch (`/favicon.ico` 404 at the domain root, 200 under `/next/`). Fixed in Task 9b — four
+  at a time, 8 s deadline, a timeout is *unchecked* and never a failure (item 15 under "Milestone C
+  Task 1 probe").
+- **`serve_at_root` and the path preflight were verified live** for the first time here: on each
+  fresh site the root answered 404, the preflight allowed the create, and the app then owned the
+  whole domain.
+
+### Discovery: the site file listing (filerd), held for a later milestone
+
+Asked whether the plugin could list a site's files, the controller found a working, **undocumented**
+path (verified read-only on vahi.dev):
+
+1. `POST /orgs/{org_id}/websites/{website_id}/access-tokens` (this one **is** in the spec) returns a
+   short-lived **site JWT**, claims `euid`, `egid`, `exp`, `website_id`, `read_only`.
+2. `GET <panel><filerdAddress>/websites/{website_id}/entries?recursive=true&maxDepth=N&fetchMetadata=true`
+   with `Authorization: Bearer <site token>` returns the directory tree of the site home.
+
+Notes: `?path=` is ignored (the whole tree comes back); the panel session cookie is rejected with
+"Token header not found" and the session JWT as a Bearer with "InvalidSignature"; filerd's own
+`/version` reports 12.25.8. **filerd is not in the public OpenAPI spec**, so a `files_list` tool
+built on it would be betting on an unversioned internal API — worth doing (it would also make the
+path-clash guard exact instead of HTTP-based), but as its own task with an HTTP fallback, not inside
+milestone C.
+
+### Left running
+
+The four trial sites (`start`, `ghost`, `payload`, `emdash` under vahi.dev) and the two demo
+persistent apps on vahi.dev (`/express/`, `/next/`) were deliberately left live as test resources.
+They are to be removed when the user says so: `persistent_app_delete` per app (typed-domain prompt),
+`rm -rf` the app directories and `persistent_app_*.log` over SSH, then `website_delete` per site.

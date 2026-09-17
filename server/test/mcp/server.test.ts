@@ -6,7 +6,7 @@ import { createServer } from '../../src/server.js';
 import { allTools } from '../../src/tools/index.js';
 import { makeContext } from '../helpers/context.js';
 import type { FakeFetch, Route } from '../helpers/fakeFetch.js';
-import { domainMappings, MYSQL_DB, ORG_ID, PREVIEW_DOMAIN_ID, sshKeys, WEBSITE_ID, websiteDetail, websitesList, websiteSummary } from '../fixtures/panel.js';
+import { APP_ID, domainMappings, MYSQL_DB, ORG_ID, persistentApps, PREVIEW_DOMAIN_ID, sshKeys, WEBSITE_ID, websiteDetail, websitesList, websiteSummary } from '../fixtures/panel.js';
 
 /**
  * The SDK's `ElicitResult` (what an `elicitation/create` handler must return) types `content`
@@ -326,6 +326,8 @@ describe('createServer', () => {
     { method: 'DELETE', path: `${sitePath}/mysql-users/${MYSQL_USER}`, status: 204 },
     { method: 'POST', path: `/v2/websites/${WEBSITE_ID}/mysql/${MYSQL_DB}/sql`, status: 204 },
     { method: 'DELETE', path: `${sitePath}/crontab`, status: 204 },
+    { method: 'GET', path: `/websites/${WEBSITE_ID}/apps/persistent`, body: persistentApps },
+    { method: 'DELETE', path: `/websites/${WEBSITE_ID}/apps/persistent/${APP_ID}`, status: 200 },
     { method: 'DELETE', path: `${sitePath}/postgresql-dbs/${PG_DB}`, status: 204 },
     { method: 'DELETE', path: `${sitePath}/postgresql-users/${PG_USER}`, status: 204 },
     { method: 'DELETE', path: `${sitePath}/postgresql-users/${PG_USER}/privileges/${PG_DB}`, status: 204 },
@@ -340,6 +342,7 @@ describe('createServer', () => {
     // The one destructive tool whose panel write is not a DELETE: a multipart POST carrying the SQL.
     { tool: 'db_import_sql', args: { website: 'vahi.dev', name: 'demo', sql: IMPORT_SQL }, typed: MYSQL_DB, write: { method: 'POST', path: `/v2/websites/${WEBSITE_ID}/mysql/${MYSQL_DB}/sql`, multipart: true } },
     { tool: 'cron_delete', args: { website: 'vahi.dev' }, typed: 'vahi.dev', write: { method: 'DELETE', path: `${sitePath}/crontab` } },
+    { tool: 'persistent_app_delete', args: { website: 'vahi.dev', app_id: APP_ID }, typed: 'vahi.dev', write: { method: 'DELETE', path: `/websites/${WEBSITE_ID}/apps/persistent/${APP_ID}` } },
     { tool: 'pg_db_delete', args: { website: 'vahi.dev', name: 'shop' }, typed: PG_DB, postgresql: true, write: { method: 'DELETE', path: `${sitePath}/postgresql-dbs/${PG_DB}` } },
     { tool: 'pg_user_delete', args: { website: 'vahi.dev', username: 'app' }, typed: PG_USER, postgresql: true, write: { method: 'DELETE', path: `${sitePath}/postgresql-users/${PG_USER}` } },
     { tool: 'pg_user_revoke', args: { website: 'vahi.dev', username: 'app', database: 'shop' }, typed: PG_USER, postgresql: true, write: { method: 'DELETE', path: `${sitePath}/postgresql-users/${PG_USER}/privileges/${PG_DB}` } },

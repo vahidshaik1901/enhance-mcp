@@ -37,17 +37,22 @@ name in a `.env` file will not connect.
 
 ## 3. Connect from an app (critical, verified live)
 
-The database host is always **`localhost`** — the unix socket. `127.0.0.1` is **refused**
-(`Connection refused`): verified live from a PHP page in the container against MariaDB. Do not use
-the `dbServerIps` value either — that was never tested, and `localhost` is the host the container's
-own `~/.my.cnf` uses.
+**From PHP** the host is always **`localhost`** — PHP resolves that to the unix socket. `127.0.0.1`
+is **refused** (`Connection refused`): verified live from a PHP page in the container against
+MariaDB. Do not use the `dbServerIps` value either — that was never tested, and `localhost` is the
+host the container's own `~/.my.cnf` uses.
 
 ```
-DB_HOST=localhost          # never 127.0.0.1, never an IP
+DB_HOST=localhost          # PHP only; never 127.0.0.1, never an IP
 DB_DATABASE=<full db name from db_create>
 DB_USERNAME=<full user name from db_user_create>
 DB_PASSWORD=<the password shown once>
 ```
+
+**From Node this is different and `localhost` does not work.** A Node MySQL client reads `localhost`
+as TCP to 127.0.0.1, which the server refuses; it needs `socketPath: '/run/mysqld/mysqld.sock'` with
+**no** `host` and no `port` (verified live with Ghost on mysql2/knex — see the `enhance-apps` skill,
+"MySQL from Node is socket-only").
 
 ## 4. A new database for an app, in this order
 
@@ -56,7 +61,8 @@ DB_PASSWORD=<the password shown once>
    **once**, in `structuredContent.password`. Capture it now; it is never shown again (safety
    rule 10). Pass `password=` yourself only if the user insists on a specific one.
 3. `db_user_set_privileges website=<site> username=<user> database=<db> grants=["all"]`.
-4. Write the app config (`.env`, `wp-config.php`, `config/database.php`) with `DB_HOST=localhost`,
+4. Write the app config (`.env`, `wp-config.php`, `config/database.php`) with `DB_HOST=localhost`
+   for PHP (or `socketPath: '/run/mysqld/mysqld.sock'` and no host for a Node client),
    the full database name, the full user name and that password. Never commit it, never repeat
    the password in later messages.
 
@@ -155,5 +161,6 @@ and `pg_dump` over SSH.
 
 ## Report back
 
-Say which website, the **full** database and user names, that the app connects on `localhost`,
+Say which website, the **full** database and user names, how the app connects (`localhost` from
+PHP, the socket path from Node),
 where the config was written, and whether a backup exists. Do not repeat the password.
