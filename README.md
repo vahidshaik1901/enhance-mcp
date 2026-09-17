@@ -81,7 +81,7 @@ Milestone A (account, preflight, websites, domains, DNS, SSL, SSH, static-site d
 Milestone B (MySQL, PostgreSQL, PHP settings, Redis, cache, `.htaccess`, cron, the `enhance-database` skill and the PHP/Laravel deploy path) is merged and verified live: the milestone B end-to-end suite passed against a real panel on 2026-09-11, and the PHP + MySQL page, a Laravel 13 deploy over SSH and the typed-name confirmation prompt were walked through inside Claude Code on 2026-09-16 (see "Live test B" and "Task 10 walkthrough" in `docs/research.md`).
 
 Milestone C (Node.js via nvm and panel-managed persistent apps: install and pin Node versions, register an app behind the reverse proxy, read its log, probe it on the domain before DNS, delete it through the typed-name gate, plus the Node path in the deploy skill) is code-complete on branch `feat/milestone-c` and verified live by its end-to-end suite, which passed against a real panel on 2026-09-16 and again on 2026-09-17 (see "Live test C" in `docs/research.md`).
-An Express and a Next.js walkthrough inside Claude Code is still to come.
+An Express app and a Next.js app were then deployed to vahi.dev and taken down again inside Claude Code on 2026-09-17, through the typed-domain delete prompt (see "Walkthrough (2026-09-17)" in the same section). The milestone is not merged yet; it lives on `feat/milestone-c`.
 
 Next: email, backups, DNS zone editing, WordPress, staging and the other deploy modes (milestone D). OAuth support lands as soon as the panel offers it.
 

@@ -8,20 +8,25 @@ delete a site by accident.
 
 ## Current status (2026-09-17)
 
-**Phase: milestone C CODE-COMPLETE and E2E-VERIFIED on branch `feat/milestone-c` (Tasks 0-8 of
-`docs/superpowers/plans/2026-09-16-milestone-c-node.md` done except the walkthrough half of Task 8).
+**Phase: milestone C COMPLETE and LIVE-VERIFIED on branch `feat/milestone-c` (all of Tasks 0-8 of
+`docs/superpowers/plans/2026-09-16-milestone-c-node.md` done, walkthrough included).
 82 tools are registered (a client lists 83 with `confirm_action`): milestones A and B plus
 `node_install`, `node_versions_available`, `node_versions_installed`, `node_version_install`,
 `node_version_set_default`, `persistent_apps_list`, `persistent_app_create`,
 `persistent_app_update`, `persistent_app_delete` (destructive, typed domain), `persistent_app_log`
-and `persistent_app_probe`. 378 unit tests; the milestone C live suite passed 2/2 against vahi.dev
+and `persistent_app_probe`. 379 unit tests; the milestone C live suite passed 2/2 against vahi.dev
 on 2026-09-16 and again on 2026-09-17 after the review fixes, with no tool bug found and no tool fix
-needed (see "Live test C" in docs/research.md). Skills: `enhance-deploy` extended with the Node path
-(runtime, app directory, port, proxy path, rsync target, post-deploy order, probe) and
-`persistent_app_delete` added to its safety rules. Remaining: the Task 8 walkthrough with the user
-(Express, then Next.js, on vahi.dev, and the typed-name prompt for `persistent_app_delete` inside
-Claude Code), then `superpowers:finishing-a-development-branch`, then milestone D (email, backups,
-DNS zone editing, WordPress, staging).
+needed (see "Live test C" in docs/research.md). The Task 8 walkthrough ran on 2026-09-17 on vahi.dev
+inside Claude Code with the plugin reinstalled from this branch: an Express app and a Next.js app
+deployed behind the proxy and verified in the browser, `clear_proxy`, a deliberate restart, and the
+typed-domain prompt for `persistent_app_delete` twice (see "Walkthrough (2026-09-17)" under "Live
+test C" in docs/research.md). It found no tool bug but forced the corrections in this branch's last
+two commits: the proxy strips the path prefix, a 404-from-the-app hint in `persistent_app_probe`,
+`clear_proxy` verified, and honest ("usually") restart wording. Skills: `enhance-deploy` extended
+with the Node path (runtime, app directory, port, proxy path and prefix stripping, rsync target,
+post-deploy order, probe) and `persistent_app_delete` added to its safety rules. Remaining: the
+final whole-branch review, then `superpowers:finishing-a-development-branch`, then milestone D
+(email, backups, DNS zone editing, WordPress, staging).
 Milestone B is MERGED to `main` (2026-09-16, PR #3, merge commit ecb0d96); all 10 tasks of
 `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done, including the Task 10
 walkthrough on 2026-09-16: PHP page reading MySQL, Laravel 13 `composer install` + `migrate` over
@@ -150,8 +155,12 @@ The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) 
 - No rate-limit headers were returned on these calls.
 - **Milestone C live facts** (Node and persistent apps, probed 2026-09-16/17; full notes in
   docs/research.md under "Milestone C Task 1 probe"):
-  - Every persistent-app create, update or delete restarts the **whole website container**, not
-    just the app, so the site's PHP and static pages are interrupted for a second or two each time.
+  - A persistent-app create, update or delete **usually restarts the whole website container**, not
+    just the app, so expect the site's PHP and static pages to be interrupted for a second or two
+    each time. Verified for create, delete, and updates that change the start mode or the command
+    or clear the proxy; one update that only added a proxy to an app that had none applied without
+    a restart (one observation). To restart on purpose, resend a field the app already has
+    (`start_mode=automatic`).
   - `command` is exec'd as argv with no shell and no injected `PORT`, so a `VAR=value` prefix, a
     pipe or a redirection can never work; the app must take its port from its own config.
   - An app created without a `nodeVersion` never starts (`exec: node: not found`); `"default"` is
@@ -166,6 +175,13 @@ The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) 
     never authoritative; `nvm ls` over SSH is.
   - Apps answer on the **primary domain only**; the `*.mystaging.site` preview URL 404s the proxy
     path.
+  - The proxy **strips the path prefix** before forwarding (walkthrough): `/express/foo` reaches the
+    app as `/foo`, so an app serves its routes at `/` and must never mount itself under the path.
+    Next.js therefore needs `assetPrefix: '/<path>'` and **no** `basePath` — a `basePath` build
+    answers its own 404 page to the `/` the proxy hands it.
+  - `clear_proxy` is verified live: `proxyDetails: Unset` leaves `proxy: null`, the URL falls
+    through to the docroot (404) and the Node process keeps running untouched; re-expose the app
+    with a later `proxy_path`/`port` update.
 
 ## Enhance API facts (verified from the live spec)
 

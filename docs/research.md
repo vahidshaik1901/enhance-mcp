@@ -554,8 +554,8 @@ Probed live on vahi.dev with a session JWT. Every app created here was deleted a
    points at is exactly the one missing from the list; apps that pin `nodeVersion` explicitly are
    unaffected by this (finding 6's app ran v26.8.2 while the list still contained 26.8.2). Either
    way the list must never be presented as authoritative.
-2. Restart: **every `PATCH` restarts the app, even a no-change one**, and it restarts the whole
-   website container with it. `PATCH {"startMode":"automatic"}` on an app already `automatic`
+2. Restart: **every `PATCH` restarts the app, even a no-change one** — with one exception found
+   later in the walkthrough, item 11 below — and it restarts the whole website container with it. `PATCH {"startMode":"automatic"}` on an app already `automatic`
    returned HTTP 200, and one second later both the container's PID 1 (`appinit ... lsphp`) and
    the `node server.js` process showed fresh start times (16:53:13 and 16:53:14 for a PATCH issued
    at 16:53:13; before it they had started at 16:51:56 and 16:51:57). **The pid is not a restart
@@ -636,6 +636,25 @@ Two follow-up probes by the controller (same day, throwaway apps `mcpenv`, delet
    shape, with the port hard-coded because nothing injects `PORT` (finding 7). It is a test
    fixture, not a pattern to recommend: `validateCommand` still refuses the quoted-with-space
    form, and real apps belong in a script or an npm script.
+
+Two more from the Task 8 walkthrough (2026-09-17; the full run is under "Live test C" below):
+
+10. **The proxy strips the `/<path>` prefix before forwarding.** An Express app that echoed the URL
+    it received reported `/` for `https://vahi.dev/express/` and `/foo/bar?x=1` for
+    `https://vahi.dev/express/foo/bar?x=1`; `https://vahi.dev/express` without the trailing slash
+    also answered 200, `Host` stayed `vahi.dev` and `x-forwarded-for` carried the client IP. So an
+    app serves its routes at `/` and must not mount itself under the proxy path, while its asset
+    URLs still need the prefix: a Next.js build with `basePath: '/next'` returned its own 404 page
+    (the probe read status 404 with `reachable: true`), and the same app rebuilt with
+    `assetPrefix: '/next'` and no `basePath` served the page and its `/next/_next/static/…` assets
+    at 200.
+11. **A `proxyDetails`-only PATCH did not restart the container.** Re-exposing an app whose proxy
+    had just been cleared (`proxy_path` + `port`, nothing else in the body) answered 200 on the URL
+    while PID 1 and both app processes kept their earlier start times — no restart at all. **One
+    observation**; in the same session the start-mode PATCH, the `clear_proxy` PATCH, the creates
+    and the deletes all bounced the container as item 2 describes. Treat a restart as the usual
+    outcome and a no-restart as a possibility, never the other way round: to restart on purpose,
+    resend a field the app already has (`start_mode=automatic`).
 
 ## Live test B: databases, PHP, cron and the gate on vahi.dev (2026-09-11)
 
@@ -774,10 +793,56 @@ Known leftovers:
 
 - One `persistent_app_<id>.log` per run stays in the website home; only SSH removes it (the same
   trade-off as milestone B's `sql_backup_….sql.gz` dumps). Documented in the test and `.env.example`.
-- `clear_proxy` (the `proxyDetails: Unset` path of `persistent_app_update`) is still not exercised
-  live; the comment in `src/tools/apps.ts` says so.
+- `clear_proxy` (the `proxyDetails: Unset` path of `persistent_app_update`) is not exercised by the
+  e2e suite; the walkthrough below covered it live instead, and `src/tools/apps.ts` now records
+  that result.
 - The `node_install` branch is untested live, because vahi.dev has had nvm since the Task 1 probe.
 - Each run bounces the website container three times (create, update, delete), which is why
   `ENHANCE_E2E_SITE` must never name a production site.
 
-Walkthrough (Express, Next.js, typed-name prompt in Claude Code): pending.
+### Walkthrough (2026-09-17): Express, Next.js and the typed-domain delete
+
+Task 8 of the milestone C plan, run by the controller with the user inside Claude Code with the
+plugin reinstalled from `feat/milestone-c`, on vahi.dev. Everything went through the MCP tools and
+the `enhance-deploy` skill; ssh/rsync ran with the sandbox disabled. The panel was left clean.
+
+| Step | Tools / commands | Result |
+|---|---|---|
+| Express app | rsync of a small Express app (`"start": "node --env-file=.env server.js"`, `.env` carrying `PORT=3001`), then `persistent_app_create website=vahi.dev command="npm start" working_directory=express proxy_path=express port=3001` | the log showed `Now using node v22.23.2` (nvm's `default` alias) and `expresswalk listening on 3001`; `persistent_app_probe` → HTTP 200, certificate valid, ~850 ms |
+| What the app actually receives | the Express app echoed the URL it saw | `https://vahi.dev/express/` arrived as `/` and `https://vahi.dev/express/foo/bar?x=1` as `/foo/bar?x=1`; `https://vahi.dev/express` without the trailing slash also answered 200; `Host` stayed `vahi.dev` and `x-forwarded-for` carried the client IP |
+| Next.js build on the server | `npm ci` (9 s) and `next build` (11 s) over SSH, Next.js 16.3.5, start script `next start -p 3002` | built in the container (3.9 GB box), no memory kill |
+| Next.js with `basePath: '/next'` | `persistent_app_create … proxy_path=next port=3002`, then `persistent_app_probe` | status **404**, `reachable: true` — the app's own 404 page: it serves only `/next/…` while the proxy hands it `/` |
+| Next.js with `assetPrefix: '/next'` and no `basePath` | rebuild (6 s), then `persistent_app_update … start_mode=automatic` to restart | `https://vahi.dev/next/` → 200, and the page's `/next/_next/static/…` CSS and JS → 200 |
+| Deliberate restart | `persistent_app_update website=vahi.dev app_id=<id> start_mode=automatic` (resending a field the app already had) | restarted the app, which picked up the new build |
+| Unexpose | `persistent_app_update … clear_proxy=true` | the listing came back with `proxy: null`, the URL fell through to the docroot (404) and the Node process kept running, with command, working directory, Node version and start mode unchanged; that PATCH **did** restart the container (PID 1 start time changed) |
+| Re-expose | `persistent_app_update … proxy_path=express port=3001` — a PATCH carrying only `proxyDetails`, on an app whose proxy was `null` | the URL answered 200 again and **nothing restarted**: PID 1 and both app processes kept their earlier start times |
+| Typed-domain delete | `persistent_app_delete` for both apps | the typed-domain prompt appeared inside Claude Code both times and the user typed `vahi.dev`; both apps were removed. The mismatch refusal was not re-shown here — the live e2e gate round trip and the MCP-level unit test cover it |
+| Cleanup | `persistent_apps_list`, SSH | 0 apps, no Node processes left in the container, `/express/` and `/next/` → 404, `https://vahi.dev/demo-login/` → 200 and the site root → 200; the app directories and seven `persistent_app_*.log` files were removed over SSH |
+| Installed-versions hedge | `node_versions_installed` | `["26.8.2","26.8.1"]` while nvm's `default` alias pointed at 22.23.2 — the documented omission (finding 1 above), seen again |
+
+Findings:
+
+- **The reverse proxy strips the path prefix before forwarding.** `/express/` reaches the app as
+  `/` and `/express/foo/bar?x=1` as `/foo/bar?x=1` (the app echoed them). So an app serves its
+  routes at `/` and must *not* mount itself under `/<path>`; only the asset URLs in its HTML need
+  the prefix, because the browser asks for those at the public path.
+- **Next.js behind this proxy wants `assetPrefix`, not `basePath`.** With `basePath: '/next'` the
+  app answered its own 404 page (probe: status 404, `reachable: true`) because it only serves
+  `/next/…`. Rebuilt with `assetPrefix: '/next'` and no `basePath`, the page and its
+  `/next/_next/static/…` assets were all 200. Caveat: links the app generates itself
+  (`<Link href="/about">`) are **not** prefixed by `assetPrefix`, so a multi-page framework app
+  needs prefix-aware links or a domain or subdomain of its own instead of a path.
+- **`clear_proxy` is verified live.** `proxyDetails: Unset` removed the proxy (`proxy: null`), the
+  URL fell through to the docroot and the process kept running untouched; the app was re-exposed
+  afterwards with a plain `proxy_path`/`port` update.
+- **Not every update restarts the container.** Re-exposing the app with a `proxyDetails`-only PATCH
+  (on an app whose proxy was `null`) left PID 1 and both app processes with their earlier start
+  times, while the start-mode PATCH, the `clear_proxy` PATCH, the creates and the deletes all
+  bounced the container. **One observation**, not a rule: the tools and the skill now say an update
+  *usually* restarts, and name `start_mode=automatic` as the way to restart on purpose.
+- **Building Next.js on the server is fine on this plan**: `npm ci` 9 s, `next build` 11 s, and the
+  `assetPrefix` rebuild 6 s, on a 3.9 GB container with no memory kill — so the skill's
+  "build locally if the build is killed" branch stayed unused.
+- **Cleanup**: the walkthrough left nothing behind — no apps, no Node processes, no app
+  directories and no `persistent_app_*.log` files (seven of them, including the e2e leftovers,
+  were removed over SSH); the PHP demo page and the site root still answer 200.
