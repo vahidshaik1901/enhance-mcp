@@ -7,7 +7,7 @@ memory, not from a trial.
 
 If a customer wants one of these, say it is untried here, offer a verified recipe
 (`ghost.md`, `payload.md`, `emdash.md`), and if they still want it, run it as an experiment: follow
-the common flow in `../SKILL.md`, keep notes on every trap, and bring them back so this page can
+the canonical order in `../SKILL.md`, keep notes on every trap, and bring them back so this page can
 become a recipe.
 
 ## Why these three

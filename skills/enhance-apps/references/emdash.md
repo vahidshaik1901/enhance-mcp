@@ -127,7 +127,7 @@ A different template means a **fresh database**, so never edit the running app d
 The trial did this (**verified live 2026-09-17**):
 
 1. Scaffold the new template into a **new local folder** with the create command above. It generates
-   its **own** `EMDASH_ENCRYPTION_KEY` — the trial used that new key, not the old one.
+   its **own** `EMDASH_ENCRYPTION_KEY` — the trial used that new key: the new folder's own scaffold-generated `.env` was the one copied to the server.
 2. rsync it to a **new directory on the server** (`emdashblog`, alongside the old one), write its own
    `.env` there (new key, `HOST`, `PORT`), then `npm ci && npm run build`.
 3. Point the app at it: `persistent_app_update website=<site> app_id=<id>
@@ -151,13 +151,13 @@ the old directory and that setup has to be done again.
 - the source repository plus the `EMDASH_ENCRYPTION_KEY` (in the customer's password manager, never
   in a file in the repo).
 
-## Traps, all seen live
+## Traps (seen live unless marked)
 
 | Trap | What you see | Fix |
 |---|---|---|
 | `node:starter` template (what the docs show) | a correct deploy that looks broken: an unstyled page | scaffold `--template blog --platform node` (or another finished theme) for any customer install |
-| Node below 22.16 | the app fails to start on `node:sqlite` | install and default the Node 22 LTS line; pin `node_version` on the app |
-| Missing `HOST=0.0.0.0` | the proxy gets nothing; 502/503 on the domain | `HOST` and `PORT` in `.env`, loaded by `--env-file` in the start script |
+| Node below 22.16 (from EmDash's docs, not tried in the trial) | the app fails to start on `node:sqlite` | install and default the Node 22 LTS line; pin `node_version` on the app |
+| Missing `HOST=0.0.0.0` (not tried in the trial; the trial always set it) | the proxy gets nothing; 502/503 on the domain | `HOST` and `PORT` in `.env`, loaded by `--env-file` in the start script |
 | Passkey setup skipped "for later" | the setup wizard stays open to the internet | claim it immediately, or park the app with `start_mode=manual` |
 | "error occurred" in the admin HTML | looks like a failure | it is the i18n catalogue; check the log instead |
 | Template swap | setup wizard open again, content gone | fresh database per app directory; decide the template up front |

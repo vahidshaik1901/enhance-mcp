@@ -83,7 +83,7 @@ In that order, on the server in the app directory with nvm loaded:
 
 ```sh
 ssh <user>@<host> '. ~/.nvm/nvm.sh && cd payloadapp && npm install'
-ssh <user>@<host> '. ~/.nvm/nvm.sh && cd payloadapp && npm run payload -- migrate:create initial'
+ssh <user>@<host> '. ~/.nvm/nvm.sh && cd payloadapp && npm run payload -- migrate:create initial'   # ONLY when no migrations came with the upload; skip it otherwise
 ssh <user>@<host> '. ~/.nvm/nvm.sh && cd payloadapp && npm run payload -- migrate'
 ssh <user>@<host> '. ~/.nvm/nvm.sh && cd payloadapp && npm run build'
 ```

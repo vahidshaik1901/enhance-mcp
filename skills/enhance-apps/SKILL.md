@@ -125,7 +125,7 @@ act outside Claude Code (DNS at their registrar, a setup screen in a browser).
    Use `-rltvz`, never `-a` (it would copy this machine's modes onto the server). The `<app dir>` is
    a **named directory in the home** (`<home>/ghost`, `<home>/payloadapp`), never `public_html` and
    never the home root. Never upload a local `.env` or a local database file.
-9. **Env/config file on the server — before anything is installed or built.** A heredoc over SSH, or
+9. **Env/config file on the server — before anything is installed or built.** (One carve-out: an app whose own installer creates the app directory — Ghost — gets its config between the installer and the first start; see its recipe.) A heredoc over SSH, or
    `scp` of the file the scaffolder generated (Payload), then `chmod 600`. **Never in the rsync**,
    never committed. It holds the port, the database credentials and any secret the scaffolder
    generated (EmDash's `EMDASH_ENCRYPTION_KEY` must stay the same value across redeploys of that
