@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bootstrap } from '../../src/bootstrap.js';
 import type { ToolContext } from '../../src/core/context.js';
+import { GateError } from '../../src/core/gate.js';
 import type { ToolDef, ToolResult } from '../../src/core/registry.js';
 
 const enabled = process.env['ENHANCE_E2E'] === '1';
@@ -15,6 +16,19 @@ function tool(tools: ToolDef[], name: string): ToolDef {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** The row persistent_apps_list puts in structuredContent: the tool's own mapped shape, not the
+ *  panel's raw app payload (which is why there is no assertRequired call in this file). */
+type ListedRow = {
+  id: string;
+  kind: string;
+  command: string;
+  workingDirectory: string | null;
+  nodeVersion: string | null;
+  startMode: string;
+  proxy: { path: string; port: number; websocket: boolean } | null;
+  url: string | null;
+};
+
 suite('milestone C against the live panel', () => {
   let ctx: ToolContext;
   let tools: ToolDef[];
@@ -23,22 +37,9 @@ suite('milestone C against the live panel', () => {
    * website, only one throwaway persistent app inside the site named by ENHANCE_E2E_SITE.
    */
   let site: string;
-  // A path and port no real app uses: `mcpc-<5 hex>` and a port in 3900–3999 from the same bytes.
+  // A path no real app uses: `mcpc-<5 hex>`. The port is not random-only — it is picked against
+  // the live listing inside the test, because the panel does not check that a port is free.
   const slug = `mcpc-${randomBytes(3).toString('hex').slice(0, 5)}`;
-  const port = 3900 + (randomBytes(1)[0]! % 100);
-  // No whitespace in the marker, because there is none anywhere in the command: see below.
-  const marker = `mcp-c-ok-${slug}`;
-  /**
-   * No files to upload: the whole app is one inline Node script that echoes the marker.
-   *
-   * Verified live (docs/research.md, "Milestone C Task 1 probe"): the panel's runner ends in
-   * `exec "$@"` with the command's words as arguments, so there is no shell — a `PORT=…` prefix
-   * would become argv[0] and a quoted segment containing whitespace would be split apart. Nothing
-   * injects `PORT` either. So the port is hard-coded into the script and the script carries no
-   * whitespace at all; the `'…'` quotes are literal argv characters that survive the word split,
-   * and `=>` is an arrow, not a redirection. `validateCommand` refuses every other shape.
-   */
-  const command = `node -e require('http').createServer((q,s)=>s.end('${marker}')).listen(${port})`;
   /** The id of the one app this run created, and the only id cleanup is ever allowed to remove. */
   let appId: string | undefined;
 
@@ -48,9 +49,13 @@ suite('milestone C against the live panel', () => {
     return t.handler(t.input.parse(args), ctx);
   }
 
-  async function listedIds(): Promise<string[]> {
+  async function listedRows(): Promise<ListedRow[]> {
     const r = await call(tool(tools, 'persistent_apps_list'), { website: site });
-    return (r.structured as { items: Array<{ id: string }> }).items.map((a) => a.id);
+    return (r.structured as { items: ListedRow[] }).items;
+  }
+
+  async function listedIds(): Promise<string[]> {
+    return (await listedRows()).map((a) => a.id);
   }
 
   beforeAll(async () => {
@@ -58,7 +63,7 @@ suite('milestone C against the live panel', () => {
     site = process.env['ENHANCE_E2E_SITE'] ?? '';
     expect(site, 'ENHANCE_E2E_SITE must name an existing website (e.g. vahi.dev) for the milestone C live suite; it creates one throwaway mcpc-… persistent app on that site').toBeTruthy();
     // A read-only registry never registers persistent_app_create and friends, so say why here
-    // instead of failing several lines later with a bare "tool … not registered".
+    // instead of failing several lines later with a bare "tool not registered".
     expect(ctx.config.readOnly, 'ENHANCE_READ_ONLY is set: the milestone C live suite needs the write and destructive tools').toBe(false);
   });
 
@@ -97,15 +102,38 @@ suite('milestone C against the live panel', () => {
   }, 150_000);
 
   it('creates an inline app, sees it listening in the log, probes it on the domain, updates it, and deletes it through the gate', async () => {
+    // The panel refuses a duplicate proxy path but does NOT check ports, so two apps can silently
+    // fight over one port. Pick a port in 3900–3999 that no app on this site already proxies to,
+    // starting from a random offset and wrapping, so parallel sites and reruns do not collide.
+    const taken = new Set((await listedRows()).map((a) => a.proxy?.port).filter((p): p is number => typeof p === 'number'));
+    const offset = randomBytes(1)[0]! % 100;
+    const port = Array.from({ length: 100 }, (_, i) => 3900 + ((offset + i) % 100)).find((p) => !taken.has(p));
+    expect(port, 'every port in 3900–3999 is already proxied by a persistent app on this site; clean them up before running this suite').toBeTruthy();
+    // No whitespace in the marker, because there is none anywhere in the command: see below.
+    const marker = `mcp-c-ok-${slug}`;
+    /**
+     * No files to upload: the whole app is one inline Node script that echoes the marker. The
+     * command is built here, after the port is known, because the port is hard-coded into it.
+     *
+     * Verified live (docs/research.md, "Milestone C Task 1 probe"): the panel's runner ends in
+     * `exec "$@"` with the command's words as arguments, so there is no shell — a `PORT=…` prefix
+     * would become argv[0] and a quoted segment containing whitespace would be split apart. Nothing
+     * injects `PORT` either. So the port is hard-coded into the script and the script carries no
+     * whitespace at all; the `'…'` quotes are literal argv characters that survive the word split,
+     * and `=>` is an arrow, not a redirection. `validateCommand` refuses every other shape.
+     */
+    const command = `node -e require('http').createServer((q,s)=>s.end('${marker}')).listen(${port})`;
+
     const created = await call(tool(tools, 'persistent_app_create'), { website: site, command, proxy_path: slug, port });
     expect(created.isError, created.text).toBeFalsy();
     appId = (created.structured as { id: string | null }).id ?? undefined;
     if (!appId) {
       // The listing lagged the create; find it by our unique command.
-      const list = await call(tool(tools, 'persistent_apps_list'), { website: site });
-      appId = (list.structured as { items: Array<{ id: string; command: string }> }).items.find((a) => a.command === command)?.id;
+      appId = (await listedRows()).find((a) => a.command === command)?.id;
     }
-    expect(appId, 'persistent_app_create did not yield an app id').toBeTruthy();
+    // The automatic cleanup only ever removes an id this run recorded, so if the create landed and
+    // the id did not, the app is now orphaned and a human has to remove it.
+    expect(appId, `persistent_app_create did not yield an app id. The create itself did not report an error, so an app is probably running on ${site}: open persistent_apps_list and delete the one whose proxy path is "${slug}" (command: ${command}) by hand — this suite's cleanup cannot.`).toBeTruthy();
 
     // The panel starts it asynchronously (and the create bounced the whole container): poll the
     // probe for up to 60 s rather than asserting on the first answer.
@@ -115,9 +143,19 @@ suite('milestone C against the live panel', () => {
       if (!probe.isError && (probe.structured as { body: string }).body.includes(marker)) break;
       await sleep(5_000);
     }
-    expect(probe?.isError, probe?.text).toBeFalsy();
-    expect((probe!.structured as { status: number; body: string }).status).toBe(200);
-    expect((probe!.structured as { body: string }).body).toContain(marker);
+    // When the loop ran out, the probe's own text says only that the web server answered without
+    // the app: the app's log is the thing that names the real cause, so put its tail in the
+    // failure message rather than making the operator go and fetch it.
+    let why = probe?.text;
+    if (!probe || probe.isError || !(probe.structured as { body: string }).body.includes(marker)) {
+      const tail = await call(tool(tools, 'persistent_app_log'), { website: site, app_id: appId })
+        .then((l) => ((l.structured as { log?: string }).log ?? '').slice(-600))
+        .catch((e: unknown) => `persistent_app_log also failed: ${(e as Error).message}`);
+      why = `${probe?.text ?? 'the probe never ran'}\n--- last 600 chars of persistent_app_log ---\n${tail || '(the log is empty)'}`;
+    }
+    expect(probe?.isError, why).toBeFalsy();
+    expect((probe!.structured as { status: number; body: string }).status, why).toBe(200);
+    expect((probe!.structured as { body: string }).body, why).toContain(marker);
 
     const log = await call(tool(tools, 'persistent_app_log'), { website: site, app_id: appId });
     expect(log.isError, log.text).toBeFalsy();
@@ -127,10 +165,26 @@ suite('milestone C against the live panel', () => {
     expect(updated.isError, updated.text).toBeFalsy();
     // Only the panel's own listing is read after the update: an update restarts the container
     // (verified live), so the app itself needs up to 30 s before it would answer a probe again.
-    const list = await call(tool(tools, 'persistent_apps_list'), { website: site });
-    const mine = (list.structured as { items: Array<{ id: string; proxy: { websocket: boolean } | null }> }).items.find((a) => a.id === appId);
-    expect(mine?.proxy?.websocket).toBe(true);
+    // The listing can lag the PATCH by a moment, so re-read it a couple of times before failing.
+    let mine: ListedRow | undefined;
+    for (let i = 0; i < 3; i += 1) {
+      mine = (await listedRows()).find((a) => a.id === appId);
+      if (mine?.proxy?.websocket === true) break;
+      if (i < 2) await sleep(3_000);
+    }
+    expect(mine, 'the app this run created is no longer in the listing after persistent_app_update').toBeTruthy();
+    // The PATCH carried allow_websocket alone: the flag must have changed and every other field
+    // must have survived the merge, which is the whole point of sending a partial body.
+    expect(mine!.proxy?.websocket).toBe(true);
+    expect(mine!.command, 'the partial PATCH dropped the command').toBe(command);
+    expect(mine!.proxy?.path, 'the partial PATCH dropped the proxy path').toBe(slug);
+    expect(mine!.proxy?.port, 'the partial PATCH dropped the proxy port').toBe(port);
+    expect(mine!.nodeVersion, 'the partial PATCH dropped the Node version; an app without one never starts').toBeTruthy();
+    // structuredContent carries the tool's mapped row, not the panel's raw app object.
+    expect(Object.keys(mine!)).toEqual(expect.arrayContaining(['id', 'kind', 'command', 'startMode', 'proxy', 'url']));
 
+    // The delete goes through the real gate, exactly as a human would drive it: issue a token,
+    // watch a mistyped name bounce, then confirm with the name the preview showed.
     const del = tool(tools, 'persistent_app_delete');
     const args = del.input.parse({ website: site, app_id: appId });
     const target = await del.target!(args, ctx);
@@ -140,7 +194,21 @@ suite('milestone C against the live panel', () => {
     expect(target.name).toBe(site);
     const preview = await del.preview!(args, ctx, target);
     expect(preview).toContain(slug);
-    const r = await del.handler(args, ctx, target);
+    const token = ctx.gate.issue(del.name, target, args);
+    let mistyped: unknown;
+    try {
+      ctx.gate.verify(token, `not-${site}`);
+    } catch (e) {
+      mistyped = e;
+    }
+    expect(mistyped, 'the gate accepted a name that is not the website').toBeInstanceOf(GateError);
+    expect((mistyped as GateError).reason).toBe('mismatch');
+    // The happy path on the same token: the name the preview showed is what the matcher accepts,
+    // and the handler then runs with the args and target the gate pinned, not the ones above.
+    const pending = ctx.gate.verify(token, site);
+    expect(pending.tool).toBe(del.name);
+    expect(pending.target.id).toBe(target.id);
+    const r = await del.handler(pending.args, ctx, pending.target);
     expect(r.isError, r.text).toBeFalsy();
     expect(await listedIds()).not.toContain(appId);
   }, 150_000);
