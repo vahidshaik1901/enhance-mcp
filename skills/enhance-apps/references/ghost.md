@@ -14,7 +14,7 @@ browser editing.
 
 - Mode B: a website of its own (`website_create`), app registered with `serve_at_root=true`.
 - Node 22 LTS (trial: v22.23.2 via nvm's `default` alias — `node_install` →
-  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`).
+  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`) — or today's newest release of the 22 LTS line from `node_versions_available`.
 - A **MySQL database and user** on that site — create them with the `enhance-database` skill and
   keep the full `<unixUser>_` prefixed names.
 - **Tell the customer this before installing:** Ghost officially supports **MySQL 8 only**, and the
@@ -138,6 +138,10 @@ The `Direct` transport does not deliver reliably, so member signups, invites and
 nowhere. Ask the customer for SMTP credentials (any provider) and put them in the `mail` block of
 `config.production.json`, then restart with `persistent_app_update … start_mode=automatic`. Until
 then, say plainly in the hand-over that the site works but sends no email.
+
+Those SMTP credentials get **exactly the same handling as the database password** (safety rule 10):
+straight into `config.production.json` on the server, `chmod 600`, and nowhere else — not echoed
+back in chat, not into another file, a commit or a log, and not repeated in a later message.
 
 ## What to back up
 

@@ -16,7 +16,7 @@ newsletter/membership publication, Payload when the content model is written in 
 - **Node ≥ 22.16**, per **EmDash's own documentation** (docs.emdashcms.com), because it uses
   `node:sqlite`. That floor is upstream documentation, **not a trial finding** — nothing below it was
   tested here. The trial ran **v22.23.2** through nvm's `default` alias (`node_install` →
-  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`); pin it on the app with
+  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`) — or today's newest release of the 22 LTS line from `node_versions_available`; pin it on the app with
   `node_version=` if the site's default may move below 22.16.
 - No database to provision: SQLite in a file inside the app directory.
 - `canUse.persistentApps`, `featureSSH`.

@@ -20,9 +20,11 @@ failure (item 15 under "Milestone C Task 1 probe" in docs/research.md).
 `node_install`, `node_versions_available`, `node_versions_installed`, `node_version_install`,
 `node_version_set_default`, `persistent_apps_list`, `persistent_app_create`,
 `persistent_app_update`, `persistent_app_delete` (destructive, typed domain), `persistent_app_log`
-and `persistent_app_probe`. 413 unit tests; the milestone C live suite passed 2/2 against vahi.dev
-on 2026-09-16 and again on 2026-09-17 after the review fixes, with no tool bug found and no tool fix
-needed (see "Live test C" in docs/research.md). The Task 8 walkthrough ran on 2026-09-17 on vahi.dev
+and `persistent_app_probe`. 424 unit tests; the milestone C live suite passed 2/2 against vahi.dev
+on 2026-09-16 and again on 2026-09-17 after the review fixes — **that suite** found no tool bug and
+needed no tool fix, which is not the same as "the tools were clean": the user's own probe the same
+day found the asset check's false failures (item 15), and the C3 trial produced the
+`enhance-apps` corrections (see "Live test C" and "Live test C3" in docs/research.md). The Task 8 walkthrough ran on 2026-09-17 on vahi.dev
 inside Claude Code with the plugin reinstalled from this branch: an Express app and a Next.js app
 deployed behind the proxy and verified in the browser, `clear_proxy`, a deliberate restart, and the
 typed-domain prompt for `persistent_app_delete` twice (see "Walkthrough (2026-09-17)" under "Live
@@ -35,7 +37,12 @@ overrides, and an existing directory shows only as a 301 on the bare form), `ser
 hands an app the whole domain through the panel's empty proxy path, and `persistent_app_probe` now
 fetches the assets an HTML page references (4 at a time, 8 s each) and fails the probe when one is
 definitely missing — 404, 410 or 5xx — while a fetch that timed out is reported as unchecked and
-never fails anything. Skills: `enhance-deploy` extended
+never fails anything. The final-review wave (2026-09-17) then made a create whose follow-up listing
+fails stay a success with `id: null`, made the asset check report its own cap
+(`attempted`/`checked`/`truncated`/`totalFound`, so a page naming more than 12 references is never
+summarised as "all 12 answered"), dropped the listing GET the delete handler never read, and turned
+the probe's missing-argument throw and the three "no persistent app with id" refusals into the
+standard identity-block refusals. Skills: `enhance-deploy` extended
 with the Node path (runtime, app directory, port, proxy path and prefix stripping, rsync target,
 post-deploy order, probe) and `persistent_app_delete` added to its safety rules.
 On 2026-09-17 a live trial with the product owner installed four popular Node stacks end to end
@@ -49,6 +56,11 @@ vahi.dev (`/express/`, `/next/`) are LIVE TEST RESOURCES left running on purpose
 Remaining: the
 final whole-branch review, then `superpowers:finishing-a-development-branch`, then milestone D
 (email, backups, DNS zone editing, WordPress, staging).
+Deliberately after the merge, not on this branch: a shared write-then-verify helper (which also
+re-checks `website_create`'s timeout behaviour from milestone A), moving the probe/verification code
+out of `tools/apps.ts` into `core/probe.ts`, and a `files_list` tool through the panel's file
+service (a site access token plus `filerd`, undocumented) — proposed as the first task of
+milestone D.
 Milestone B is MERGED to `main` (2026-09-16, PR #3, merge commit ecb0d96); all 10 tasks of
 `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done, including the Task 10
 walkthrough on 2026-09-16: PHP page reading MySQL, Laravel 13 `composer install` + `migrate` over
@@ -60,7 +72,8 @@ milestone B live suite passed 4/4 against vahi.dev on 2026-09-11 with a fresh se
 the multipart field `<database>.sql` (commit 910e494; the spec's `sql` name is rejected by the
 panel). Skills: `enhance-database` added, `enhance-deploy` extended with the PHP/Laravel build and
 post-deploy steps, PHP settings and cron, and access control. After-merge minors from the B
-reviews are in `.superpowers/sdd/milestone-b-minors.md` (git-ignored). The upstream spec was
+reviews are in `.superpowers/sdd/milestone-b-minors.md`, and milestone C's in
+`.superpowers/sdd/milestone-c-minors.md` (both git-ignored). The upstream spec was
 re-vendored on 2026-09-16 (milestone C Task 0): both vendored copies are 12.25.11 and the advisory
 `spec-drift` CI job is green.
 Milestone A is MERGED to `main` (2026-09-05, PR #1, merge commit 7c0e4fa) in the public repo
@@ -73,7 +86,7 @@ lives at https://vahi.dev/demo-login/ (db + user `vahi_dev1_demo`, source not in
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
 Plans: milestone A `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD);
 milestone B `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` (10 tasks, TDD);
-milestone C `docs/superpowers/plans/2026-09-16-milestone-c-node.md` (8 tasks, TDD).
+milestone C `docs/superpowers/plans/2026-09-16-milestone-c-node.md` (Tasks 0-9, TDD).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
 Key library facts: MCP TypeScript SDK is v2 (`@modelcontextprotocol/server`
 2.0.0, `serveStdio`, `registerTool`, elicitation via the SDK's `inputRequired` flow), zod 4
@@ -215,8 +228,9 @@ The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) 
     200 page can be wholly broken, and `persistent_app_probe` now fetches a page's assets and fails
     when any of them does not answer.
   - **A directory shows only on the bare path** (probed on vahi.dev 2026-09-17): an existing
-    directory answers **404 on `/dir/`** unless it holds an index file — empty or not — while the
-    bare `/dir` answers **301 → `https://<domain>/dir/`** for every directory that exists. A file is
+    directory answers **404 on `/dir/`** unless it holds an index file, while the bare `/dir` answers
+    **301 → `https://<domain>/dir/`** for every directory that exists — empty, holding files, or
+    holding an index page. A file is
     200 on `/file` and 404 on `/file/`, a nonexistent path 404s both ways, and a path an app owns
     answers 200 both ways. So the path-clash preflight asks **both** forms and calls a path free only
     when both answer 404.

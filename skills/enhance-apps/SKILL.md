@@ -1,6 +1,6 @@
 ---
 name: enhance-apps
-description: Install a ready-made Node app or CMS on Enhance hosting end to end — website or subdomain, SSL, runtime, database, build, persistent app, first admin, verification, hand-over. Use when the user says "install Ghost", "one-click install", "set up Ghost/Payload/EmDash/TanStack Start on my Enhance hosting", "put a CMS on a subdomain", or names a Node CMS or framework they want live on a domain.
+description: Install a ready-made Node app, CMS or starter template on Enhance hosting end to end — website or subdomain, SSL, runtime, database, build, persistent app, first admin, verification, hand-over. Use when the user says "install Ghost", "one-click install", "set up Ghost/Payload/EmDash/TanStack Start on my Enhance hosting", "put a CMS on a subdomain", or asks for an off-the-shelf app or a fresh framework scaffold to be set up for them. Deploying a project the customer already has ("put my Next.js site live", "deploy this repo") is `enhance-deploy`, not this skill.
 ---
 
 # Install an app on Enhance hosting
@@ -102,6 +102,8 @@ act outside Claude Code (DNS at their registrar, a setup screen in a browser).
    node_version_install website=<site> version=22.23.2           # the LTS line
    node_version_set_default website=<site> version=22.23.2
    ```
+   `22.23.2` is the version the trial used — or today's newest release of the 22 LTS line from
+   `node_versions_available`; use the same version in both calls.
    `node_install` alone is **not enough**: it installs nvm plus the newest **stable** release and
    leaves that as the `default` alias — 26.9.0 in the trial — which is not what these apps want. All
    three steps, in that order; then all four stacks ran on v22.23.2 through the `default` alias with
@@ -187,6 +189,12 @@ win and **both** must be corrected.
   purpose, resend a field the app already has: `persistent_app_update … start_mode=automatic`.
 - **A root app owns everything.** While an app holds the root, `public_html` is not served at all.
   Do not put a root app on a site that has other content.
+- **A `proxy_path` app is handed the path with the prefix stripped** (verified live): a request to
+  `/<path>/foo` reaches the app as `/foo`, so the app serves its routes at `/` while the asset URLs
+  in its HTML still have to carry `/<path>` (Next.js: `assetPrefix`, never `basePath`) — and links
+  the app generates itself are not prefixed at all. That is why every recipe here uses
+  `serve_at_root=true` on a site of its own: a CMS under a path breaks in ways a status code does
+  not show. `enhance-deploy`'s "Node layout" step 4 has the full rule for the cases that need a path.
 - **Apps answer on the primary domain only** — never on the `*.mystaging.site` preview URL, which
   404s the app. Use `persistent_app_probe` (it connects to the app server's IP with the domain as
   SNI) to verify before DNS resolves.
@@ -204,8 +212,12 @@ Run all three, every time, before saying anything is live:
 1. **`persistent_app_probe website=<site> app_id=<id>`** — it fetches the page *and* the images,
    scripts and stylesheets it references. A missing asset (404, 410, 5xx) is a **failed install**:
    fix it and probe again, do not hand over. "Could not be checked in time" means *unchecked*, not
-   broken — re-run or open that URL yourself before treating it as a problem. The asset check
-   usually adds a few seconds and, on a site whose assets hang, up to about half a minute.
+   broken — re-run or open that URL yourself before treating it as a problem, and an asset
+   answering 401/403 is **restricted**: served, just not to an anonymous probe, reported and never a
+   failure. The check covers the first 12 references and says so when the page names more;
+   `check_assets=false` turns it off, which is for a page whose assets sit behind auth or on another
+   host, never for getting past a failure. The asset check usually adds a few seconds and, on a site
+   whose assets hang, up to about half a minute.
 2. **`persistent_app_log website=<site> app_id=<id>`** — read it after the first start and after
    every restart. The log is truncated on each restart, so it only covers the current run. Know each
    recipe's benign noise (Ghost: an ActivityPub webhook self-fetch error at boot; EmDash: an
@@ -250,9 +262,14 @@ loaded yourself. Every install then ends with a claimed admin account:
    `persistent_app_update website=<site> app_id=<id> start_mode=manual` stops the process (the URL
    then answers 503) — until they are ready.
 
-Generated credentials — a database password, an app secret, an admin password — go **straight into
+Generated credentials — a database password, an app secret, SMTP credentials — go **straight into
 the app config this install needs** (`chmod 600` on the server) and nowhere else: never into any
 other file, a commit, an issue or a log, and never repeated in a later message (safety rule 10).
+
+**The one exception is the admin password**, which is no use to the customer inside a config file.
+It is handed over **once**, in the hand-over message (section 6), with "change it on first login" —
+and then never repeated, not in a summary, not in a later answer, not when the customer asks what it
+was. If they lose it, use the app's own password-reset flow rather than saying it again.
 
 ## 6. Hand-over message
 

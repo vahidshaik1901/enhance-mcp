@@ -13,7 +13,7 @@ they want to write content in a browser.
 
 - Mode B: a website of its own (`website_create`), app registered with `serve_at_root=true`.
 - Node 22 LTS. The trial ran on v22.23.2 through nvm's `default` alias (`node_install` →
-  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`); nothing was pinned on the
+  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`) — or today's newest release of the 22 LTS line from `node_versions_available`; nothing was pinned on the
   app.
 - No database. Add one with the `enhance-database` skill only if the app needs it.
 - `canUse.persistentApps` true, `featureSSH` on the subscription.

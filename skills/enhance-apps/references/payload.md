@@ -14,7 +14,7 @@ Ghost for a blog someone just writes in.
 
 - Mode B: a website of its own (`website_create`), app registered with `serve_at_root=true`.
 - Node 22 LTS (trial: v22.23.2 via nvm's `default` alias — `node_install` →
-  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`).
+  `node_version_install 22.23.2` → `node_version_set_default 22.23.2`) — or today's newest release of the 22 LTS line from `node_versions_available`.
 - A database. The trial used **`@payloadcms/db-sqlite`** — a file inside the app directory, nothing
   to provision. Payload's Postgres and MySQL adapters exist; **neither was tried here**, and the
   MySQL one would need `socketPath: '/run/mysqld/mysqld.sock'` (see the skill's "MySQL from Node").
