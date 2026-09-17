@@ -656,6 +656,27 @@ Two more from the Task 8 walkthrough (2026-09-17; the full run is under "Live te
     outcome and a no-restart as a possibility, never the other way round: to restart on purpose,
     resend a field the app already has (`start_mode=automatic`).
 
+Two more from the follow-up probes after the walkthrough (2026-09-17), which Task 9 turns into
+guardrails:
+
+12. **An empty proxy path is accepted and hands the app the whole site.** On the empty site
+    vahid2.dev, an app created with `proxyDetails.path = ""` owned every URL: `/`,
+    `/anything/deep` and `/index.html` all answered **503** while the app was stopped, and the
+    docroot's own 404 came back only after the app was deleted. `"/"` and `"."` are refused with a
+    400 — "Invalid proxy path, must only contain alphanumeric characters and underscores. Hyphens,
+    dots and slashes allowed in the middle." — so the empty string is the *only* way to say "the
+    whole domain". That is the right layout for a Node app that is the whole site (on its own
+    website or subdomain) and a site-wide outage anywhere else, which is why `serve_at_root` is a
+    separate argument with its own preflight and `validateProxyPath` still rejects `""`.
+13. **`assetPrefix` does not cover a framework's `public/` files.** Under a path the proxy strips
+    the prefix, so anything the app references by absolute URL is requested at the DOMAIN root.
+    Next.js's `assetPrefix: '/next'` rewrites only its own `/_next/static/…` bundles: the page at
+    `https://vahi.dev/next/` still referenced `/next.svg` (a file in `public/`), which was **404**
+    at the domain root while `/next/next.svg` was **200**. The user found this as broken images
+    after a deploy that every other check called healthy, which is why `persistent_app_probe` now
+    fetches a page's assets itself. The same applies to links the app generates
+    (`<Link href="/about">`) and to absolute `fetch('/api')` calls.
+
 ## Live test B: databases, PHP, cron and the gate on vahi.dev (2026-09-11)
 
 Driver: the milestone B e2e suite (`server/test/e2e/milestone-b.e2e.test.ts`) calling the tool
@@ -846,3 +867,13 @@ Findings:
 - **Cleanup**: the walkthrough left nothing behind — no apps, no Node processes, no app
   directories and no `persistent_app_*.log` files (seven of them, including the e2e leftovers,
   were removed over SSH); the PHP demo page and the site root still answer 200.
+- **An empty proxy path hands the app the whole site** (finding 12 above, probed on vahid2.dev
+  after the walkthrough): `/`, `/anything/deep` and `/index.html` all answered 503 while a stopped
+  app held `""`, and the docroot returned only when the app was deleted; `"/"` and `"."` are a 400.
+  Task 9 exposes it as `serve_at_root`, guarded by a preflight, and `validateProxyPath` still
+  rejects `""`.
+- **`assetPrefix` does not cover `public/` files** (finding 13 above): the user's broken images on
+  `https://vahi.dev/next/` were `/next.svg`, a 404 at the domain root, while `/next/next.svg` was
+  200 — a page that is itself 200 can be wholly broken. Task 9 makes `persistent_app_probe` fetch a
+  page's images, scripts and stylesheets and fail the result when any of them does not answer, and
+  makes `persistent_app_create` refuse a proxy path that already serves something.

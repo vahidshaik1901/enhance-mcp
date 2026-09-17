@@ -182,6 +182,16 @@ The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) 
   - `clear_proxy` is verified live: `proxyDetails: Unset` leaves `proxy: null`, the URL falls
     through to the docroot (404) and the Node process keeps running untouched; re-expose the app
     with a later `proxy_path`/`port` update.
+  - An **empty proxy path is accepted and owns the whole site** (probed on vahid2.dev 2026-09-17):
+    `/`, `/anything/deep` and `/index.html` all answered 503 while a stopped app held `""`, and the
+    docroot came back only when the app was deleted; `"/"` and `"."` are a 400. Exposed as
+    `serve_at_root` on `persistent_app_create`, behind the path preflight; `validateProxyPath` still
+    rejects `""`.
+  - **`assetPrefix` covers only the framework's own bundles.** Files in `public/`, generated links
+    and absolute `fetch` calls still go to the domain root: the user's broken images on
+    `https://vahi.dev/next/` were `/next.svg` (404 at the root) while `/next/next.svg` was 200. So a
+    200 page can be wholly broken, and `persistent_app_probe` now fetches a page's assets and fails
+    when any of them does not answer.
 
 ## Enhance API facts (verified from the live spec)
 

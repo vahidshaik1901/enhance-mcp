@@ -93,6 +93,12 @@ the site's PHP and static pages to be interrupted for a second or two each time 
 create, delete, and updates that change the start mode, the command or clear the proxy; one update
 that only added a proxy to an app that had none was seen to apply without a restart).
 
+**Ask first: is this an API or single-page app, or a whole multi-page site?** An API or a
+single-page app is happy under a path on a site that also serves PHP or static files. A Node app
+that *is* the site — any multi-page framework build — belongs on its own website or subdomain with
+`serve_at_root=true`, and that is a decision to take **before** deploying, not after the customer
+reports broken links. Read "PHP or static site plus a Node app" below before choosing.
+
 1. **Runtime.** `node_versions_installed` shows what the panel believes is installed — it is a hint
    only; `. ~/.nvm/nvm.sh && nvm ls` over SSH is the truth, and the panel's list omits exactly the
    version nvm's `default` alias points at (verified live). If there is no `~/.nvm`, run
@@ -129,9 +135,12 @@ that only added a proxy to an app that had none was seen to apply without a rest
 4. **Proxy path.** The URL path the web server forwards to the app: `node`, `api`, `app/v2`. No
    leading slash (the panel rejects it; the tool strips one and says so). A path another app
    already uses is refused (409), but a path that a real directory under `public_html` serves is
-   accepted — and **the proxy wins even while the app is stopped**: verified live, an app merely
-   registered on `demo-login` turned that PHP page into a 503 until the app was deleted. Pick a
-   path that does not exist in the docroot.
+   accepted by the panel — and **the proxy wins even while the app is stopped**: verified live, an
+   app merely registered on `demo-login` turned that PHP page into a 503 until the app was deleted.
+   Pick a path that returns 404 on the live site today; `persistent_app_create` fetches it first and
+   refuses anything else. "PHP or static site plus a Node app" below has both directions of that
+   check and the layout choice. For an app that is the whole site, use `serve_at_root=true` on a
+   website or subdomain of its own instead of a path.
    **The proxy strips the prefix before it forwards** (verified live 2026-09-17): a request to
    `https://<domain>/<path>/foo/bar?x=1` reached the app as `/foo/bar?x=1`, and `/<path>/` as `/`
    (`/<path>` without the trailing slash answers too; the `Host` header stays the domain and
@@ -181,7 +190,9 @@ Everything below calls `<home>/<app>` the **`<app dir>`** for Node too.
 ### 10. Verify
 - Request a file you just deployed, not just `/`: an empty docroot returns 404 on every hostname.
   `curl -sS -o /dev/null -w '%{http_code}' https://<preview-domain>/index.html` (or `curl -k --resolve …` when there is no preview domain).
-- **Node**: `persistent_app_probe website=<site> app_id=<id>` — it connects to the app server's IP with the domain as SNI, so it works before DNS. `HTTP 200` with the app's body means the proxy and the process are up; `502`/`503` means the web server is fine and the app is not listening on its port (read `persistent_app_log`, and confirm the app really binds the proxy's port — nothing injects `PORT` into it); `404` carrying the app's own error page means the process is up but was built for `/<path>/` instead of `/`, because the proxy strips the prefix (Node layout, step 4). Once DNS resolves, `curl https://<primary domain>/<path>/`. The preview URL returns 404 for the app path; that is expected, not a failure.
+- **Node**: run `persistent_app_probe website=<site> app_id=<id>` after **every** Node deploy, before telling the customer anything is live — it connects to the app server's IP with the domain as SNI, so it works before DNS. `HTTP 200` with the app's body means the proxy and the process are up; `502`/`503` means the web server is fine and the app is not listening on its port (read `persistent_app_log`, and confirm the app really binds the proxy's port — nothing injects `PORT` into it); `404` means either the app's own error page — the process is up but was built for `/<path>/` instead of `/`, because the proxy strips the prefix (Node layout, step 4) — or, when no app owns that path, the site's docroot answering, and the probe now says which.
+- **Failed assets are a failed deploy.** The probe also fetches the images, scripts and stylesheets an HTML page references and fails when any of them does not answer: a page can be `200` with every image broken, because a reference like `/logo.svg` is asked for at the domain root, outside the app's path. Do not report the deploy as done. Either write those references with the prefix (`/<path>/logo.svg`) and redeploy, or move the app to its own website or subdomain with `serve_at_root=true`; then probe again and only then tell the customer it is live.
+- Once DNS resolves, `curl https://<primary domain>/<path>/`. The preview URL returns 404 for the app path; that is expected, not a failure.
 - `curl: (6) Could not resolve host` on a preview domain created minutes ago is DNS propagation, not a failed deploy (about five minutes live). Verify the vhost meanwhile with `curl -k --resolve <preview-domain>:443:<app-server-ip> https://<preview-domain>/index.html`, then retry the plain URL.
 - Report: preview URL, primary URL and its DNS status, SSL state, what was uploaded (from the rsync summary), and what the user still has to do (DNS at the registrar, if anything).
 
@@ -206,7 +217,46 @@ Only once the deploy works; none of this is part of the happy path.
 - **Commands**: the panel execs the command as argv with no shell and injects no `PORT`, so the port belongs in the app's npm `start` script, its server-side `.env` (`node --env-file=.env server.js`) or its code — never in front of the command. `working_directory` is relative to the site home and must not be empty; omit it only when the app should run from the home directory itself.
 - **Restarts**: `persistent_app_create`, `persistent_app_update` and `persistent_app_delete` usually restart the whole website container, not just the app, so expect the site's PHP and static pages to be interrupted for a second or two. Verified live for create, delete, and updates that change the start mode, the command or clear the proxy; one update that only added a proxy to an app that had none applied without a restart, so do not count on an update being the restart by accident. Resending a field the app already has is how you restart one after a deploy, e.g. `persistent_app_update website=<site> app_id=<id> start_mode=automatic` — an update carrying no field is refused ("nothing to change").
 - **`persistent_app_delete`** is destructive: it stops the process and removes the proxy at once, and the user types the website's domain name to confirm. The app's files and its `persistent_app_<id>.log` stay in the home directory.
-- **Ports and paths**: one app per port, and the panel does not check for a clash — pick a free one from `persistent_apps_list`. A proxy path that collides with a directory in `public_html` is the app's, not PHP's, and answers 503 while the app is stopped (verified live), so pick paths that do not exist in the docroot. A path another app already uses is refused (409).
+- **Ports and paths**: one app per port, and the panel does not check for a clash — pick a free one from `persistent_apps_list`. A proxy path that collides with a directory in `public_html` is the app's, not PHP's, and answers 503 while the app is stopped (verified live), so pick paths that do not exist in the docroot; `persistent_app_create` and a path-changing `persistent_app_update` fetch the path first and refuse one that already answers, unless `replace_existing_path=true`. A path another app already uses is refused by the panel (409). `serve_at_root=true` on create gives an app the whole domain instead of a path — see "PHP or static site plus a Node app".
+
+## PHP or static site plus a Node app
+
+One website can serve both: the web server serves `public_html`, and every registered proxy path
+goes to a Node app instead. Where the two overlap the proxy wins, even while the app is stopped
+(verified live: an app registered on `demo-login` turned that live PHP page into a 503 until it was
+deleted), so decide who owns which path before registering anything.
+
+- **Picking a path for a new app**: one that returns 404 on the live site today. `persistent_app_create`
+  fetches the path itself and refuses one that answers anything else, naming what it would replace;
+  `replace_existing_path=true` overrides that and only makes sense when taking that page off the web
+  is the point. The exact local check is `ls public_html/<first segment>` over SSH — an empty
+  directory also answers 404, so a fetch alone cannot see it.
+- **Before rsyncing files into `public_html/<dir>`**, run the reverse check: `persistent_apps_list`,
+  and stop if an app already proxies that path. The upload would succeed and the URL would keep
+  answering from the app.
+- **After registering**, re-request the site's known URLs (the home page, one PHP page, one static
+  file). The registration restarted the container too, so this is the moment to notice anything that
+  stopped working.
+- **Timing**: most registrations restart the whole website container, so do it at a quiet moment.
+
+**The layout choice.** An API or a single-page app under a path is fine. A Node app that is the
+whole site, or any multi-page framework site, goes on its own website or subdomain with
+`serve_at_root=true`: it receives the full request path with nothing stripped, absolute URLs and
+generated links just work, and no `assetPrefix` is needed. That site serves nothing else —
+`public_html` is not served while a root app is registered — so create the site for the app rather
+than taking over one that already has content (the tool refuses that too, unless
+`replace_existing_path=true`).
+
+Under a path, the verified limits:
+
+- The proxy strips the `/<path>` prefix, so the app serves its routes at `/` (Node layout, step 4).
+- `assetPrefix` covers only the framework's own bundles (`/_next/static/…`). Files in `public/`,
+  links the app generates (`<Link href="/about">`) and absolute `fetch('/api')` calls still go to the
+  **domain root**. The user hit exactly this: images on `https://vahi.dev/next/` were broken because
+  the page referenced `/next.svg`, which is a 404 at the domain root, while `/next/next.svg` was 200.
+  Write those references with the prefix (`src="/next/next.svg"`) or move the app to its own site.
+- `persistent_app_probe` checks the page's assets for you; treat a failure as a failed deploy
+  (step 10).
 
 ## Access control and rewrites
 
