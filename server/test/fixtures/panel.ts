@@ -165,3 +165,30 @@ export const persistentApp = {
 };
 
 export const persistentApps = [persistentApp];
+
+/** A site token as the panel mints it: a JWT, JSON-quoted on the wire. Never a real one. */
+export const SITE_TOKEN = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ3ZWJzaXRlX2lkIjoidGVzdCJ9.c2lnbmF0dXJlLW5vdC1yZWFs';
+export const FILERD_ADDRESS = websiteDetail.filerdAddress;
+
+const fsMeta = (kind: string, size: number, permissions: number) => ({ size, modified: 1789629449, permissions, kind });
+/** Builders for the file service's tree, in the shape probed live on 12.25.11 (2026-09-24). */
+export const fsFile = (path: string, size = 100, mode = 0o644) => ({ file: { path, metadata: fsMeta('file', size, mode) } });
+export const fsLink = (path: string) => ({ file: { path, metadata: fsMeta('symlink', 9, 0o777) } });
+/** `entries` omitted = a folder the service knows is empty; `[]` = a folder on the last level, not opened. */
+export const fsDir = (path: string, entries?: unknown[]) => ({ dir: { path, metadata: fsMeta('directory', 4096, 0o755), ...(entries ? { entries } : {}) } });
+export const fsRoot = (...entries: unknown[]) => ({ dir: { path: '', metadata: fsMeta('directory', 4096, 0o711), entries } });
+
+/** The token mint and the file service. `seen` records every file-service request. */
+export function fileServiceRoutes(tree: unknown, seen: Request[] = [], opts: { status?: number; raw?: string } = {}): Route[] {
+  return [
+    { method: 'POST', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/access-tokens`, body: SITE_TOKEN },
+    {
+      method: 'GET',
+      path: `${FILERD_ADDRESS}/websites/${WEBSITE_ID}/entries`,
+      handler: async (req) => {
+        seen.push(req);
+        return new Response(opts.raw ?? JSON.stringify(tree), { status: opts.status ?? 200, headers: { 'content-type': 'application/json' } });
+      },
+    },
+  ];
+}
