@@ -15,6 +15,11 @@ export interface ToolContext {
   now?: () => number;
   /** Test seam for persistent_app_probe; production falls back to httpsProbe. */
   httpProbe?: HttpProbe;
+  /** Test seam for write-then-verify's pauses (core/verify.ts); production waits for real. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Test seam for the one request that does not go through the typed API client, the panel's file
+   *  service (core/files.ts); production falls back to the global fetch. */
+  fetch?: typeof fetch;
 }
 
 export class OrgRequiredError extends Error {

@@ -61,3 +61,18 @@ export function authGuard(expected: { bearer?: string; cookie?: string }, route:
     },
   };
 }
+
+/**
+ * A write and the listing that shows its result: the listing answers `before` until the write has
+ * been attempted and `after` from then on, whatever the write itself answered. That is the case
+ * write-then-verify exists for — the request "failed" (threw, timed out, 5xx) and still landed.
+ * Put these routes BEFORE any other route for the same paths: the first match wins.
+ */
+export function writeThenList(opts: { writeMethod?: string; writePath: string; listPath: string; before: unknown; after: unknown; write: (req: Request) => Response | Promise<Response> }): Route[] {
+  let written = false;
+  const json = (body: unknown): Response => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  return [
+    { method: opts.writeMethod ?? 'POST', path: opts.writePath, handler: async (req) => { written = true; return opts.write(req); } },
+    { method: 'GET', path: opts.listPath, handler: async () => json(written ? opts.after : opts.before) },
+  ];
+}
