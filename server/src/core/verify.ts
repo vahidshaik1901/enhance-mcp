@@ -109,8 +109,9 @@ async function settle<W, T>(opts: WriteThenVerifyOptions<W, T>, writeError: stri
   let verifyError: string | undefined;
   for (let i = 0; i < maxReads; i += 1) {
     if (i > 0) {
-      // Checked before the pause, so no time is spent waiting for a read that will not be made,
-      // and after it, so no read starts past the window.
+      // Checked before the pause, so a pause never starts once the window is over, and after it,
+      // so no read starts past the window. A pause that began inside the window can still end up to
+      // one interval past it; elapsedMs counts that time, so the sentence built from it stays true.
       if (now() >= deadline) break;
       await sleep(intervalMs);
       if (now() >= deadline) break;

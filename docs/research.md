@@ -1241,10 +1241,13 @@ printed.
 test C3) was reported as a client-side timeout error for two sites the panel did create. The forced
 check is the first live proof that the helper turns that into a confirmed create.
 
-These runs came before the final-review fix wave (the real-clock bound on the re-reads, the unknown
-sentence worded from the reads actually made, and the reworded clash-refusal lines). Those changes
-are covered by unit tests only; none of them adds a request, and the clock bound can only end the
-re-reads sooner, never later.
+These runs came before the final-review fix wave: the real-clock bound on the re-reads, the unknown
+sentence worded from the reads actually made, the reworded clash-refusal lines, a mint that fails
+with a network error or a 5xx reported as `network` rather than refused, an unknown outcome audited
+as `unknown`, and the handling of a 2xx that carries no id (website_create, domain_add,
+ssh_key_add). Those changes are covered by unit tests only. The clock bound can only end the
+re-reads sooner, never later; the one request they add is a single `domain_check` when a
+website_create 2xx carries no id, which the panel's documented answer always does.
 
 **Not yet done:** the section 8 walkthrough inside Claude Code (`files_list`, a clash refusal, a
 typed `website_delete`), pending the plugin refresh after the merge.

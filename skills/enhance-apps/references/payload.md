@@ -129,7 +129,7 @@ persistent_app_create website=<site> command="npm start" working_directory=paylo
 - **`persistent_app_log`** → no `SQLITE_ERROR`, no stack traces. This is the check that catches the
   empty-database failure; the status code does not.
 - `curl` `/`, `/admin`, `/admin/login`, and open `/admin` in a browser when the customer is there.
-- `files_list website=<site> path=payloadapp` → `.next/` (the build), `node_modules/` with its
+- (expected from this recipe's layout; not yet re-run with files_list) `files_list website=<site> path=payloadapp` → `.next/` (the build), `node_modules/` with its
   contents skipped, `.env` with mode `600`, and `payload.db` with a size above 0: a 0-byte
   `payload.db` is the empty-database failure described under "Migrations".
 

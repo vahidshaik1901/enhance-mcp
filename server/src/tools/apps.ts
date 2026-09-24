@@ -296,7 +296,7 @@ export async function onDiskLine(ctx: ToolContext, w: Website, proxyPath: string
 const pathClashRefusal = (url: string, seen: string, subject: 'create' | 'move'): string =>
   `${subject === 'create' ? 'Registering this app' : "Moving this app's proxy here"} would replace what ${url} serves today (${seen}). ${subject === 'create' ? 'The app was not registered' : 'The proxy was not moved'}; nothing on the site was changed. Pick a path that returns 404 now, or pass replace_existing_path=true if replacing it is intended.`;
 const rootClashRefusal = (seen: string): string =>
-  `This website already serves content at its root (${seen}). A root app takes over the ENTIRE site, including every PHP and static page. The app was not registered; nothing on the site was changed. Use a dedicated website or subdomain for a whole-site Node app, or pass replace_existing_path=true.`;
+  `This website already serves content at its root (${seen}). A root app takes over the ENTIRE site, including every PHP and static page. The app was not registered; nothing on the site was changed. Use a dedicated website or subdomain for a whole-site Node app, or pass replace_existing_path=true if taking the whole current site off the web is intended.`;
 const replacedNote = (url: string, seen: string): string => `this app replaced what ${url} served before (${seen}); that content is no longer reachable while the app is registered`;
 const uncheckedPathNote = (url: string, detail: string): string => `the path could not be checked before the write (${detail}), so ${url} may already serve something — open it and confirm nothing was replaced`;
 const rootAppNote = (url: string): string =>

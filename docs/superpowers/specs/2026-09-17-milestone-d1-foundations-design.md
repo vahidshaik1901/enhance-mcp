@@ -73,11 +73,11 @@ with no body (databases, users, crontab lines, persistent apps) makes "the write
 writeThenVerify<W, T>({
   write: () => Promise<W>,                  // the POST, called exactly once
   find:  () => Promise<T | undefined>,      // after an UNCLEAR write only: the object THIS call made
-  windowMs?, intervalMs?, sleep?,           // sleep is a test seam (ToolContext.sleep)
+  windowMs?, intervalMs?, sleep?, now?,     // sleep and now are test seams
 }): Promise<
   | { state: 'landed';  confirmedBy: 'response'; written: W }
-  | { state: 'landed';  confirmedBy: 'verify';   found: T; writeError: string }
-  | { state: 'unknown'; writeError: string; verifyError?: string }
+  | { state: 'landed';  confirmedBy: 'verify';   found: T; writeError: string; reads: number; elapsedMs: number }
+  | { state: 'unknown'; writeError: string; verifyError?: string; reads: number; elapsedMs: number }
 >
 ```
 

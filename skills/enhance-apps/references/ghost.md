@@ -114,7 +114,7 @@ Read `persistent_app_log` once and confirm it finished before opening the admin.
   webhook self-fetch error at boot, logged while the site was not yet being served. Anything else is
   a problem.
 - `curl` each of `/`, `/ghost/` and `/rss/` — all 200 in the trial.
-- `files_list website=<site> path=ghost` → `current` (a symlink), `versions/<version>`,
+- (expected from this recipe's layout; not yet re-run with files_list) `files_list website=<site> path=ghost` → `current` (a symlink), `versions/<version>`,
   `content/`, `config.production.json` with mode `600`, and `.env`. `node_modules` is not at this
   level: it lives under `versions/<version>/`, below the default depth, so its absence here is
   normal. The `.env` holds only `NODE_ENV` and is not a secret, so its mode is not a check.

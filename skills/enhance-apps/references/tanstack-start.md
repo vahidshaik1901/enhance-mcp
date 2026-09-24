@@ -94,7 +94,7 @@ None.
 - `persistent_app_log` → the listening line
   (`Listening on: http://localhost:3000/ (all interfaces)` in the trial), no stack traces.
 - `curl -sS -o /dev/null -w '%{http_code}' https://<domain>/` and one client-side route.
-- `files_list website=<site> path=startapp` → `.output/` (list `path=startapp/.output` to see
+- (expected from this recipe's layout; not yet re-run with files_list) `files_list website=<site> path=startapp` → `.output/` (list `path=startapp/.output` to see
   `server/index.mjs`, the entry the start script runs), `node_modules/` with its contents skipped,
   and `.env` with mode `600`.
 
