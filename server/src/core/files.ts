@@ -1,6 +1,6 @@
 import * as z from 'zod/v4';
 import { parseScalarText } from '../client/client.js';
-import { requireOrg, type ToolContext } from './context.js';
+import { OrgRequiredError, requireOrg, type ToolContext } from './context.js';
 import { safe } from './respond.js';
 import { UUID_RE, type Website } from './resolver.js';
 import { describeError } from './verify.js';
@@ -95,6 +95,21 @@ export function checkFilerdAddress(address: string | undefined): string {
   return address;
 }
 
+/** `AbortSignal.timeout` rejects with a TimeoutError, an explicit abort with an AbortError. */
+function isAbort(e: unknown): boolean {
+  const name = typeof e === 'object' && e !== null ? (e as { name?: unknown }).name : undefined;
+  return name === 'TimeoutError' || name === 'AbortError';
+}
+
+/** An error's message and its cause's, when it has one: undici's `fetch failed` keeps the reason
+ *  (a refused redirect under `redirect: 'error'`, a DNS failure) in `cause`. */
+function errorText(e: unknown): string {
+  if (!(e instanceof Error)) return String(e);
+  const cause: unknown = e.cause;
+  const why = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : undefined;
+  return why ? `${e.message}: ${why}` : e.message;
+}
+
 /** Releases a response body we will not read. A cancel that fails must not replace the reason the
  *  body was abandoned (a `too_large` would otherwise surface as `network`). */
 async function discard(stream: { cancel(): Promise<void> } | null | undefined): Promise<void> {
@@ -124,9 +139,15 @@ async function readCapped(res: Response, cap: number): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/** Refuses a node below the last level asked for: the service answered more than `maxDepth` allows,
+ *  so it is not reading the request the way it was probed, and nothing it sent is trusted. That also
+ *  bounds this walk's recursion at `levels`. */
 function flatten(root: DirBody, levels: number): SiteFileEntry[] {
   const out: SiteFileEntry[] = [];
   const walk = (nodes: TreeNode[] | undefined, level: number): void => {
+    if (level > levels && nodes && nodes.length > 0) {
+      throw new FileServiceUnavailable('bad_shape', `the file service answered more than the ${levels} level${levels === 1 ? '' : 's'} asked for; the panel may have changed how it reads maxDepth`);
+    }
     for (const node of nodes ?? []) {
       if ('file' in node) {
         const m = node.file.metadata;
@@ -150,13 +171,17 @@ export async function listSiteFiles(ctx: ToolContext, website: Website, opts: { 
   const levels = Math.min(MAX_LEVELS, Math.max(1, Math.trunc(opts.levels) || 1));
   const address = checkFilerdAddress(website.filerdAddress);
   if (!UUID_RE.test(website.id)) throw new FileServiceUnavailable('unsupported', 'the website id is not a UUID, so no file service route can be built for it');
-  const org = requireOrg(ctx.client);
   let raw: string;
   try {
+    // Inside the try so a credential with no org selected is a typed refusal too, not a raw throw.
+    const org = requireOrg(ctx.client);
     raw = await ctx.client.call<string>('POST', '/orgs/{org_id}/websites/{website_id}/access-tokens', () =>
       ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/access-tokens', { params: { path: { org_id: org, website_id: website.id } }, parseAs: 'text' }),
     );
   } catch (e) {
+    if (e instanceof OrgRequiredError) throw new FileServiceUnavailable('mint_refused', `no site access token was requested (${describeError(e)})`);
+    // No answer is not a refusal: the panel may have minted a token nobody received.
+    if (isAbort(e)) throw new FileServiceUnavailable('timeout', 'the site token request got no answer before the client stopped waiting, so nothing was listed');
     throw new FileServiceUnavailable('mint_refused', `the panel refused a site access token (${describeError(e)})`);
   }
   const token = parseScalarText(raw);
@@ -174,9 +199,9 @@ export async function listSiteFiles(ctx: ToolContext, website: Website, opts: { 
     body = await readCapped(res, MAX_RESPONSE_BYTES);
   } catch (e) {
     if (e instanceof FileServiceUnavailable) throw e;
-    const name = typeof e === 'object' && e !== null ? (e as { name?: unknown }).name : undefined;
-    if (name === 'TimeoutError' || name === 'AbortError') throw new FileServiceUnavailable('timeout', `the file service did not answer within ${Math.round(timeoutMs / 1000)} s`);
-    throw new FileServiceUnavailable('network', `the file service could not be reached (${scrub(safe(e instanceof Error ? e.message : String(e)))})`);
+    if (isAbort(e)) throw new FileServiceUnavailable('timeout', `the file service did not answer within ${Math.round(timeoutMs / 1000)} s`);
+    // Scrubbed before `safe()`, so the redaction never depends on what `safe()` leaves alone.
+    throw new FileServiceUnavailable('network', `the file service could not be reached (${safe(scrub(errorText(e)))})`);
   }
   let parsed: unknown;
   try {
@@ -184,7 +209,14 @@ export async function listSiteFiles(ctx: ToolContext, website: Website, opts: { 
   } catch {
     throw new FileServiceUnavailable('bad_shape', 'the file service answered something that is not JSON');
   }
-  const tree = RootSchema.safeParse(parsed);
-  if (!tree.success) throw new FileServiceUnavailable('bad_shape', `the file service answered in an unexpected shape (at ${safe(tree.error.issues[0]?.path.join('.') || 'the top')}); the panel may have changed it`);
-  return { levels, entries: flatten(tree.data.dir, levels) };
+  try {
+    const tree = RootSchema.safeParse(parsed);
+    if (!tree.success) throw new FileServiceUnavailable('bad_shape', `the file service answered in an unexpected shape (at ${safe(tree.error.issues[0]?.path.join('.') || 'the top')}); the panel may have changed it`);
+    return { levels, entries: flatten(tree.data.dir, levels) };
+  } catch (e) {
+    if (e instanceof FileServiceUnavailable) throw e;
+    // Valid JSON nested deeply enough, still under the size cap, overflows the recursive schema's
+    // stack: safeParse throws a RangeError rather than reporting an issue.
+    throw new FileServiceUnavailable('bad_shape', `the file service answered a tree that could not be read (${e instanceof RangeError ? 'nested too deeply' : 'an unexpected error'}); the panel may have changed it`);
+  }
 }

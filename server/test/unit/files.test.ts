@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FileServiceUnavailable, listSiteFiles, MAX_LEVELS, MAX_RESPONSE_BYTES } from '../../src/core/files.js';
 import type { Website } from '../../src/core/resolver.js';
-import { base, fileServiceRoutes, FILERD_ADDRESS, fsDir, fsFile, fsLink, fsRoot, ORG_ID, SITE_TOKEN, websiteDetail, WEBSITE_ID } from '../fixtures/panel.js';
+import { base, fileServiceRoutes, FILERD_ADDRESS, fsDir, fsFile, fsLink, fsRoot, ORG_ID, SITE_TOKEN, twoMemberships, websiteDetail, WEBSITE_ID } from '../fixtures/panel.js';
 import { makeContext } from '../helpers/context.js';
 import type { Route } from '../helpers/fakeFetch.js';
 
@@ -15,21 +15,32 @@ const twoLevels = fsRoot(
   fsDir('empty'),
 );
 
-async function reason(p: Promise<unknown>): Promise<string> {
+async function failure(p: Promise<unknown>): Promise<FileServiceUnavailable> {
   try {
     await p;
   } catch (e) {
-    if (e instanceof FileServiceUnavailable) return e.reason;
+    if (e instanceof FileServiceUnavailable) return e;
     throw e;
   }
   throw new Error('expected a FileServiceUnavailable');
 }
 
+async function reason(p: Promise<unknown>): Promise<string> {
+  return (await failure(p)).reason;
+}
+
 describe('listSiteFiles', () => {
   it('mints a site token, sends one GET carrying only that token, and flattens the tree', async () => {
     const seen: Request[] = [];
-    const { ctx, f } = await makeContext([...fileServiceRoutes(twoLevels, seen), ...base()]);
+    const { ctx, f, auditLines } = await makeContext([...fileServiceRoutes(twoLevels, seen), ...base()]);
     const listing = await listSiteFiles(ctx, site, { levels: 2 });
+    // Rule 1 (GET only) is asserted on every call the fake received, not on `seen`: `seen` counts only
+    // requests that matched the GET route, so a token-carrying POST to the service would slip past it.
+    expect(f.calls[0]?.path).toBe('/login/memberships');
+    expect(f.calls.slice(1).map((c) => `${c.method} ${c.path.split('?')[0]}`)).toEqual([`POST ${tokenPath}`, `GET ${entriesPath}`]);
+    expect(f.calls.filter((c) => c.path.startsWith(FILERD_ADDRESS)).map((c) => c.method)).toEqual(['GET']);
+    // Rule 2: never audited.
+    expect(auditLines.join('\n')).not.toContain(SITE_TOKEN);
     expect(seen).toHaveLength(1);
     const req = seen[0]!;
     expect(req.method).toBe('GET');
@@ -39,7 +50,6 @@ describe('listSiteFiles', () => {
     const url = new URL(req.url);
     expect(`${url.origin}${url.pathname}`).toBe(`https://panel.test${entriesPath}`);
     expect(Object.fromEntries(url.searchParams)).toEqual({ recursive: 'true', maxDepth: '1', fetchMetadata: 'true' });
-    expect(f.calls.filter((c) => c.method === 'POST' && c.path === tokenPath)).toHaveLength(1);
     expect(listing.levels).toBe(2);
     expect(listing.entries).toEqual([
       { path: '.bashrc', kind: 'file', size: 3968, modified: 1789629449, mode: 0o644, unexpanded: false },
@@ -64,11 +74,26 @@ describe('listSiteFiles', () => {
   });
 
   it('refuses an address that is not a path on the panel before any token is minted', async () => {
-    for (const filerdAddress of ['https://evil.example/filerd/x', '//evil.example/x', '/filerd/../x', '/filerd/x?y=1', '/filerd/x#y', '', undefined]) {
+    // '/filerd//x' passes the character class and is refused only by the `//` rule.
+    for (const filerdAddress of ['https://evil.example/filerd/x', '//evil.example/x', '/filerd//x', '/filerd/../x', '/filerd/x?y=1', '/filerd/x#y', '', undefined]) {
       const { ctx, f } = await makeContext([...fileServiceRoutes(twoLevels), ...base()]);
       expect(await reason(listSiteFiles(ctx, { ...site, filerdAddress } as Website, { levels: 1 })), String(filerdAddress)).toBe('unsupported');
       expect(f.calls.some((c) => c.path === tokenPath || c.path.startsWith('/filerd')), String(filerdAddress)).toBe(false);
     }
+  });
+
+  it('refuses a website id that is not a UUID before any token is minted', async () => {
+    const { ctx, f } = await makeContext([...fileServiceRoutes(twoLevels), ...base()]);
+    expect(await reason(listSiteFiles(ctx, { ...site, id: '../6106382b' } as Website, { levels: 1 }))).toBe('unsupported');
+    expect(f.calls.some((c) => c.method === 'POST' || c.path.startsWith('/filerd'))).toBe(false);
+  });
+
+  it('reports a credential with no org selected as a typed refusal, before anything is minted', async () => {
+    const { ctx, f } = await makeContext([...fileServiceRoutes(twoLevels), ...base()], {}, twoMemberships);
+    const e = await failure(listSiteFiles(ctx, site, { levels: 1 }));
+    expect(e.reason).toBe('mint_refused');
+    expect(e.message).toContain('ENHANCE_ORG_ID');
+    expect(f.calls.some((c) => c.method === 'POST' || c.path.startsWith('/filerd'))).toBe(false);
   });
 
   it('maps every way the service can fail to a typed reason', async () => {
@@ -76,6 +101,7 @@ describe('listSiteFiles', () => {
       ['mint_refused', [{ method: 'POST', path: tokenPath, status: 403, body: { code: 'unauthorized' } }]],
       ['mint_refused', [{ method: 'POST', path: tokenPath, body: 'not-a-token' }]],
       ['unauthorized', fileServiceRoutes(twoLevels, [], { status: 401 })],
+      ['unauthorized', fileServiceRoutes(twoLevels, [], { status: 403 })],
       ['not_found', fileServiceRoutes(twoLevels, [], { status: 404 })],
       ['http_error', fileServiceRoutes(twoLevels, [], { status: 500 })],
       ['bad_shape', fileServiceRoutes(twoLevels, [], { raw: 'not json' })],
@@ -87,6 +113,42 @@ describe('listSiteFiles', () => {
       const { ctx } = await makeContext([...routes, ...base()]);
       expect(await reason(listSiteFiles(ctx, site, { levels: 1 })), want).toBe(want);
     }
+  });
+
+  it('says a token request that got no answer timed out, not that the panel refused it', async () => {
+    for (const name of ['TimeoutError', 'AbortError']) {
+      const { ctx, f } = await makeContext([{ method: 'POST', path: tokenPath, handler: async () => { throw new DOMException('The operation was aborted', name); } }, ...base()]);
+      const e = await failure(listSiteFiles(ctx, site, { levels: 1 }));
+      expect(e.reason, name).toBe('timeout');
+      expect(e.message, name).toContain('token request');
+      expect(f.calls.some((c) => c.path.startsWith('/filerd')), name).toBe(false);
+    }
+  });
+
+  it('names the cause of a network failure, with the token scrubbed from it', async () => {
+    // undici reports a refused redirect (redirect: 'error') as TypeError('fetch failed') and puts the
+    // reason in `cause`, so the message alone says nothing useful.
+    const { ctx } = await makeContext([{ method: 'GET', path: entriesPath, handler: async () => { throw new TypeError('fetch failed', { cause: new Error(`unexpected redirect\nwhile sending ${SITE_TOKEN}`) }); } }, ...fileServiceRoutes(twoLevels), ...base()]);
+    const e = await failure(listSiteFiles(ctx, site, { levels: 1 }));
+    expect(e.reason).toBe('network');
+    expect(e.message).toContain('fetch failed: unexpected redirect while sending [redacted]');
+    expect(e.message).not.toContain(SITE_TOKEN);
+  });
+
+  it('refuses a tree deeper than the levels asked for, so a service that ignores maxDepth is not trusted', async () => {
+    const threeDeep = fsRoot(fsDir('a', [fsDir('a/b', [fsFile('a/b/c')])]));
+    const shallow = await makeContext([...fileServiceRoutes(threeDeep), ...base()]);
+    expect(await reason(listSiteFiles(shallow.ctx, site, { levels: 2 }))).toBe('bad_shape');
+    const deep = await makeContext([...fileServiceRoutes(threeDeep), ...base()]);
+    expect((await listSiteFiles(deep.ctx, site, { levels: 3 })).entries.map((e) => e.path)).toEqual(['a', 'a/b', 'a/b/c']);
+  });
+
+  it('marks only a folder on the last level as unexpanded', async () => {
+    // Live, `entries: []` sat only on the last level; one above it is not "not opened".
+    const tree = fsRoot(fsDir('odd', []), fsDir('a', [fsDir('a/b', [])]));
+    const { ctx } = await makeContext([...fileServiceRoutes(tree), ...base()]);
+    const { entries } = await listSiteFiles(ctx, site, { levels: 2 });
+    expect(entries.map((e) => [e.path, e.unexpanded])).toEqual([['odd', false], ['a', false], ['a/b', true]]);
   });
 
   it('refuses a listing over the size cap, whether it says so up front or not', async () => {
