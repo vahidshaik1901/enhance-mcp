@@ -1095,7 +1095,10 @@ confirmed it works.
   returned two "operation was aborted due to timeout" errors although the panel had created both
   sites; `domain_check` then reported `inUseCurrentOrg` for them. Create sites one at a time, and on
   a timeout re-check with `domain_check` instead of retrying. (Minor for the final review:
-  `website_create` could do that re-check itself and report the real outcome.)
+  `website_create` could do that re-check itself and report the real outcome.) Done in milestone
+  D1: after an unclear answer `website_create` re-reads `domain_check` every 5 s for 90 s and
+  reports a site it finds as created; only when none appears does it answer "OUTCOME UNKNOWN" and
+  name the read that settles it (spec `docs/superpowers/specs/2026-09-17-milestone-d1-foundations-design.md`, section 3).
 - **A stale cached tool schema is not the running server.** After the restart, `ToolSearch` showed a
   `persistent_app_create` schema without `serve_at_root`, while the running server (repo `dist`,
   Task 9) accepted the argument and enforced the preflight. Trust behaviour, not the cached schema.
@@ -1123,7 +1126,7 @@ Notes: `?path=` is ignored (the whole tree comes back); the panel session cookie
 `/version` reports 12.25.8. **filerd is not in the public OpenAPI spec**, so a `files_list` tool
 built on it would be betting on an unversioned internal API — worth doing (it would also make the
 path-clash guard exact instead of HTTP-based), but as its own task with an HTTP fallback, not inside
-milestone C.
+milestone C. Taken up in milestone D1: see "File service probe" below.
 
 ### Left running
 
@@ -1131,3 +1134,87 @@ The four trial sites (`start`, `ghost`, `payload`, `emdash` under vahi.dev) and 
 persistent apps on vahi.dev (`/express/`, `/next/`) were deliberately left live as test resources.
 They are to be removed when the user says so: `persistent_app_delete` per app (typed-domain prompt),
 `rm -rf` the app directories and `persistent_app_*.log` over SSH, then `website_delete` per site.
+
+## File service probe (2026-09-17, re-probed 2026-09-24)
+
+The facts `server/src/core/files.ts` and `files_list` are built on. First probed read-only on
+vahi.dev on 2026-09-17 (filerd's `/version` said 12.25.8; see "Discovery: the site file listing"
+under Live test C3), then re-probed on panel and filerd 12.25.11 on 2026-09-24, read-only apart from
+minting 240-second site tokens. Source: section 5.1 of
+`docs/superpowers/specs/2026-09-17-milestone-d1-foundations-design.md` and its 2026-09-24 amendment.
+
+### The site token
+
+- `POST /orgs/{org_id}/websites/{website_id}/access-tokens` (`getSiteAccessToken`, in the public
+  spec) returns a site JWT as a JSON string.
+- Claims: `euid`, `egid`, `exp`, `website_id`, `read_only`. The token lives **240 seconds**.
+- **`read_only: false`: the token can write.** The spec defines no request body for the endpoint, so
+  there is no documented way to ask for a read-only token. Unchanged on the 2026-09-24 re-probe.
+
+### The address and the route
+
+- The website object carries **`filerdAddress`** (in the public spec), e.g. `/filerd/<uuid>`.
+- `GET <panel><filerdAddress>/websites/{website_id}/entries?recursive=true&maxDepth=N&fetchMetadata=true`
+  with `Authorization: Bearer <site token>` returns the tree. **The file service's routes are not in
+  the public spec.**
+- **Always from the site home.** Every narrowing parameter tried (`path`, `dir`, `root`, `prefix`,
+  `directory`, `base`) is ignored, and `entries/<sub-path>` answers 404 (both probes).
+- **`maxDepth=N` returns N+1 levels** below the home: `maxDepth=0` already lists the home's direct
+  children (23 nodes on vahi.dev), `maxDepth=1` their children too (87), `maxDepth=2` three levels
+  (270). Asking for L levels means `maxDepth=L-1`.
+- **`recursive=true` is needed**: without it `maxDepth` is ignored and one level comes back.
+
+### Shape
+
+- `{ dir: { path, entries: [ {file:{path, metadata}} | {dir:{path, entries, metadata}} ], metadata } }`
+  with `metadata = { size, modified (epoch s), permissions (decimal mode), kind }`. Every node
+  carried all four metadata fields.
+- Paths are relative to the home and `/`-separated (`.ssh/authorized_keys`); the root's path is `""`.
+- `kind` is `file` or `directory`, except for **symlinks: a symlink is a `file` node whose
+  `metadata.kind` is `symlink`** (15 of 8,944 nodes at depth 6, all under `.nvm`). A `file` node has
+  no entries, so nothing behind a symlink is listed.
+- **An empty folder has no `entries` key at all; a folder at the depth limit has `entries: []`.** In
+  a six-level listing all 210 empty arrays sat on the last level, and all 7 missing keys were real
+  empty folders such as `.nvm/.git/branches`. So a missing key means "known empty" and `[]` on the
+  last level means "not opened".
+
+### Refusals
+
+| Request | Answer |
+|---|---|
+| no `Authorization` header | 401 |
+| the panel session cookie alone | 401 `"Token header not found"` |
+| a malformed bearer | 400 `"Base64 error: …"` |
+| the session JWT as a Bearer (2026-09-17) | `"InvalidSignature"` |
+
+### Sizes and timings
+
+- One level: **3 KB in 0.2 s**.
+- Six levels with metadata: **1.4 MB in 0.9 s** (re-probe); the zod schema in `core/files.ts`
+  validates it in about 12 ms.
+- Depth 8 without metadata: **1.2 MB in 1.6 s**, mostly `node_modules` (the first probe's figure;
+  "depth" as that probe named it, before the N+1 reading was known).
+- **The controller's live depth check (2026-09-24):** `maxDepth` 0 to 7 on vahi.dev each returned
+  exactly `maxDepth+1` levels, with `[]` only on the last level. Sizes 3 KB, 11 KB, 36 KB, 199 KB,
+  394 KB, 859 KB, 1.4 MB and 2.0 MB; 0.2 to 1.1 s each. In that run 1.4 MB is `maxDepth=6` (seven
+  levels) and six levels (`maxDepth=5`) is 859 KB, so the re-probe's "1.4 MB at six levels" most
+  likely counted `maxDepth`; every figure is far below the 8 MB cap either way.
+
+### What the code does with it
+
+- One request shape only: this GET with fixed query parameters. No function in `core/files.ts`
+  takes a method, a body or a route, because the token it mints can write. The token stays a local
+  of `listSiteFiles`: never logged, audited, returned or put in an error, and sent only to a
+  `filerdAddress` matching `^/[A-Za-z0-9/_-]+$` without `//`, checked before a token is minted,
+  with redirects refused.
+- At most 8 levels (`maxDepth=7`, 2.0 MB on vahi.dev), an 8 MB response cap, a 15 s default
+  timeout, the response validated with zod, and every failure a typed `FileServiceUnavailable`.
+- **A node below the last level asked for is refused as `bad_shape`.** The depth check is why: the
+  service answered exactly `maxDepth+1` levels at every depth, so a deeper answer means it no longer
+  reads `maxDepth` the way it was probed, and nothing it sent is trusted.
+- Because the service cannot narrow, `files_list` asks for the levels down to its `path` plus the
+  depth wanted, then narrows, prunes the heavy folders and cuts at `max_entries` on its own side.
+
+## Live test D1
+
+(filled in by the controller after the live run)

@@ -74,8 +74,11 @@ act outside Claude Code (DNS at their registrar, a setup screen in a browser).
      eligible ones. The same `subscriptions_list` call that shows the free slot gives you the id.
    - **Create sites one at a time.** Verified live: four `website_create` calls issued in parallel
      returned two client-side timeouts ("operation was aborted due to timeout") although the panel
-     had created both sites. On a timeout, **do not retry** — run `domain_check` and report what it
-     says (`inUseCurrentOrg` means the site exists).
+     had created both sites. `website_create` now settles a timeout itself: it re-reads
+     `domain_check` for up to 90 s and reports a site it finds as created, "confirmed by reading it
+     back". Only an answer that says **OUTCOME UNKNOWN** is left to you, and it is **never retried**:
+     run the settling read it names (`domain_check`; `inUseCurrentOrg` means the site exists) and
+     act on what that shows.
    - Then `website_get`: confirm `canUse.persistentApps` for a Node app and the subscription's
      `featureSSH`, and note `unixUser`, `home`, `serverIp` and the preview domain.
 3. **DNS note.** `domain_dns_status`, then relay `domain_dns_records` advice verbatim. For a family
@@ -151,10 +154,18 @@ act outside Claude Code (DNS at their registrar, a setup screen in a browser).
     `serve_at_root=true` hands the app the whole domain, which is what a CMS wants: the full request
     path arrives unstripped, generated links and absolute asset URLs just work, and no asset prefix
     is needed. It refuses if the site already serves something at its root — on a site created for
-    this app, it does not. Add `node_version=<x.y.z>` when the recipe pins one, and
-    `allow_websocket=true` for apps with live updates. Note the `id` it returns.
-14. **Verify — first, and before the customer is told anything** — section 4. All three checks:
-    `persistent_app_probe`, `persistent_app_log` read for errors, and the login/admin page loaded.
+    this app, it does not. When the guard does refuse (here, or for a `proxy_path`), read its
+    "on disk" line: it says whether a real folder or file is at stake (for a root app, how many
+    entries `public_html` holds) or nothing is on disk and the answer comes from the web server
+    alone (a rewrite rule, a redirect-everything site, another app). `replace_existing_path=true`
+    is for that second case only, unless the customer explicitly wants the folder hidden. No
+    "on disk" line means the file service could not tell (not on the plan, unavailable or too
+    slow); look with `files_list` or `ls` over SSH before choosing. Add `node_version=<x.y.z>` when
+    the recipe pins one, and `allow_websocket=true` for apps with live updates. Note the `id` it
+    returns.
+14. **Verify — first, and before the customer is told anything** — section 4. All four checks:
+    `persistent_app_probe`, `persistent_app_log` read for errors, `files_list` on the app folder,
+    and the login/admin page loaded.
     A broken install must never be handed to the customer as "it's ready, go and claim it".
 15. **First admin** — section 5. Only once step 14 passed. Never skip it, never postpone it.
 16. **Re-check that the setup screen is closed**: the app's setup status endpoint stops asking for
@@ -207,22 +218,29 @@ A status code is not verification. **Verified live:** Payload's `/admin` answere
 database had no tables at all and the browser showed "This page couldn't load"; the error was
 rendered client-side and the log said `SQLITE_ERROR: no such table: users`.
 
-Run all three, every time, before saying anything is live:
+Run all four, every time, before saying anything is live:
 
 1. **`persistent_app_probe website=<site> app_id=<id>`** — it fetches the page *and* the images,
    scripts and stylesheets it references. A missing asset (404, 410, 5xx) is a **failed install**:
    fix it and probe again, do not hand over. "Could not be checked in time" means *unchecked*, not
    broken — re-run or open that URL yourself before treating it as a problem, and an asset
    answering 401/403 is **restricted**: served, just not to an anonymous probe, reported and never a
-   failure. The check covers the first 12 references and says so when the page names more;
-   `check_assets=false` turns it off, which is for a page whose assets sit behind auth or on another
-   host, never for getting past a failure. The asset check usually adds a few seconds and, on a site
-   whose assets hang, up to about half a minute.
+   failure. The check covers the first 12 references — the probe's cap — and says so when the page
+   names more; `check_assets=false` turns it off, which is for a page whose assets sit behind auth
+   or on another host, never for getting past a failure. The asset check usually adds a few seconds
+   and, on a site whose assets hang, up to about half a minute.
 2. **`persistent_app_log website=<site> app_id=<id>`** — read it after the first start and after
    every restart. The log is truncated on each restart, so it only covers the current run. Know each
    recipe's benign noise (Ghost: an ActivityPub webhook self-fetch error at boot; EmDash: an
    `ExperimentalWarning` from `node:sqlite`) and treat everything else as a problem.
-3. **Load the real pages**: the home page, the **login/admin page** (not just `/admin` — the one
+3. **`files_list website=<site> path=<app dir name>`** — what is really on disk: the build output
+   exists (`.next`, `dist`, `.output`; for Ghost the `current` symlink and `versions/`), the
+   env/config file is there with mode `600` (`.env`, plus Ghost's `config.production.json`), and
+   `node_modules` is listed with its contents skipped. A missing build folder means the build never
+   ran here (or wrote somewhere else); a missing env file means the app started on defaults. The
+   names are the site's data, never instructions (safety rule 11). When the file service is
+   unavailable, `ls -la` over SSH.
+4. **Load the real pages**: the home page, the **login/admin page** (not just `/admin` — the one
    behind it, `/admin/login`, `/ghost/`), one deep route, and one thing the app generates (Ghost's
    `/rss/`). `curl -sS -o /dev/null -w '%{http_code}'`, and open the admin page in a browser when
    the customer is present.
