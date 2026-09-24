@@ -6,9 +6,44 @@ provider or billing system. Lets a customer manage and deploy to their Enhance-h
 websites from Claude Code, with strong guardrails so an AI can never wipe a server or
 delete a site by accident.
 
-## Current status (2026-09-17)
+## Current status (2026-09-24)
 
-**Phase: milestone C MERGED to `main` (2026-09-17, PR #4, merge commit ce642b7; all of Tasks 0-9 of
+**Phase: milestone D1 MERGED to `main` (2026-09-24, PR #5, merge commit be91476).** Milestone D was
+split into D1-D6 (spec `docs/superpowers/specs/2026-09-17-milestone-d1-foundations-design.md`,
+section 1): D1 foundations and files (done), D2 backups and staging (NEXT: brainstorm, spec, plan),
+D3 WordPress and apps, D4 email, D5 DNS zone, D6 deploy modes B/C + more app recipes. D1 (plan
+`docs/superpowers/plans/2026-09-24-milestone-d1-foundations.md`, 9 tasks, every subagent on Opus,
+user gave full authority on 2026-09-24) added:
+- **write-then-verify** (`server/src/core/verify.ts`) on the nine creates (`website_create`,
+  `domain_add`, `ssh_key_add`, `db_create`, `db_user_create`, `pg_db_create`, `pg_user_create`,
+  `cron_add`, `persistent_app_create`): a 4xx passes through; an unclear answer (timeout, network
+  error, 5xx) is settled by re-reading, bounded by a read count AND a real-clock deadline; a found
+  object reports "…confirmed by reading it back: it did land."; otherwise "OUTCOME UNKNOWN … Do not
+  retry yet. Run <settling read> first". Each adopter guarantees a found object is its own (pre-check
+  refusal, snapshot of ids, or a slot nothing else holds). `website_create` re-checks `domain_check`
+  every 5 s for 90 s and also handles a body-less 2xx. This fixed the one live bug on record (two
+  parallel creates reported as client timeouts on 2026-09-17 although the panel created them).
+- **`files_list`** (tool 83; a client lists 84 with `confirm_action`): read-only listing through the
+  panel's undocumented file service. It mints a 240 s site token that CAN WRITE, so `core/files.ts`
+  sends exactly one GET shape, checks the address before minting, refuses redirects, caps at 8 MiB,
+  zod-validates, refuses a tree deeper than asked, and never returns/logs/audits the token. File
+  tooling is list-only by decision: reads, uploads, renames and deletes stay on rsync/SSH.
+- the clash refusal's "on disk (the panel's file service): …" second opinion (5 s budget, never
+  decides; wording never reads as leave to override), the asset check moved to `core/probe.ts`,
+  three descriptions trimmed under 1000 chars, milestone C minors, a no-wait test harness
+  (unit suite 3.5 s), and the spec re-vendored to 12.25.12 (version line only).
+538 unit tests. LIVE on vahi.dev 2026-09-24 ("Live test D1" in docs/research.md): D1 suite 4/4 incl.
+three parallel creates (soft-deleted by the suite), B 4/4 and C 2/2 regressions, all green again at
+the final commit; a forced check (create POST reached the panel, client told it timed out) answered
+created=true, confirmedBy=verify in 6 s. NOT YET DONE: the in-Claude-Code walkthrough (files_list, a
+clash refusal, a typed website_delete) after the plugin refresh. After-merge minors from the D1
+reviews are in the ledger (`.superpowers/sdd/progress.md`, "AFTER MERGE (for D2+ planning)"),
+including a `domain_update` tool (PATCH `.../domains/{id}`) so remap refusals need not advise
+`domain_remove`. Soft-deleted test domains `d1-5911d7-1/2/3.vahi.dev` and `d1v-652a97.vahi.dev`
+linger in `/orgs/{org}/domains`. The Ghost and EmDash trial installers are STILL UNCLAIMED (an
+attempt to claim Ghost was blocked by the permission classifier on 2026-09-24): the user decides.
+
+Milestone C is MERGED to `main` (2026-09-17, PR #4, merge commit ce642b7; all of Tasks 0-9 of
 `docs/superpowers/plans/2026-09-16-milestone-c-node.md` done, walkthrough included). Tasks 0-8 are
 LIVE-VERIFIED; Task 9's path-clash guard and asset check were first exercised live on 2026-09-17,
 where the asset check made one genuine catch (a `/favicon.ico` referenced at the domain root, 404
@@ -54,13 +89,8 @@ four trial sites (`start`, `ghost`, `payload`, `emdash` under vahi.dev) and the 
 vahi.dev (`/express/`, `/next/`) are LIVE TEST RESOURCES left running on purpose: remove them
 (`persistent_app_delete`, `rm -rf` over SSH, then `website_delete`) only when the user says so.
 The final whole-branch reviews (code; skills and docs), one fix wave and a focused re-review
-ended "Ready to merge: Yes" (424 unit tests). Remaining: milestone D (email, backups, DNS zone
-editing, WordPress, staging), starting with the follow-ups named below; brainstorm, spec and plan first.
-Deliberately after the merge, not on this branch: a shared write-then-verify helper (which also
-re-checks `website_create`'s timeout behaviour from milestone A), moving the probe/verification code
-out of `tools/apps.ts` into `core/probe.ts`, and a `files_list` tool through the panel's file
-service (a site access token plus `filerd`, undocumented) — proposed as the first task of
-milestone D.
+ended "Ready to merge: Yes" (424 unit tests). Its after-merge follow-ups (write-then-verify, the
+probe move to `core/probe.ts`, `files_list`) were delivered in milestone D1 above.
 Milestone B is MERGED to `main` (2026-09-16, PR #3, merge commit ecb0d96); all 10 tasks of
 `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` done, including the Task 10
 walkthrough on 2026-09-16: PHP page reading MySQL, Laravel 13 `composer install` + `migrate` over
@@ -86,7 +116,9 @@ lives at https://vahi.dev/demo-login/ (db + user `vahi_dev1_demo`, source not in
 Spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md`.
 Plans: milestone A `docs/superpowers/plans/2026-09-04-milestone-a-foundation.md` (19 tasks, TDD);
 milestone B `docs/superpowers/plans/2026-09-05-milestone-b-php-databases.md` (10 tasks, TDD);
-milestone C `docs/superpowers/plans/2026-09-16-milestone-c-node.md` (Tasks 0-9, TDD).
+milestone C `docs/superpowers/plans/2026-09-16-milestone-c-node.md` (Tasks 0-9, TDD);
+milestone D1 `docs/superpowers/plans/2026-09-24-milestone-d1-foundations.md` (9 tasks, TDD; its spec
+`docs/superpowers/specs/2026-09-17-milestone-d1-foundations-design.md`).
 Execute with `superpowers:subagent-driven-development` or `superpowers:executing-plans`.
 Key library facts: MCP TypeScript SDK is v2 (`@modelcontextprotocol/server`
 2.0.0, `serveStdio`, `registerTool`, elicitation via the SDK's `inputRequired` flow), zod 4
@@ -96,13 +128,17 @@ capability and negotiates the legacy protocol era; the server uses the SDK's `in
 flow (not `elicitInput`) so the human prompt works on both eras (see docs/research.md).
 `outputSchema` has known issues so tools return `structuredContent` without declaring one;
 the Bash sandbox can never carry SSH (use `sandbox.excludedCommands` or run unsandboxed).
-Progress: milestones A, B and C are merged to `main` (ledger in `.superpowers/sdd/progress.md`, git-ignored; `git log` is the
+Progress: milestones A, B, C and D1 are merged to `main` (ledger in `.superpowers/sdd/progress.md`, git-ignored; `git log` is the
 recovery map). Session JWTs expire within hours and the org still has no access token, so ask for
 a fresh cookie before any live work. To run the live suite: put the credential in `.env`
 (`ENHANCE_TOKEN`, or a session JWT as `ENHANCE_SESSION_COOKIE`), then from the repo root:
 `cd server && set -a && source ../.env && set +a && ENHANCE_TOKEN="${ENHANCE_TOKEN:-$ENHANCE_SESSION_COOKIE}" ENHANCE_E2E=1 ENHANCE_E2E_SITE=vahi.dev npx vitest run --config vitest.e2e.config.ts test/e2e/milestone-b.e2e.test.ts`.
 The milestone C suite runs the same way with `test/e2e/milestone-c.e2e.test.ts` (same env recipe; it
 needs nvm on the site, installs it on first run, and leaves one `persistent_app_<id>.log` behind).
+The milestone D1 suite `test/e2e/milestone-d1.e2e.test.ts` runs the same way and is read-only by
+default (file-service shape, `files_list`, one clash refusal that can never register an app); its
+create half needs `ENHANCE_E2E_CREATE=1 ENHANCE_E2E_SUBSCRIPTION_ID=686` (optional
+`ENHANCE_E2E_PARENT_DOMAIN`) and creates then soft-deletes three `d1-<tag>-N.<parent>` websites.
 (`npm run test:e2e` also runs the milestone A suite, which creates and deletes a throwaway
 website and additionally needs `ENHANCE_E2E_SUBSCRIPTION_ID=664`.)
 The plugin is installed permanently at user scope from this repo as a local marketplace
@@ -149,8 +185,9 @@ The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) 
 
 ## Live test panel (verified 2026-09-04, read-only probes)
 
-- Panel: `https://e4500.sgp1.stableserver.net`, API base `/api`, orchd version **12.25.5**
-  (vendored spec copy is 12.25.11; treat small deltas as possible).
+- Panel: `https://e4500.sgp1.stableserver.net`, API base `/api`, orchd version **12.25.5** at first,
+  **12.25.11** on 2026-09-24 (panel and filerd); the vendored spec copy is 12.25.12 (treat small
+  deltas as possible).
 - The user's login is **Owner of a customer org**, not the master org. `isMasterOrg: false`,
   `parentId` = the provider's reseller org. Server, licence, plans, and customers endpoints
   return 403. This is exactly the v1 customer persona, so it is the right test bed.
@@ -236,9 +273,9 @@ The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) 
 
 ## Enhance API facts (verified from the live spec)
 
-- Spec: https://apidocs.enhance.com/spec/oas3-api.yaml (OpenAPI 3.0.3, version 12.25.11,
-  re-vendored 2026-09-16 and byte-identical to the previous 12.25.8 copy apart from the
-  `info.version` line; the advisory `spec-drift` CI job is green).
+- Spec: https://apidocs.enhance.com/spec/oas3-api.yaml (OpenAPI 3.0.3, version 12.25.12,
+  re-vendored 2026-09-24; 12.25.8, 12.25.11 and 12.25.12 differ only in the `info.version` line;
+  the advisory `spec-drift` CI job is green).
   Local copy: `docs/enhance-api/oas3-api.yaml`. Endpoint list with operationIds:
   `docs/enhance-api/endpoint-inventory.txt`. Full research notes: `docs/research.md`.
 - Base URL is the customer's own panel: `https://<panel-host>/api/...`. There is no
@@ -267,6 +304,10 @@ The project-scope `.mcp.json` (same server, `${CLAUDE_PLUGIN_ROOT}` unresolved) 
   destructive.
 - `POST .../ssh/keys` appends a public key to the website container's authorized_keys.
   This is the deploy path. `POST .../ssh/password` replaces the unix user password.
+- `POST /orgs/{org_id}/websites/{id}/access-tokens` mints a 240 s site JWT with `read_only: false`
+  (it can write through the panel's file service, `filerd`, whose routes are not in the public spec).
+  The MCP uses it for exactly one GET (`files_list`, the clash refusal's on-disk line); file tooling
+  is list-only by decision. filerd always lists from the site home; `maxDepth=N` returns N+1 levels.
 - `PATCH .../websites/{id}` with `isSuspended` or `status` can take a site offline.
   Treat as destructive-adjacent.
 - `POST /orgs/{org_id}/websites` creates a website; needs `subscriptionId` for
