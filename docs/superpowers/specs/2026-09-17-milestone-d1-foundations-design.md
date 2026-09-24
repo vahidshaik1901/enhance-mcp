@@ -1,6 +1,9 @@
 # Milestone D1: foundations and the file listing — design
 
-Date: 2026-09-17. Status: approved in brainstorming by the product owner, awaiting spec review.
+Date: 2026-09-17. Status: approved in brainstorming by the product owner; the spec review was
+delegated to Claude on 2026-09-24 ("full authority"), and the review amended it with a re-probe of
+the file service on panel 12.25.11 (section 5.1) and three design corrections, each marked
+**(amended 2026-09-24)**.
 Parent spec: `docs/superpowers/specs/2026-09-04-enhance-mcp-design.md` (milestone D).
 Branch: `feat/milestone-d1`.
 
@@ -62,20 +65,45 @@ writeThenVerify<W, T>({
 
 A landed create is never reported as an error. An unclear create is never reported as a failure.
 
+**(amended 2026-09-24)** The helper takes two callbacks instead of one `verify(w?)`, because a 201
+with no body (databases, users, crontab lines, persistent apps) makes "the write answered" and
+"the write was unclear" indistinguishable from `w` alone:
+
+```ts
+writeThenVerify<W, T>({
+  write: () => Promise<W>,                  // the POST, called exactly once
+  find:  () => Promise<T | undefined>,      // after an UNCLEAR write only: the object THIS call made
+  windowMs?, intervalMs?, sleep?,           // sleep is a test seam (ToolContext.sleep)
+}): Promise<
+  | { state: 'landed';  confirmedBy: 'response'; written: W }
+  | { state: 'landed';  confirmedBy: 'verify';   found: T; writeError: string }
+  | { state: 'unknown'; writeError: string; verifyError?: string }
+>
+```
+
+The read-back after a normal answer (the full website, the new app's id) stays in the adopter, in a
+try/catch whose failure is reported inside a success, never as an error. The polling counts reads
+(`ceil(windowMs / intervalMs)`, the first one immediate) rather than watching a clock, so a test with
+a no-op `sleep` pins it exactly.
+
+**(amended 2026-09-24)** "An object found after an unclear write is the one this call created" has
+to be made true, not assumed: a write that timed out after a pre-existing object would otherwise be
+"confirmed" by that object, and `db_user_create` would then hand back a password that is not the
+user's. Each adopter guarantees it one of three ways, listed in 3.2: it refuses up front when the
+object already exists (a read before the write), it snapshots what existed and only counts a new
+object, or it writes a slot nothing else can hold (a crontab line past the last one).
+
 ### 3.2 Adopters and their verify reads
 
-| Tool | Verify read | Window |
-|---|---|---|
-| `website_create` | `POST /orgs/{org}/domains/check` → `inUseCurrentOrg` with a `websiteId`, then the resolver's `getWebsite` | 90 s (the panel keeps working after the client's 30 s cut-off; seen live with parallel creates) |
-| `domain_add` | the website's domain listing contains the domain | default |
-| `db_create`, `pg_db_create` | the database listing contains the prefixed name | default |
-| `db_user_create`, `pg_user_create` | the user listing contains the prefixed name. The password the tool sent is still returned once when `verify` confirms the create | default |
-| `ssh_key_add` | the key listing contains the same key body | default |
-| `cron_add` | the crontab read contains the added line | default |
-| `persistent_app_create` | the existing listing match (path, command, port), refactored onto the helper; behaviour unchanged | default |
-
-Each create already refuses up front when the object exists (or the panel answers 409), so an
-object found by `verify` after an unclear write is the one this call created.
+| Tool | Verify read | Found object is ours because | Window |
+|---|---|---|---|
+| `website_create` | `POST /orgs/{org}/domains/check` → `inUseCurrentOrg` with a `websiteId`, then the resolver's `getWebsite` | `domain_check` said `notInUse` just before (existing) | 90 s, a read every 5 s (the panel keeps working after the client's 30 s cut-off; seen live with parallel creates) |
+| `domain_add` | the website's domain listing contains the domain | new pre-check: already mapped with the same kind → idempotent success (`added: false`); another kind → refusal | default |
+| `db_create`, `pg_db_create` | the database listing contains the prefixed name | new pre-check: exists → refusal, nothing sent | default |
+| `db_user_create`, `pg_user_create` | the user listing contains the prefixed name. The password the tool sent is returned once when the create is confirmed, and also on an unknown outcome (labelled "valid only if the user now exists") | new pre-check: exists → refusal, nothing sent | default |
+| `ssh_key_add` | the key listing contains the same key body | existing idempotent pre-check | default |
+| `cron_add` | the crontab read holds the added expression on the added line number | the line number is past the last line read before the write | default |
+| `persistent_app_create` | the listing match (command, working directory, proxy path) | new: the app ids listed just before the write are excluded, which also makes the normal-path id exact when two apps share a command | default |
 
 `website_create` also gets the first case fixed: today a throw from the follow-up `getWebsite`
 turns a finished create into an error.
@@ -107,9 +135,33 @@ its tests move with it; `MAX_ASSETS` is exported so prose and code share one num
 - Cost: depth 1 is 3 KB in 0.2 s; depth 8 without metadata is 1.2 MB in 1.6 s (mostly
   `node_modules`).
 
+**(amended 2026-09-24) Re-probe on panel and filerd 12.25.11** (vahi.dev, read-only apart from
+minting 240-second tokens):
+
+- `maxDepth=N` returns **N+1 levels** below the home: `maxDepth=0` already lists the home's direct
+  children (23 nodes), `maxDepth=1` their children too (87), `maxDepth=2` three levels (270). So
+  asking for L levels means `maxDepth=L-1`, and "at most 8" means at most 8 levels (`maxDepth=7`).
+- Without `recursive=true`, `maxDepth` is ignored and one level comes back.
+- Paths are relative to the home and `/`-separated (`.ssh/authorized_keys`); the root is `""`.
+- A **symlink** is a `file` node whose `metadata.kind` is `symlink` (15 of 8,944 nodes at depth 6,
+  all under `.nvm`); `kind` is otherwise `file` or `directory`. Every node carried all four metadata
+  fields.
+- An **empty folder has no `entries` key at all**; a folder at the depth limit has `entries: []`
+  (all 210 empty arrays in a six-level listing sat on the last level, all 7 missing keys on real
+  empty folders such as `.nvm/.git/branches`). So a missing key means "known empty" and `[]` on the
+  last level means "not opened"; the schema makes `entries` optional.
+- Six levels with metadata: 1.4 MB in 0.9 s; the zod schema below validates it in about 12 ms.
+- Refusals: no `Authorization` → 401; the session cookie alone → 401 `"Token header not found"`; a
+  malformed bearer → 400 `"Base64 error: …"`. Every narrowing parameter is still ignored and
+  `entries/<sub-path>` still 404s. The token is still `read_only: false` and lives 240 s.
+
 ### 5.2 `core/files.ts`
 
-`listSiteFiles(ctx, site, { maxDepth })` → a flat list of `{ path, kind: 'file'|'dir', size, modified, mode }`.
+`listSiteFiles(ctx, website, { levels, timeoutMs })` → `{ levels, entries }`, a flat list of
+`{ path, kind: 'file'|'dir'|'symlink', size, modified, mode, unexpanded }` (`unexpanded` marks a
+folder at the last level asked for, whose contents the service did not list) **(amended 2026-09-24)**.
+Requests that bypass the typed API client go through `ctx.fetch ?? globalThis.fetch`, a test seam
+like `ctx.httpProbe`, with `redirect: 'error'` so the site token can never follow a redirect.
 
 Safety rules, each with a unit test:
 
@@ -130,13 +182,14 @@ Gate: `canUse.fileManager`, through the same plan-gate pattern as `persistentApp
 | Argument | Default | Rule |
 |---|---|---|
 | `website` | required | domain or id, as everywhere |
-| `path` | `public_html` | relative to the site home; no leading `/`, no `..`, no empty segments; `""` lists the home |
+| `path` | the primary domain's document root (`public_html` on every site seen) **(amended 2026-09-24)** | relative to the site home; no leading `/`, no `..` or `.`, no empty segments; `""` lists the home |
 | `depth` | 2 | 1–6 levels below `path` |
 | `max_entries` | 500 | 1–2000 |
 | `include_heavy` | false | when false, the contents of `node_modules`, `vendor`, `.git`, `.cache`, `.npm` and `.nvm` are not listed; the folder is shown once with "(contents skipped)" |
 
-The tool asks the service for `segments(path) + depth` levels, at most 8; when the sum is larger it
-lists fewer levels below `path` and says how many. It then narrows to `path`,
+The tool asks the service for `segments(path) + depth` levels, at most 8 (so `maxDepth` is that
+number minus one, per the 2026-09-24 re-probe); when the sum is larger it lists fewer levels below
+`path` and says how many. It then narrows to `path`,
 prunes heavy folders, sorts, and cuts at `max_entries` on its own side. The answer starts with the
 identity block, then a tree with size and modified time per entry, then the totals: entries found,
 shown, skipped, and whether the list was truncated by `max_entries` or by the depth limit. It never
@@ -155,7 +208,8 @@ In `persistent_app_create` and a path-moving `persistent_app_update`, when the H
 the path is taken, the guard calls `listSiteFiles` with a 5 s budget and adds one line to the
 refusal:
 
-- a directory or file exists at `public_html/<path>`: what it is and how many entries it holds;
+- a directory or file exists at `<document root>/<path>` (the website's own document root,
+  normally `public_html`): what it is and how many entries it holds;
 - nothing on disk: that the answer comes from the web server (a rewrite rule, a redirect-everything
   site or another app), so `replace_existing_path=true` shadows no files.
 
@@ -169,7 +223,10 @@ One task, no behaviour change beyond what is listed:
 - the deferred minors in `.superpowers/sdd/milestone-c-minors.md` that are still true at `main`,
   and the four from the last re-review (`attempted` JSDoc wording, `MAX_ASSETS` exported and used
   in prose, `mapLimit(Infinity)`, stale wording);
-- tool descriptions over about 700 characters trimmed, keeping every safety statement;
+- tool descriptions over about 700 characters trimmed, keeping every safety statement
+  **(amended 2026-09-24:** three exceed it — `persistent_app_create` 2,233, `persistent_app_probe`
+  1,513, `persistent_app_update` 1,379 — and each goes under 1,000; a test caps every description at
+  1,000);
 - `persistent_app_delete`'s preview names the other apps that stay on the site;
 - `dbTargetSite`'s error text no longer says "database target" for app targets.
 
@@ -194,6 +251,13 @@ One task, no behaviour change beyond what is listed:
   subdomains (each must end as "created", some confirmed by `verify`), `files_list` on vahi.dev, one
   clash refusal showing the on-disk line; then `website_delete` for the three sites with the human
   typing each name.
+- **(amended 2026-09-24)** The create half is automated as an opt-in part of the live suite
+  (`ENHANCE_E2E_CREATE=1`): one create with the normal client timeout and two in parallel through a
+  second client whose timeout is 3 s, which forces the unclear path deterministically instead of
+  hoping for a slow panel. Every create must end as created; the suite soft-deletes its own sites in
+  `afterAll` (the milestone A precedent for resources a run made itself) after re-checking each
+  domain, so even an "unknown" create is found and removed. The human-typed `website_delete` stays
+  in the walkthrough inside Claude Code.
 
 ## 9. Delivery
 
