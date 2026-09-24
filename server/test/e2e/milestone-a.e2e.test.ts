@@ -104,11 +104,14 @@ suite('milestone A against the live panel', () => {
   it('website_create creates the site and website_get returns spec-shaped detail', async () => {
     const r = await call(tool(tools, 'website_create'), { domain, subscription_id: subscriptionId });
     expect(r.isError, r.text).toBeFalsy();
-    const w = (r.structured as { website: { id: string } }).website;
-    websiteId = w.id;
-    // `w` is the raw Website detail the panel returned (ctx.resolver.getWebsite), not a
+    // `websiteId` is set on every success; `website` is null when only the tool's read-back of the
+    // new site failed, so the id must not be taken from it.
+    const s = r.structured as { websiteId: string; website: unknown };
+    websiteId = s.websiteId;
+    // `website` is the raw Website detail the panel returned (ctx.resolver.getWebsite), not a
     // projected subset, so it can be checked directly against the spec's Website schema.
-    assertRequired('Website', w);
+    expect(s.website, 'website_create could not read the new site back').not.toBeNull();
+    assertRequired('Website', s.website);
     const g = await call(tool(tools, 'website_get'), { website: createdId() });
     expect(g.text).toContain(`website: ${domain}`);
   });

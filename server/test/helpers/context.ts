@@ -1,4 +1,5 @@
 import { createEnhanceClient } from '../../src/client/client.js';
+import { createLimiter } from '../../src/client/ratelimit.js';
 import { loadConfig } from '../../src/config.js';
 import { AuditLog } from '../../src/core/audit.js';
 import type { ToolContext } from '../../src/core/context.js';
@@ -23,7 +24,9 @@ export async function makeContext(routes: Route[], env: Record<string, string> =
   // `readFile: () => undefined` is loadConfig's "no profile file" answer (see loadProfile), so a
   // stray /tmp/.enhance-mcp/config.json on a developer machine can never leak into these tests.
   const config = loadConfig({ env: { ENHANCE_PANEL_URL: PANEL_URL, ENHANCE_TOKEN: TOKEN, ...env }, readFile: () => undefined, home: '/tmp' });
-  const client = await createEnhanceClient(config, { fetch: f, sleep: async () => undefined });
+  // The limiter's 5 rps pacing waits for real by default: 200 ms per request, which put a 90 s
+  // write-then-verify test (about 20 requests) at 4 s of vitest's 5 s timeout. Tests never wait.
+  const client = await createEnhanceClient(config, { fetch: f, sleep: async () => undefined, limiter: createLimiter({ sleep: async () => undefined }) });
   const auditLines: string[] = [];
   const ctx: ToolContext = {
     client,

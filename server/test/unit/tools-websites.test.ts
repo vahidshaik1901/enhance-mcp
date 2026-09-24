@@ -158,6 +158,26 @@ describe('website_create', () => {
     expect(seen.checks).toBe(1);
   });
 
+  it('confirms a create the gateway answered 502 for, by re-checking the domain', async () => {
+    const seen = { checks: 0 };
+    const { ctx, f } = await makeContext([
+      ...base(),
+      checkThen({ status: 'inUseCurrentOrg', websiteId: created.id }, seen),
+      oneSubscription,
+      // A proxy in front of the panel gives up on a slow create and answers 502 while the panel
+      // carries on and finishes the site.
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, handler: async () => new Response('<html><body><h1>502 Bad Gateway</h1></body></html>', { status: 502, headers: { 'content-type': 'text/html' } }) },
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${created.id}`, body: created },
+    ]);
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain('HTTP 502');
+    expect(r.text).toContain('confirmed by reading it back');
+    expect(r.structured).toMatchObject({ created: true, websiteId: created.id, confirmedBy: 'verify' });
+    expect(f.calls.filter(websitesPost)).toHaveLength(1);
+    expect(seen.checks).toBe(2);
+  });
+
   it('stays a success when the read-back of a created site fails, and names website_get', async () => {
     const { ctx } = await makeContext([
       ...base(),

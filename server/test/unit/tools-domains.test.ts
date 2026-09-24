@@ -103,12 +103,54 @@ describe('domain_add settles an unclear answer and is idempotent', () => {
   });
 
   it('says the outcome is unknown when the domain never shows up', async () => {
-    const { ctx } = await makeContext([...writeThenList({ writePath: domainsPath, listPath: domainsPath, before: domainMappings, after: domainMappings, write: () => { throw new TypeError('fetch failed'); } }), ...base()]);
+    const { ctx, f } = await makeContext([...writeThenList({ writePath: domainsPath, listPath: domainsPath, before: domainMappings, after: domainMappings, write: () => { throw new TypeError('fetch failed'); } }), ...base()]);
     const r = await callTool(byName(tools, 'domain_add'), { website: 'vahi.dev', domain: 'shop.example', kind: 'alias' }, ctx);
     expect(r.isError).toBe(true);
     expect(r.text).toContain('OUTCOME UNKNOWN');
     expect(r.text).toContain('domains_list website=vahi.dev');
     expect(r.structured).toMatchObject({ outcome: 'unknown', domain: 'shop.example', added: null });
+    expect(f.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+  });
+
+  it('passes a 409 from the add through as the panel refusing, with no re-read', async () => {
+    const { ctx, f } = await makeContext([{ method: 'POST', path: domainsPath, status: 409, body: { code: 'already_exists', message: 'domain exists' } }, ...base()]);
+    await expect(callTool(byName(tools, 'domain_add'), { website: 'vahi.dev', domain: 'shop.example', kind: 'alias' }, ctx)).rejects.toThrow(/409/);
+    expect(f.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+    // The idempotency read before the add, and none after it.
+    expect(f.calls.filter((c) => c.method === 'GET' && c.path.split('?')[0] === domainsPath)).toHaveLength(1);
+  });
+
+  it('names the document root of an addon already mapped, and refuses another document root, sending nothing', async () => {
+    const blog = { domain: 'blog.example', domainId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', websiteId: WEBSITE_ID, mappingKind: 'addon', documentRoot: 'blog', cloudflareStatus: 'Disconnected' };
+    const { ctx, f } = await makeContext([{ method: 'GET', path: domainsPath, body: { items: [...domainMappings.items, blog] } }, ...base()]);
+    for (const document_root of [undefined, '', 'blog', 'blog/']) {
+      const r = await callTool(byName(tools, 'domain_add'), { website: 'vahi.dev', domain: 'blog.example', kind: 'addon', ...(document_root === undefined ? {} : { document_root }) }, ctx);
+      expect(r.isError, `${document_root}: ${r.text}`).toBeFalsy();
+      expect(r.text).toContain('already mapped to this website as addon');
+      expect(r.text).toContain('with document root blog. Nothing changed.');
+      expect(r.structured).toMatchObject({ domainId: blog.domainId, documentRoot: 'blog', added: false });
+    }
+    const moved = await callTool(byName(tools, 'domain_add'), { website: 'vahi.dev', domain: 'blog.example', kind: 'addon', document_root: 'public_html/blog' }, ctx);
+    expect(moved.isError).toBe(true);
+    expect(moved.text).toContain('already mapped to this website as addon with document root blog, not public_html/blog');
+    expect(moved.text).toMatch(/Nothing was sent to the panel/);
+    expect(moved.structured).toMatchObject({ domainId: blog.domainId, domain: 'blog.example', documentRoot: 'blog', added: false });
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('never advises domain_remove for the primary or the preview domain', async () => {
+    const { ctx, f } = await makeContext([{ method: 'GET', path: domainsPath, body: withShop }, ...base()]);
+    const primary = await callTool(byName(tools, 'domain_add'), { website: 'vahi.dev', domain: 'vahi.dev', kind: 'alias' }, ctx);
+    expect(primary.isError).toBe(true);
+    expect(primary.text).toContain("it is the website's primary domain and cannot be re-added as another kind");
+    expect(primary.text).not.toContain('domain_remove');
+    const preview = await callTool(byName(tools, 'domain_add'), { website: 'vahi.dev', domain: 'vahi-dev-ccyq.sgp1.mystaging.site', kind: 'alias' }, ctx);
+    expect(preview.isError).toBe(true);
+    expect(preview.text).toContain("it is the platform's preview domain and must be left as it is");
+    expect(preview.text).not.toContain('domain_remove');
+    const alias = await callTool(byName(tools, 'domain_add'), { website: 'vahi.dev', domain: 'shop.example', kind: 'subdomain' }, ctx);
+    expect(alias.text).toContain('remove it with domain_remove first if the kind has to change');
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
   });
 
   it('reports a domain already mapped with the same kind as done, and refuses another kind, sending nothing', async () => {

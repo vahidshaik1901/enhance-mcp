@@ -4,9 +4,9 @@ import type { ToolContext } from '../core/context.js';
 import { requireOrg } from '../core/context.js';
 import { identityBlock, previewDomain, websiteHome } from '../core/identity.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
-import { confirmedByReadNote, describeError, unknownOutcome, writeThenVerify } from '../core/verify.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
+import { confirmedByReadNote, describeError, unknownOutcome, writeThenVerify } from '../core/verify.js';
 
 export const PHP_VERSIONS = ['php52', 'php53', 'php54', 'php55', 'php56', 'php70', 'php71', 'php72', 'php73', 'php74', 'php80', 'php81', 'php82', 'php83', 'php84', 'php85'] as const;
 
@@ -107,7 +107,9 @@ export const websiteCreate = defineTool({
     const { client } = ctx;
     const org = requireOrg(client);
     const id = identityBlock({ name: client.orgName, id: org });
-    const check = await client.call('POST', '/orgs/{org_id}/domains/check', () => client.api.POST('/orgs/{org_id}/domains/check', { params: { path: { org_id: org } }, body: { domain: args.domain } }));
+    // The pre-check and every re-read after an unclear create ask the panel the same question.
+    const checkDomain = () => client.call('POST', '/orgs/{org_id}/domains/check', () => client.api.POST('/orgs/{org_id}/domains/check', { params: { path: { org_id: org } }, body: { domain: args.domain } }));
+    const check = await checkDomain();
     if (check.status !== 'notInUse') {
       return fail(
         [id, `Cannot create ${safe(args.domain)}: domain_check returned ${safe(check.status)}${check.websiteId ? ` (website ${check.websiteId})` : ''}.`, check.status === 'inUseCurrentOrg' ? 'It is already a website in this org; use website_get.' : undefined].filter(Boolean).join('\n'),
@@ -136,7 +138,7 @@ export const websiteCreate = defineTool({
       // domain_check said notInUse a moment ago, so a website of this org that holds the domain now
       // is the one this call created.
       find: async () => {
-        const again = await client.call('POST', '/orgs/{org_id}/domains/check', () => client.api.POST('/orgs/{org_id}/domains/check', { params: { path: { org_id: org } }, body: { domain: args.domain } }));
+        const again = await checkDomain();
         return again.status === 'inUseCurrentOrg' && again.websiteId ? again.websiteId : undefined;
       },
       windowMs: WEBSITE_CREATE_WINDOW_MS,

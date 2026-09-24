@@ -83,6 +83,18 @@ export const domainsList = defineTool({
   },
 });
 
+/** What to do about a mapping that is already there as another kind. domain_remove refuses the
+ *  primary domain, and the preview domain belongs to the platform, so removing and re-adding is
+ *  advice only for the kinds domain_add itself creates. */
+function remapAdvice(kind: string): string {
+  if (kind === 'primary') return "it is the website's primary domain and cannot be re-added as another kind";
+  if (kind === 'preview') return "it is the platform's preview domain and must be left as it is";
+  return 'remove it with domain_remove first if the kind has to change';
+}
+
+/** `public_html/` and `public_html` name the same directory. */
+const trimSlashes = (p: string): string => p.replace(/\/+$/, '');
+
 export const domainAdd = defineTool({
   name: 'domain_add',
   tier: 'customer',
@@ -107,10 +119,16 @@ export const domainAdd = defineTool({
     // proves anything when the domain was not in it before.
     const existing = await mapped();
     if (existing) {
-      if (existing.mappingKind === args.kind) {
-        return ok(`${identity}\n${safe(args.domain)} is already mapped to this website as ${safe(existing.mappingKind)} (${existing.domainId}). Nothing changed.`, { website: w.id, domainId: existing.domainId, domain: args.domain, kind: args.kind, added: false });
+      if (existing.mappingKind !== args.kind) {
+        return fail(`${identity}\n${safe(args.domain)} is already mapped to this website as ${safe(existing.mappingKind)}, not ${args.kind}. Nothing was sent to the panel; ${remapAdvice(existing.mappingKind)}.`, { website: w.id, domainId: existing.domainId, domain: args.domain, added: false });
       }
-      return fail(`${identity}\n${safe(args.domain)} is already mapped to this website as ${safe(existing.mappingKind)}, not ${args.kind}. Nothing was sent to the panel; remove it with domain_remove first if the kind has to change.`, { website: w.id, domainId: existing.domainId, domain: args.domain, added: false });
+      // Same kind but another document root is not "already done": reporting it as done would leave
+      // the caller deploying into a directory the domain does not serve.
+      // An empty document_root means "not given", as it does for the add itself below.
+      if (args.document_root && trimSlashes(args.document_root) !== trimSlashes(existing.documentRoot)) {
+        return fail(`${identity}\n${safe(args.domain)} is already mapped to this website as ${safe(existing.mappingKind)} with document root ${safe(existing.documentRoot)}, not ${safe(args.document_root)}. Nothing was sent to the panel; remove it with domain_remove and add it again if the document root has to change.`, { website: w.id, domainId: existing.domainId, domain: args.domain, documentRoot: existing.documentRoot, added: false });
+      }
+      return ok(`${identity}\n${safe(args.domain)} is already mapped to this website as ${safe(existing.mappingKind)} (${existing.domainId}) with document root ${safe(existing.documentRoot)}. Nothing changed.`, { website: w.id, domainId: existing.domainId, domain: args.domain, kind: args.kind, documentRoot: existing.documentRoot, added: false });
     }
     const outcome = await writeThenVerify({
       write: () => client.call('POST', '/orgs/{org_id}/websites/{website_id}/domains', () => client.api.POST('/orgs/{org_id}/websites/{website_id}/domains', { params: { path: { org_id: org, website_id: w.id } }, body: { domain: args.domain, kind: args.kind, ...(args.document_root ? { documentRoot: args.document_root } : {}) } })),
