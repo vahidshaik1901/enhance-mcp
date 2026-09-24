@@ -73,7 +73,8 @@ export function createServer(ctx: ToolContext, tools: ToolDef[]): McpServer {
           risk: tool.risk,
           target,
           args,
-          outcome: result.isError ? 'error' : 'ok',
+          // An unknown create may still land, so it is never filed as an error (see core/verify.ts).
+          outcome: result.structured?.outcome === 'unknown' ? 'unknown' : result.isError ? 'error' : 'ok',
           durationMs: Date.now() - started,
           gate,
           message: result.isError ? result.text.slice(0, 300) : undefined,

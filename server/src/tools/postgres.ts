@@ -3,7 +3,7 @@ import type { ToolContext } from '../core/context.js';
 import { defineTool, type Target, type ToolDef, type ToolResult } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
-import { confirmedByReadNote, DEFAULT_WINDOW_MS, unknownOutcome, writeThenVerify } from '../core/verify.js';
+import { confirmedByReadNote, unknownOutcome, writeThenVerify } from '../core/verify.js';
 import { dbTargetSite, generatePassword, resolveDbName, resolveDbUser, siteOf, siteWebsite, unixUserOf, websiteArg, type DbSite, type DbSiteWithUser } from './dbcommon.js';
 
 const nameArg = z.string().min(1).describe('Database name (short, or the full <unixUser>_ prefixed form)');
@@ -107,7 +107,7 @@ export const pgDbCreate = defineTool({
       sleep: ctx.sleep,
     });
     if (outcome.state === 'unknown') {
-      return unknownOutcome(s.identity, outcome, { action: `the create of PostgreSQL database ${safe(full)}`, settle: `pg_db_list website=${safe(website)}`, windowMs: DEFAULT_WINDOW_MS }, { database: full, created: null });
+      return unknownOutcome(s.identity, outcome, { action: `the create of PostgreSQL database ${safe(full)}`, settle: `pg_db_list website=${safe(website)}` }, { database: full, created: null });
     }
     return ok(
       [
@@ -196,7 +196,7 @@ export const pgUserCreate = defineTool({
       return unknownOutcome(
         s.identity,
         outcome,
-        { action: `the create of PostgreSQL user ${safe(full)}`, settle: `pg_users_list website=${safe(website)}`, windowMs: DEFAULT_WINDOW_MS, extra: 'If the user does appear, its password is the one in structuredContent.password (shown once); if it never appears, nothing was created.' },
+        { action: `the create of PostgreSQL user ${safe(full)}`, settle: `pg_users_list website=${safe(website)}`, extra: 'If the user does appear, its password is the one in structuredContent.password (shown once); if it never appears, nothing was created.' },
         { user: full, created: null, password: pw, passwordNote: 'valid only if pg_users_list now shows this user' },
       );
     }
@@ -211,7 +211,7 @@ export const pgUserCreate = defineTool({
           ['next', `pg_user_grant website=${safe(website)} username=${safe(short)} database=<db>`],
         ]),
       ].join('\n'),
-      { user: full, password: pw },
+      { user: full, created: true, password: pw },
     );
   },
 });

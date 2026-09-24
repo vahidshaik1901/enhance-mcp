@@ -5,7 +5,7 @@ import type { ToolContext } from '../core/context.js';
 import { websiteHome } from '../core/identity.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
-import { confirmedByReadNote, DEFAULT_WINDOW_MS, unknownOutcome, writeThenVerify } from '../core/verify.js';
+import { confirmedByReadNote, unknownOutcome, writeThenVerify } from '../core/verify.js';
 import { dbTargetSite, generatePassword, MYSQL_GRANTS, resolveDbName, resolveDbUser, siteOf, siteWebsite, unixUserOf, websiteArg, type DbSiteWithUser } from './dbcommon.js';
 
 const nameArg = z.string().min(1).describe('Database name (short, or the full <unixUser>_ prefixed form)');
@@ -85,7 +85,7 @@ export const dbCreate = defineTool({
       sleep: ctx.sleep,
     });
     if (outcome.state === 'unknown') {
-      return unknownOutcome(s.identity, outcome, { action: `the create of database ${safe(full)}`, settle: `db_list website=${safe(website)}`, windowMs: DEFAULT_WINDOW_MS }, { database: full, created: null });
+      return unknownOutcome(s.identity, outcome, { action: `the create of database ${safe(full)}`, settle: `db_list website=${safe(website)}` }, { database: full, created: null });
     }
     return ok(
       [
@@ -309,7 +309,7 @@ export const dbUserCreate = defineTool({
       return unknownOutcome(
         s.identity,
         outcome,
-        { action: `the create of MySQL user ${safe(full)}`, settle: `db_users_list website=${safe(website)}`, windowMs: DEFAULT_WINDOW_MS, extra: 'If the user does appear, its password is the one in structuredContent.password (shown once); if it never appears, nothing was created.' },
+        { action: `the create of MySQL user ${safe(full)}`, settle: `db_users_list website=${safe(website)}`, extra: 'If the user does appear, its password is the one in structuredContent.password (shown once); if it never appears, nothing was created.' },
         { user: full, created: null, password: pw, passwordNote: 'valid only if db_users_list now shows this user' },
       );
     }
@@ -325,7 +325,7 @@ export const dbUserCreate = defineTool({
           ['next', `db_user_set_privileges website=${safe(website)} username=${safe(short)} database=<db> grants=all`],
         ]),
       ].join('\n'),
-      { user: full, password: pw },
+      { user: full, created: true, password: pw },
     );
   },
 });

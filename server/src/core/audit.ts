@@ -9,7 +9,8 @@ export interface AuditEntry {
   risk: Risk;
   target?: Target;
   args: Record<string, unknown>;
-  outcome: 'ok' | 'error' | 'cancelled';
+  /** `unknown`: a create got no clear answer and its re-reads never found it, so it may still land. */
+  outcome: 'ok' | 'error' | 'cancelled' | 'unknown';
   status?: number;
   durationMs: number;
   gate: GateMechanism;

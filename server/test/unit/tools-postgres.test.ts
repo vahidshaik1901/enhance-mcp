@@ -208,7 +208,7 @@ describe('pg_user_create', () => {
     // The same fixed-length generator the MySQL tools use: `Db` + 32 base64url characters + `9x`.
     expect(body.password).toHaveLength(36);
     expect(body.password).toMatch(/^Db[A-Za-z0-9_-]{32}9x$/);
-    expect(r.structured).toMatchObject({ user: PG_USER, password: body.password });
+    expect(r.structured).toMatchObject({ user: PG_USER, created: true, password: body.password });
     expect(r.text).toContain('shown once');
     expect(r.text).not.toContain(body.password);
   });
@@ -218,7 +218,7 @@ describe('pg_user_create', () => {
     const { ctx } = await makeContext([...enabledBase(), { method: 'GET', path: usersPath, body: { items: [] } }, captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
     const r = await callTool(byName(tools, 'pg_user_create'), { website: WEBSITE_ID, username: PG_USER, password: 'sup3r-secret-pw' }, ctx);
     expect(sink.body).toEqual({ username: 'app', password: 'sup3r-secret-pw' });
-    expect(r.structured).toMatchObject({ user: PG_USER, password: 'sup3r-secret-pw' });
+    expect(r.structured).toMatchObject({ user: PG_USER, created: true, password: 'sup3r-secret-pw' });
     expect(r.text).not.toContain('sup3r-secret-pw');
   });
 });
@@ -340,7 +340,7 @@ describe('pg_db_create and pg_user_create settle an unclear answer (write-then-v
     const landed = await makeContext([...writeThenList({ writePath: usersPath, listPath: usersPath, before: { items: [] }, after: pgUsers, write: capture }), ...enabledBase()]);
     const a = await callTool(byName(tools, 'pg_user_create'), { website: WEBSITE_ID, username: 'app' }, landed.ctx);
     expect(a.isError, a.text).toBeFalsy();
-    expect(a.structured).toMatchObject({ user: PG_USER, password: sent.password });
+    expect(a.structured).toMatchObject({ user: PG_USER, created: true, password: sent.password });
     const lost = await makeContext([...writeThenList({ writePath: usersPath, listPath: usersPath, before: { items: [] }, after: { items: [] }, write: capture }), ...enabledBase()]);
     const b = await callTool(byName(tools, 'pg_user_create'), { website: WEBSITE_ID, username: 'app' }, lost.ctx);
     expect(b.isError).toBe(true);

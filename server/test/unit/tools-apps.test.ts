@@ -398,7 +398,7 @@ describe('persistent_app_create path preflight', () => {
     ctx.httpProbe = pathProbe({ '/assets': { status: 301, location: 'https://vahi.dev/assets/' } }, seen);
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'assets', port: 3000 }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('HTTP 301 on /assets: an existing directory in public_html');
+    expect(r.text).toContain('HTTP 301 on /assets: a redirect to /assets/, which is how an existing directory in public_html/ shows');
     expect(r.text).toMatch(/nothing on the site was changed/);
     expect(seen.map((s) => s.path)).toEqual(['/assets', '/assets/']);
     expect(f.calls.some((c) => c.method === 'POST' && c.path === appsPath)).toBe(false);
@@ -448,7 +448,7 @@ describe('persistent_app_create path preflight', () => {
     expect(r.isError).toBeUndefined();
     expect(f.calls.some((c) => c.method === 'POST')).toBe(true);
     expect(r.text).toMatch(/replaced/);
-    expect(r.text).toContain('HTTP 301 on /node: an existing directory in public_html');
+    expect(r.text).toContain('HTTP 301 on /node: a redirect to /node/, which is how an existing directory in public_html/ shows');
     // Machine-readable, so a caller that has to put the replaced content back knows what it was.
     expect(r.structured).toMatchObject({ created: true, replaced: { status: 301, path: '/node' } });
   });
@@ -464,7 +464,7 @@ describe('persistent_app_create path preflight', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toContain('OUTCOME UNKNOWN');
     expect(r.text).toContain('replaced what https://vahi.dev/node/ served before');
-    expect(r.text).toContain('HTTP 301 on /node: an existing directory in public_html');
+    expect(r.text).toContain('HTTP 301 on /node: a redirect to /node/, which is how an existing directory in public_html/ shows');
     expect(r.structured).toMatchObject({ outcome: 'unknown', created: null, id: null, url: 'https://vahi.dev/node/', replaced: { status: 301, path: '/node' } });
   });
 
@@ -1098,7 +1098,17 @@ describe('the clash refusal asks the file service what is on disk', () => {
     ctx.httpProbe = pathProbe({ '/node/': 200 });
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx);
     expect(r.text).toContain('nothing exists at public_html/node, so that answer comes from the web server itself');
-    expect(r.text).toContain('replace_existing_path=true would hide no files there');
+    // No files at stake is not "nothing at stake": a rewrite can serve a live page from nowhere on disk.
+    expect(r.text).toContain('replace_existing_path=true would hide no files there, but it would still replace what https://vahi.dev/node/ answers today.');
+  });
+
+  it('never states a directory as fact when the redirect that suggests one has nothing on disk behind it', async () => {
+    const { ctx } = await makeContext([...appsCreate({}, persistentApps), ...fileServiceRoutes(withoutNodeFolder), ...base()]);
+    ctx.httpProbe = pathProbe({ '/node': { status: 301, location: 'https://vahi.dev/node/' } });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.text).toContain('HTTP 301 on /node: a redirect to /node/, which is how an existing directory in public_html/ shows');
+    expect(r.text).toContain('nothing exists at public_html/node');
+    expect(r.text).not.toContain(': an existing directory');
   });
 
   it('counts the document root for a whole-site clash', async () => {
@@ -1223,7 +1233,16 @@ describe('milestone C minors', () => {
     const { ctx } = await makeContext([...appsCreate({}, persistentApps), ...base()]);
     ctx.httpProbe = pathProbe({ '/api/v1': { status: 301, location: 'v1/' } });
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'api/v1', port: 3000 }, ctx);
-    expect(r.text).toContain('HTTP 301 on /api/v1: an existing directory in public_html');
+    expect(r.text).toContain('HTTP 301 on /api/v1: a redirect to /api/v1/, which is how an existing directory in public_html/ shows');
+  });
+
+  it("names the website's own document root for a directory redirect, not a hard-coded public_html", async () => {
+    const htdocs = { ...websiteDetail, domain: { ...websiteDetail.domain, documentRoot: 'htdocs/' } };
+    const { ctx } = await makeContext([{ method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: htdocs }, ...appsCreate({}, persistentApps), ...base()]);
+    ctx.httpProbe = pathProbe({ '/node': { status: 301, location: 'https://vahi.dev/node/' } });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.text).toContain('HTTP 301 on /node: a redirect to /node/, which is how an existing directory in htdocs/ shows');
+    expect(r.text).not.toContain('public_html/ shows');
   });
 
   it('calls a path taken when one form answers 200 and the other never answers', async () => {

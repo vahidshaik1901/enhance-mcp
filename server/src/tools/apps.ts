@@ -8,7 +8,7 @@ import { ASSET_CONCURRENCY, ASSET_TIMEOUT_MS, assetsAnswered, checkPageAssets, h
 import { defineTool, type Target, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
-import { confirmedByReadNote, DEFAULT_WINDOW_MS, describeError, unknownOutcome, writeThenVerify } from '../core/verify.js';
+import { confirmedByReadNote, describeError, unknownOutcome, writeThenVerify } from '../core/verify.js';
 import { dbTargetSite, websiteArg, type DbSite } from './dbcommon.js';
 import { appsSite, nodeSelectorArg, persistentAppsGate } from './node.js';
 import { tailLog } from './php.js';
@@ -122,8 +122,9 @@ export interface PathClashCheck {
   path: string | null;
   /** Something other than a 404 answers there, so registering the app would replace it. */
   taken: boolean;
-  /** What was seen — `HTTP 404`, `HTTP 301 on /node: an existing directory in public_html` — or
-   *  why the check could not run. Every message about the path quotes this. */
+  /** What was seen — `HTTP 404`, `HTTP 301 on /node: a redirect to /node/, which is how an existing
+   *  directory in public_html/ shows` — or why the check could not run. Every message about the
+   *  path quotes this. */
   detail: string;
 }
 
@@ -196,7 +197,12 @@ export async function pathPreflight(ctx: ToolContext, w: Website, path: string):
     // holds an index file produces both, and the 200 is the one a reader can act on.
     const directory = clashes.find((h) => isDirectoryRedirect(w.domain.domain, path, h));
     const hit = clashes.find((h) => h.status >= 200 && h.status < 300) ?? directory ?? clashes[0]!;
-    return { status: hit.status, path: hit.path, taken: true, detail: `HTTP ${hit.status} on ${hit.path}${hit === directory ? ': an existing directory in public_html' : ''}` };
+    // Worded as what the redirect usually means, not as a fact: a redirect-everything rule answers
+    // the same way, and the file service's line under the refusal can then say nothing is there.
+    // The folder named is this website's own document root, which is not always public_html.
+    const docroot = (w.domain.documentRoot ?? '').replace(/\/+$/, '');
+    const where = docroot ? `${safe(docroot)}/` : 'the document root';
+    return { status: hit.status, path: hit.path, taken: true, detail: `HTTP ${hit.status} on ${hit.path}${hit === directory ? `: a redirect to /${path}/, which is how an existing directory in ${where} shows` : ''}` };
   }
   // Half a check is not a check: when either form never answered, say so rather than calling the
   // path free on the strength of the other one.
@@ -209,7 +215,10 @@ export async function pathPreflight(ctx: ToolContext, w: Website, path: string):
 const ON_DISK_BUDGET_MS = 5_000;
 
 /** Resolves undefined once `ms` pass, whatever `work` is still doing. `Promise.race` keeps a handler
- *  on `work`, so a late rejection is never unhandled. */
+ *  on `work`, so a late rejection is never unhandled. Nothing cancels `work`: an abandoned listing
+ *  runs on to its own timeout and its answer is dropped. That is harmless here: past the site-token
+ *  mint, the listing's one request to the file service is a GET, and the token stays a local of
+ *  `listSiteFiles`, so nothing on the site changes and nothing leaks after the refusal has gone out. */
 async function withinBudget<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<undefined>((resolve) => {
@@ -262,7 +271,9 @@ export async function onDiskLine(ctx: ToolContext, w: Website, proxyPath: string
     const children = listing.entries.filter((e) => e.path.startsWith(`${rel}/`) && !e.path.slice(rel.length + 1).includes('/')).length;
     const source = "on disk (the panel's file service)";
     if (proxyPath === '') return `${source}: ${safe(docroot)} holds ${entriesWord(children)}, and none of it is served while a whole-site app is registered.`;
-    const nothing = `${source}: nothing exists at ${safe(rel)}, so that answer comes from the web server itself (a rewrite rule, a redirect-everything site or another app); replace_existing_path=true would hide no files there.`;
+    // "No files" is not "nothing to lose": a rewrite serves a live page (a WordPress or Laravel
+    // route) from nowhere on disk, so this line must never read as leave to override.
+    const nothing = `${source}: nothing exists at ${safe(rel)}, so that answer comes from the web server itself (a rewrite rule, a redirect-everything site or another app); replace_existing_path=true would hide no files there, but it would still replace what ${safe(appUrl(w, proxyPath))} answers today.`;
     // Below the document root, a folder missing on the way (or a file in its place) means nothing
     // can exist at the path; a symlink on the way means the service never looked behind it.
     for (let n = docrootDepth + 1; n < segments.length; n += 1) {
@@ -456,7 +467,7 @@ export const persistentAppCreate = defineTool({
       return unknownOutcome(
         s.identity,
         outcome,
-        { action: `registering the app "${safe(command)}"`, settle: `persistent_apps_list website=${safe(args.website)}`, windowMs: DEFAULT_WINDOW_MS, ...(ifItLands.length > 0 ? { extra: `If it lands: ${ifItLands.join(' ')}` } : {}) },
+        { action: `registering the app "${safe(command)}"`, settle: `persistent_apps_list website=${safe(args.website)}`, ...(ifItLands.length > 0 ? { extra: `If it lands: ${ifItLands.join(' ')}` } : {}) },
         { created: null, id: null, url, ...(replaced ? { replaced } : {}) },
       );
     }

@@ -7,7 +7,7 @@ import { identityBlock, websiteHome } from '../core/identity.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
 import { kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
-import { confirmedByReadNote, DEFAULT_WINDOW_MS, unknownOutcome, writeThenVerify } from '../core/verify.js';
+import { confirmedByReadNote, unknownOutcome, writeThenVerify } from '../core/verify.js';
 
 type SshKey = components['schemas']['SshKey'];
 
@@ -169,13 +169,15 @@ export const sshKeyAdd = defineTool({
       sleep: ctx.sleep,
     });
     if (outcome.state === 'unknown') {
-      return unknownOutcome(id, outcome, { action: `authorizing key ${fp}`, settle: `ssh_keys_list website=${safe(w.domain.domain)}`, windowMs: DEFAULT_WINDOW_MS }, { website: w.id, fingerprint: fp, added: null });
+      return unknownOutcome(id, outcome, { action: `authorizing key ${fp}`, settle: `ssh_keys_list website=${safe(w.domain.domain)}` }, { website: w.id, fingerprint: fp, added: null });
     }
-    const keyId = outcome.confirmedBy === 'response' ? outcome.written.id : outcome.found;
+    // A 2xx with no body reaches here as `undefined`; the key is authorized all the same.
+    const keyId = (outcome.confirmedBy === 'response' ? outcome.written?.id : outcome.found) ?? null;
     const c = conn(w);
     const sshCommand = c.user && c.host ? `ssh -p ${c.port} ${c.user}@${c.host}` : undefined;
     const confirmed = outcome.confirmedBy === 'verify' ? `\n${confirmedByReadNote(outcome.writeError)}` : '';
-    return ok(`${id}\nkey ${fp} authorized as "${safe(name)}" (id ${keyId}).${confirmed}${sshCommand ? `\nconnect with: ${safe(sshCommand)}` : ''}`, { website: w.id, keyId, fingerprint: fp, name, added: true, sshCommand });
+    const idText = keyId === null ? `id not in the panel's answer; run ssh_keys_list website=${safe(w.domain.domain)} for its id` : `id ${keyId}`;
+    return ok(`${id}\nkey ${fp} authorized as "${safe(name)}" (${idText}).${confirmed}${sshCommand ? `\nconnect with: ${safe(sshCommand)}` : ''}`, { website: w.id, keyId, fingerprint: fp, name, added: true, sshCommand });
   },
 });
 

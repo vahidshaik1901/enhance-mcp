@@ -112,6 +112,19 @@ describe('domain_add settles an unclear answer and is idempotent', () => {
     expect(f.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
   });
 
+  it('stays a success when the add answers 2xx with no body, and names the listing that has the id', async () => {
+    // openapi-fetch hands back `undefined` for an empty 2xx body; reading `.id` off it threw after
+    // the domain had already been added, and an error there invites a second add.
+    const { ctx, f } = await makeContext([{ method: 'POST', path: domainsPath, handler: async () => new Response(null, { status: 201 }) }, ...base()]);
+    const r = await callTool(byName(tools, 'domain_add'), { website: 'vahi.dev', domain: 'shop.example', kind: 'alias' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain('added alias domain shop.example');
+    expect(r.text).toContain('run domains_list website=vahi.dev for its id');
+    expect(r.text).not.toContain('undefined');
+    expect(r.structured).toMatchObject({ domainId: null, domain: 'shop.example', added: true });
+    expect(f.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+  });
+
   it('passes a 409 from the add through as the panel refusing, with no re-read', async () => {
     const { ctx, f } = await makeContext([{ method: 'POST', path: domainsPath, status: 409, body: { code: 'already_exists', message: 'domain exists' } }, ...base()]);
     await expect(callTool(byName(tools, 'domain_add'), { website: 'vahi.dev', domain: 'shop.example', kind: 'alias' }, ctx)).rejects.toThrow(/409/);

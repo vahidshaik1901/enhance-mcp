@@ -149,7 +149,7 @@ export const websiteCreate = defineTool({
     ctx.resolver.invalidate();
     const domain = safe(args.domain);
     if (outcome.state === 'unknown') {
-      return unknownOutcome(id, outcome, { action: `the create of website ${domain}`, settle: `domain_check domain=${domain} (inUseCurrentOrg with a website id means it exists; then website_get)`, windowMs: WEBSITE_CREATE_WINDOW_MS }, { created: null, domain: args.domain });
+      return unknownOutcome(id, outcome, { action: `the create of website ${domain}`, settle: `domain_check domain=${domain} (inUseCurrentOrg with a website id means it exists; then website_get)` }, { created: null, domain: args.domain });
     }
     const websiteId = outcome.confirmedBy === 'response' ? outcome.written.id : outcome.found;
     const confirmed = outcome.confirmedBy === 'verify' ? confirmedByReadNote(outcome.writeError) : undefined;

@@ -140,10 +140,12 @@ describe('website_create', () => {
     expect(r.text).toContain('OUTCOME UNKNOWN');
     expect(r.text).toContain('Do not retry yet');
     expect(r.text).toContain('domain_check domain=new.example');
-    expect(r.structured).toMatchObject({ outcome: 'unknown', created: null, domain: 'new.example' });
+    expect(r.structured).toMatchObject({ outcome: 'unknown', created: null, domain: 'new.example', reads: 18 });
     expect(f.calls.filter(websitesPost)).toHaveLength(1);
     // The pre-check, then a re-read every 5 s for 90 s.
     expect(seen.checks).toBe(1 + 18);
+    // The sentence counts the reads that were made, not the window they were allowed.
+    expect(r.text).toContain('18 re-reads');
   });
 
   it('passes a 409 through as the panel refusing, with no re-reads', async () => {

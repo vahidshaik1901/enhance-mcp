@@ -3,7 +3,7 @@ import type { components } from '../client/generated/types.js';
 import type { ToolContext } from '../core/context.js';
 import { defineTool, type Target, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
-import { confirmedByReadNote, DEFAULT_WINDOW_MS, unknownOutcome, writeThenVerify, type WriteOutcome } from '../core/verify.js';
+import { confirmedByReadNote, unknownOutcome, writeThenVerify, type WriteOutcome } from '../core/verify.js';
 import { partialFailure, siteOf, siteWebsite, siteWebsiteById, websiteArg, type DbSite } from './dbcommon.js';
 
 async function cronSite(ctx: ToolContext, website: string): Promise<DbSite> {
@@ -125,7 +125,7 @@ export const cronAdd = defineTool({
         return unknownOutcome(
           s.identity,
           outcome,
-          { action: `adding cron line ${line}`, settle: `cron_get website=${safe(website)}`, windowMs: DEFAULT_WINDOW_MS, extra: `${before}; ${rest === 0 ? 'it was the last line' : `the ${rest} line(s) after it were not sent`}.` },
+          { action: `adding cron line ${line}`, settle: `cron_get website=${safe(website)}`, extra: `${before}; ${rest === 0 ? 'it was the last line' : `the ${rest} line(s) after it were not sent`}.` },
           { added: added.slice(0, i), ...(confirmedByRead.length > 0 ? { confirmedByRead } : {}), unknown: { line, expr }, notSent: added.slice(i + 1) },
         );
       }

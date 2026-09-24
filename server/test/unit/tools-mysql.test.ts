@@ -401,7 +401,7 @@ describe('db_user_create', () => {
     // shell double quotes.
     expect(body.password).toHaveLength(36);
     expect(body.password).toMatch(/^Db[A-Za-z0-9_-]{32}9x$/);
-    expect(r.structured).toMatchObject({ user: MYSQL_USER, password: body.password });
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, created: true, password: body.password });
     expect(r.text).toContain('DB_HOST=localhost');
     // Node is the other half of this: the same "localhost" is TCP to a Node driver and refused.
     expect(r.text).toContain('/run/mysqld/mysqld.sock');
@@ -429,7 +429,7 @@ describe('db_user_create', () => {
     const { ctx } = await makeContext([...base(), { method: 'GET', path: usersPath, body: { items: [] } }, captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
     const r = await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app', password: 'sup3r-secret-pw' }, ctx);
     expect(sink.body).toEqual({ username: 'app', password: 'sup3r-secret-pw' });
-    expect(r.structured).toMatchObject({ user: MYSQL_USER, password: 'sup3r-secret-pw' });
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, created: true, password: 'sup3r-secret-pw' });
     expect(r.text).not.toContain('sup3r-secret-pw');
   });
 
@@ -606,7 +606,7 @@ describe('db_create and db_user_create settle an unclear answer (write-then-veri
     const { ctx } = await makeContext([...writeThenList({ writePath: usersPath, listPath: usersPath, before: { items: [] }, after: { items: [mysqlUser] }, write: async (req) => { sent = (await req.json()) as { password: string }; throw new TypeError('fetch failed'); } }), ...base()]);
     const r = await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app' }, ctx);
     expect(r.isError, r.text).toBeFalsy();
-    expect(r.structured).toMatchObject({ user: MYSQL_USER, password: sent.password });
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, created: true, password: sent.password });
     expect(r.text).not.toContain(sent.password!);
   });
 

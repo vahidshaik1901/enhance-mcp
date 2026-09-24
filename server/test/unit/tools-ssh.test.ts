@@ -107,6 +107,17 @@ describe('ssh_keys_list / ssh_key_add / ssh_key_remove', () => {
     await t.handler({ website: 'vahi.dev', key: 'claude-mcp-test' }, ctx, target);
     expect(f.calls.find((c) => c.method === 'DELETE')?.path).toBe(`/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys/0`);
   });
+  it('stays a success when the add answers 2xx with no body, and names the listing that has the id', async () => {
+    const other = PUB.replace('AAAAIO/0aaaa', 'AAAAIO/0dddd');
+    const { ctx, f } = await makeContext([{ method: 'POST', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys`, handler: async () => new Response(null, { status: 201 }) }, ...base()]);
+    const r = await callTool(byName(tools, 'ssh_key_add'), { website: 'vahi.dev', public_key: other, name: 'ci' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain('authorized as "ci"');
+    expect(r.text).toContain('run ssh_keys_list website=vahi.dev for its id');
+    expect(r.text).not.toContain('undefined');
+    expect(r.structured).toMatchObject({ keyId: null, added: true });
+    expect(f.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+  });
   it('confirms a key whose add answer never came, and says unknown when it never shows up', async () => {
     const keysPath = `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys`;
     const other = PUB.replace('AAAAIO/0aaaa', 'AAAAIO/0cccc');

@@ -115,6 +115,26 @@ describe('listSiteFiles', () => {
     }
   });
 
+  it('says a token request that failed on the way or on the panel could not be asked, not that it was refused', async () => {
+    // Only a 4xx is the panel saying no. A 5xx or a reset says nothing about the token, and calling
+    // it "refused" sends the reader looking for a permission problem that is not there.
+    for (const [label, route] of [
+      ['a 502', { method: 'POST', path: tokenPath, status: 502, body: { code: 'bad_gateway', message: 'upstream down' } }],
+      ['a reset', { method: 'POST', path: tokenPath, handler: async () => { throw new TypeError('fetch failed'); } }],
+    ] as Array<[string, Route]>) {
+      const { ctx, f } = await makeContext([route, ...base()]);
+      const e = await failure(listSiteFiles(ctx, site, { levels: 1 }));
+      expect(e.reason, label).toBe('network');
+      expect(e.message, label).toContain('the panel could not be asked for a site token (');
+      expect(e.message, label).not.toContain('refused');
+      expect(f.calls.some((c) => c.path.startsWith('/filerd')), label).toBe(false);
+    }
+    const refused = await makeContext([{ method: 'POST', path: tokenPath, status: 403, body: { code: 'unauthorized', message: 'no' } }, ...base()]);
+    const e = await failure(listSiteFiles(refused.ctx, site, { levels: 1 }));
+    expect(e.reason).toBe('mint_refused');
+    expect(e.message).toContain('the panel refused a site access token (HTTP 403');
+  });
+
   it('says a token request that got no answer timed out, not that the panel refused it', async () => {
     for (const name of ['TimeoutError', 'AbortError']) {
       const { ctx, f } = await makeContext([{ method: 'POST', path: tokenPath, handler: async () => { throw new DOMException('The operation was aborted', name); } }, ...base()]);

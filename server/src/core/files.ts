@@ -1,5 +1,6 @@
 import * as z from 'zod/v4';
 import { parseScalarText } from '../client/client.js';
+import { EnhanceApiError } from '../client/errors.js';
 import { OrgRequiredError, requireOrg, type ToolContext } from './context.js';
 import { safe } from './respond.js';
 import { UUID_RE, type Website } from './resolver.js';
@@ -182,7 +183,10 @@ export async function listSiteFiles(ctx: ToolContext, website: Website, opts: { 
     if (e instanceof OrgRequiredError) throw new FileServiceUnavailable('mint_refused', `no site access token was requested (${describeError(e)})`);
     // No answer is not a refusal: the panel may have minted a token nobody received.
     if (isAbort(e)) throw new FileServiceUnavailable('timeout', 'the site token request got no answer before the client stopped waiting, so nothing was listed');
-    throw new FileServiceUnavailable('mint_refused', `the panel refused a site access token (${describeError(e)})`);
+    // Only a 4xx is the panel saying no. A 5xx or a network error says nothing about permission,
+    // and "refused" would send the reader looking for a missing role.
+    if (e instanceof EnhanceApiError && e.status < 500) throw new FileServiceUnavailable('mint_refused', `the panel refused a site access token (${describeError(e)})`);
+    throw new FileServiceUnavailable('network', `the panel could not be asked for a site token (${describeError(e)})`);
   }
   const token = parseScalarText(raw);
   if (!JWT_RE.test(token)) throw new FileServiceUnavailable('mint_refused', 'the panel answered the token request without a token');
