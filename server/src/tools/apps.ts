@@ -7,6 +7,7 @@ import { extractAssetUrls, httpsProbe, mapLimit, type HttpProbe } from '../core/
 import { defineTool, type Target, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
+import { confirmedByReadNote, DEFAULT_WINDOW_MS, describeError, unknownOutcome, writeThenVerify } from '../core/verify.js';
 import { dbTargetSite, websiteArg, type DbSite } from './dbcommon.js';
 import { appsSite, nodeSelectorArg, persistentAppsGate } from './node.js';
 import { tailLog } from './php.js';
@@ -351,21 +352,37 @@ export const persistentAppCreate = defineTool({
     const body: NewApp = { command, startMode: args.start_mode, nodeVersion: args.node_version };
     if (workingDirectory !== undefined) body.workingDirectory = workingDirectory;
     if (proxy) body.proxyDetails = { path: proxy.path, port: args.port!, allowWebSocketUpgrade: args.allow_websocket };
-    await ctx.client.call('POST', '/websites/{website_id}/apps/persistent', () => ctx.client.api.POST('/websites/{website_id}/apps/persistent', { params: { path: { website_id: s.id } }, body }));
-    // The create answers 201 with no body, so the id comes from the listing: the newest app whose
-    // command, working directory and proxy path match what was just sent.
-    //
-    // That read is a convenience, and the write it follows has already landed. A blip on it — a
-    // 5xx, a reset, the client's own timeout — must not come back as an error result: a caller
-    // told "this failed" creates the app a second time. The app is reported without its id instead.
+    // Every app the site has just before the write. The create answers 201 with no body, so the new
+    // app's id comes from the listing, and only an app that was NOT listed before can be this one:
+    // the panel accepts two apps with the same command and directory when neither has a proxy.
+    const before = new Set((await listApps(ctx, s.id)).map((a) => a.id));
+    const newMatch = (apps: ListedApp[]): ListedApp | undefined =>
+      apps.filter((a) => !before.has(a.id) && a.command === body.command && (a.workingDirectory ?? undefined) === body.workingDirectory && (a.proxyDetails?.path ?? undefined) === body.proxyDetails?.path).at(-1);
+    const outcome = await writeThenVerify({
+      write: () => ctx.client.call('POST', '/websites/{website_id}/apps/persistent', () => ctx.client.api.POST('/websites/{website_id}/apps/persistent', { params: { path: { website_id: s.id } }, body })),
+      find: async () => newMatch(await listApps(ctx, s.id)),
+      sleep: ctx.sleep,
+    });
+    const url = appUrl(s.w, proxy?.path);
+    if (outcome.state === 'unknown') {
+      return unknownOutcome(s.identity, outcome, { action: `registering the app "${safe(command)}"`, settle: `persistent_apps_list website=${safe(args.website)}`, windowMs: DEFAULT_WINDOW_MS }, { created: null, id: null, url });
+    }
+    // After a clear answer the listing read is a convenience, and the write it follows has already
+    // landed. A blip on it — a 5xx, a reset, the client's own timeout — must not come back as an
+    // error result: a caller told "this failed" creates the app a second time. The app is reported
+    // without its id instead.
     let match: ListedApp | undefined;
     let lookupError: string | undefined;
-    try {
-      match = (await listApps(ctx, s.id)).filter((a) => a.command === body.command && (a.workingDirectory ?? undefined) === body.workingDirectory && (a.proxyDetails?.path ?? undefined) === body.proxyDetails?.path).at(-1);
-    } catch (e) {
-      lookupError = safe((e as Error).message);
+    if (outcome.confirmedBy === 'verify') {
+      match = outcome.found;
+      notes.push(confirmedByReadNote(outcome.writeError));
+    } else {
+      try {
+        match = newMatch(await listApps(ctx, s.id));
+      } catch (e) {
+        lookupError = describeError(e);
+      }
     }
-    const url = appUrl(s.w, proxy?.path);
     const lines = [
       s.identity,
       `persistent app registered${match ? ` (id ${match.id})` : ''}; ${CREATE_RESTART_NOTE}.`,

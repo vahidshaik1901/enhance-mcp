@@ -190,6 +190,41 @@ describe('cron_add', () => {
   });
 });
 
+describe('cron_add settles an unclear answer (write-then-verify)', () => {
+  /** The crontab read answers `twoLines` until the first PATCH, then `after`; each PATCH throws. */
+  function unclearPatches(after: unknown, seen: Array<{ method: string }>): Route[] {
+    let patched = false;
+    return [
+      { method: 'GET', path: cronPath, handler: async () => { seen.push({ method: 'GET' }); return json(patched ? after : twoLines); } },
+      { method: 'PATCH', path: cronPath, handler: async () => { seen.push({ method: 'PATCH' }); patched = true; throw new TypeError('fetch failed'); } },
+    ];
+  }
+  const withLine2 = { items: [...twoLines.items, { cronCmd: { lineNumber: 2, expr: JOB_B } }] };
+
+  it('confirms a line whose PATCH answer never came, by finding it on its line number', async () => {
+    const seen: Array<{ method: string }> = [];
+    const { ctx } = await makeContext([...base(), ...unclearPatches(withLine2, seen)]);
+    const r = await callTool(byName(tools, 'cron_add'), { website: 'vahi.dev', jobs: [JOB_B] }, ctx);
+    expect(r.isError, r.text).toBeUndefined();
+    expect(r.text).toContain('confirmed by reading it back');
+    expect(r.structured).toEqual({ added: [{ line: 2, expr: JOB_B }], confirmedByRead: [2] });
+    expect(seen.filter((s) => s.method === 'PATCH')).toHaveLength(1);
+  });
+
+  it('stops at a line whose outcome is unknown and says which lines were not sent', async () => {
+    const seen: Array<{ method: string }> = [];
+    const { ctx } = await makeContext([...base(), ...unclearPatches(twoLines, seen)]);
+    const r = await callTool(byName(tools, 'cron_add'), { website: 'vahi.dev', jobs: [JOB_B, '@daily /usr/bin/backup.sh'] }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(websiteLine);
+    expect(r.text).toContain('OUTCOME UNKNOWN');
+    expect(r.text).toContain('cron_get website=vahi.dev');
+    expect(r.text).toContain('1 line(s) after it were not sent');
+    expect(r.structured).toMatchObject({ outcome: 'unknown', added: [], unknown: { line: 2, expr: JOB_B }, notSent: [{ line: 3, expr: '@daily /usr/bin/backup.sh' }] });
+    expect(seen.filter((s) => s.method === 'PATCH')).toHaveLength(1);
+  });
+});
+
 describe('cron_remove', () => {
   it('removes the highest line first, one request per line, so renumbering cannot shift a target', async () => {
     const seen: Array<{ method: string; body?: unknown }> = [];
