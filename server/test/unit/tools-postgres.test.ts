@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { tools } from '../../src/tools/postgres.js';
 import { base, ORG_ID, websiteDetail, WEBSITE_ID, websiteSummary, websitesList } from '../fixtures/panel.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
-import type { Route } from '../helpers/fakeFetch.js';
+import { type Route, writeThenList } from '../helpers/fakeFetch.js';
 
 const dbsPath = `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/postgresql-dbs`;
 const usersPath = `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/postgresql-users`;
@@ -99,7 +99,7 @@ describe('pg_db_list', () => {
 describe('pg_db_create', () => {
   it('sends the short name and reports the full prefixed name', async () => {
     const sink: { body?: unknown; path?: string } = {};
-    const { ctx } = await makeContext([...enabledBase(), captureBody({ method: 'POST', path: dbsPath }, 201, sink)]);
+    const { ctx } = await makeContext([...enabledBase(), { method: 'GET', path: dbsPath, body: { items: [] } }, captureBody({ method: 'POST', path: dbsPath }, 201, sink)]);
     const r = await callTool(byName(tools, 'pg_db_create'), { website: WEBSITE_ID, name: 'shop' }, ctx);
     expect(sink.path).toBe(dbsPath);
     expect(sink.body).toEqual({ name: 'shop' });
@@ -109,7 +109,7 @@ describe('pg_db_create', () => {
 
   it('strips the prefix the user typed rather than sending it twice', async () => {
     const sink: { body?: unknown } = {};
-    const { ctx } = await makeContext([...enabledBase(), captureBody({ method: 'POST', path: dbsPath }, 201, sink)]);
+    const { ctx } = await makeContext([...enabledBase(), { method: 'GET', path: dbsPath, body: { items: [] } }, captureBody({ method: 'POST', path: dbsPath }, 201, sink)]);
     const r = await callTool(byName(tools, 'pg_db_create'), { website: WEBSITE_ID, name: PG_DB }, ctx);
     expect(sink.body).toEqual({ name: 'shop' });
     expect(r.structured).toMatchObject({ database: PG_DB });
@@ -199,7 +199,7 @@ describe('pg_users_list', () => {
 describe('pg_user_create', () => {
   it('generates a password when none is given and keeps it out of the rendered text', async () => {
     const sink: { body?: unknown; path?: string } = {};
-    const { ctx } = await makeContext([...enabledBase(), captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
+    const { ctx } = await makeContext([...enabledBase(), { method: 'GET', path: usersPath, body: { items: [] } }, captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
     const r = await callTool(byName(tools, 'pg_user_create'), { website: WEBSITE_ID, username: 'app' }, ctx);
     const body = sink.body as { username: string; password: string };
     expect(sink.path).toBe(usersPath);
@@ -215,7 +215,7 @@ describe('pg_user_create', () => {
 
   it('sends the password the user supplied and keeps it out of the rendered text', async () => {
     const sink: { body?: unknown } = {};
-    const { ctx } = await makeContext([...enabledBase(), captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
+    const { ctx } = await makeContext([...enabledBase(), { method: 'GET', path: usersPath, body: { items: [] } }, captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
     const r = await callTool(byName(tools, 'pg_user_create'), { website: WEBSITE_ID, username: PG_USER, password: 'sup3r-secret-pw' }, ctx);
     expect(sink.body).toEqual({ username: 'app', password: 'sup3r-secret-pw' });
     expect(r.structured).toMatchObject({ user: PG_USER, password: 'sup3r-secret-pw' });
@@ -303,5 +303,49 @@ describe('the tool set', () => {
     expect(tools.map((t) => t.name)).toEqual(['pg_db_list', 'pg_db_create', 'pg_db_delete', 'pg_users_list', 'pg_user_create', 'pg_user_update', 'pg_user_delete', 'pg_user_grant', 'pg_user_revoke']);
     expect(tools.filter((t) => t.risk === 'destructive').map((t) => t.name)).toEqual(['pg_db_delete', 'pg_user_delete', 'pg_user_revoke']);
     expect(tools.every((t) => t.tier === 'customer')).toBe(true);
+  });
+});
+
+describe('pg_db_create and pg_user_create settle an unclear answer (write-then-verify)', () => {
+  it('refuses a database or user that already exists, sending nothing', async () => {
+    const { ctx, f } = await makeContext([...enabledBase(), { method: 'GET', path: dbsPath, body: pgDbs }, { method: 'GET', path: usersPath, body: pgUsers }]);
+    const db = await callTool(byName(tools, 'pg_db_create'), { website: WEBSITE_ID, name: 'shop' }, ctx);
+    expect(db.isError).toBe(true);
+    expect(db.text).toContain(`PostgreSQL database ${PG_DB} already exists`);
+    expect(db.structured).toMatchObject({ database: PG_DB, created: false });
+    const user = await callTool(byName(tools, 'pg_user_create'), { website: WEBSITE_ID, username: 'app' }, ctx);
+    expect(user.isError).toBe(true);
+    expect(user.text).toContain(`PostgreSQL user ${PG_USER} already exists`);
+    expect(user.structured).toMatchObject({ user: PG_USER, created: false });
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('confirms a database whose create answer never came, and says unknown when it never shows up', async () => {
+    const landed = await makeContext([...writeThenList({ writePath: dbsPath, listPath: dbsPath, before: { items: [] }, after: pgDbs, write: () => { throw new TypeError('fetch failed'); } }), ...enabledBase()]);
+    const a = await callTool(byName(tools, 'pg_db_create'), { website: WEBSITE_ID, name: 'shop' }, landed.ctx);
+    expect(a.isError, a.text).toBeFalsy();
+    expect(a.text).toContain('confirmed by reading it back');
+    expect(a.structured).toMatchObject({ database: PG_DB, created: true });
+    const lost = await makeContext([...writeThenList({ writePath: dbsPath, listPath: dbsPath, before: { items: [] }, after: { items: [] }, write: () => { throw new TypeError('fetch failed'); } }), ...enabledBase()]);
+    const b = await callTool(byName(tools, 'pg_db_create'), { website: WEBSITE_ID, name: 'shop' }, lost.ctx);
+    expect(b.isError).toBe(true);
+    expect(b.text).toContain('OUTCOME UNKNOWN');
+    expect(b.text).toContain(`pg_db_list website=${WEBSITE_ID}`);
+    expect(b.structured).toMatchObject({ outcome: 'unknown', database: PG_DB, created: null });
+  });
+
+  it('hands back the password of a user confirmed by reading, and labels it on an unknown outcome', async () => {
+    let sent: { password?: string } = {};
+    const capture = async (req: Request): Promise<Response> => { sent = (await req.json()) as { password: string }; throw new TypeError('fetch failed'); };
+    const landed = await makeContext([...writeThenList({ writePath: usersPath, listPath: usersPath, before: { items: [] }, after: pgUsers, write: capture }), ...enabledBase()]);
+    const a = await callTool(byName(tools, 'pg_user_create'), { website: WEBSITE_ID, username: 'app' }, landed.ctx);
+    expect(a.isError, a.text).toBeFalsy();
+    expect(a.structured).toMatchObject({ user: PG_USER, password: sent.password });
+    const lost = await makeContext([...writeThenList({ writePath: usersPath, listPath: usersPath, before: { items: [] }, after: { items: [] }, write: capture }), ...enabledBase()]);
+    const b = await callTool(byName(tools, 'pg_user_create'), { website: WEBSITE_ID, username: 'app' }, lost.ctx);
+    expect(b.isError).toBe(true);
+    expect(b.text).toContain('OUTCOME UNKNOWN');
+    expect(b.text).not.toContain(sent.password!);
+    expect(b.structured).toMatchObject({ outcome: 'unknown', user: PG_USER, created: null, password: sent.password, passwordNote: expect.stringContaining('only if') });
   });
 });
