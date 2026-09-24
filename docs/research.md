@@ -691,6 +691,10 @@ guardrails (item 14 came out of its review, and corrected the guard):
     and treats the path as free only when both answer 404 (the root app asks `/` alone); the refusal
     quotes which form answered, e.g. `HTTP 301 on /assets: an existing directory in public_html`.
     Before this, an empty or index-less directory read as free and the app would have shadowed it.
+    (Since the D1 final review the refusal words that 301 as `a redirect to /assets/, which is how an
+    existing directory in public_html/ shows`, with the website's own document root: a
+    redirect-everything rule answers the same way, and the file service's line may then say nothing
+    is on disk there.)
 15. **The asset check's own first version false-failed a healthy page** (found by the user on
     `https://vahi.dev/next/`, 2026-09-17). It fetched up to 12 assets **in parallel** with a
     **2 s** deadline. From a client about **0.8 s** of round trip away from the server, the twelve
@@ -1096,9 +1100,12 @@ confirmed it works.
   sites; `domain_check` then reported `inUseCurrentOrg` for them. Create sites one at a time, and on
   a timeout re-check with `domain_check` instead of retrying. (Minor for the final review:
   `website_create` could do that re-check itself and report the real outcome.) Done in milestone
-  D1: after an unclear answer `website_create` re-reads `domain_check` every 5 s for 90 s and
-  reports a site it finds as created; only when none appears does it answer "OUTCOME UNKNOWN" and
-  name the read that settles it (spec `docs/superpowers/specs/2026-09-17-milestone-d1-foundations-design.md`, section 3).
+  D1: after an unclear answer `website_create` re-reads `domain_check` every 5 s for up to 90 s (no
+  read starts after 90 s on the clock, so a slow panel stretches it by at most the read in flight) and reports a site it finds
+  as created; only when none appears does it answer "OUTCOME UNKNOWN", with the reads it made and the
+  seconds they took, and name the read that settles it (spec
+  `docs/superpowers/specs/2026-09-17-milestone-d1-foundations-design.md`, section 3). Verified live
+  on 2026-09-24 by a forced check (see "Live test D1").
 - **A stale cached tool schema is not the running server.** After the restart, `ToolSearch` showed a
   `persistent_app_create` schema without `serve_at_root`, while the running server (repo `dist`,
   Task 9) accepted the argument and enforced the preflight. Trust behaviour, not the cached schema.
@@ -1111,7 +1118,7 @@ confirmed it works.
   fresh site the root answered 404, the preflight allowed the create, and the app then owned the
   whole domain.
 
-### Discovery: the site file listing (filerd), held for a later milestone
+### Discovery: the site file listing (filerd), later built as `files_list` (milestone D1)
 
 Asked whether the plugin could list a site's files, the controller found a working, **undocumented**
 path (verified read-only on vahi.dev):
@@ -1214,6 +1221,30 @@ minting 240-second site tokens. Source: section 5.1 of
 - Because the service cannot narrow, `files_list` asks for the levels down to its `path` plus the
   depth wanted, then narrows, prunes the heavy folders and cuts at `max_entries` on its own side.
 
-## Live test D1
+## Live test D1 (2026-09-24)
 
-(filled in by the controller after the live run)
+Driver: the milestone D1 e2e suite (`server/test/e2e/milestone-d1.e2e.test.ts`) and the milestone B
+and C suites as regressions, against vahi.dev on panel 12.25.11 with a fresh session JWT as the `id0`
+cookie, plus one forced check by a one-off script that is not committed. The cookie was never
+printed.
+
+| When | Run | Result |
+|---|---|---|
+| before the suites | file service re-probe | see "File service probe" above; the depth check, `maxDepth` 0 to 7, returned exactly `maxDepth+1` levels each time |
+| 13:26 | D1 suite, read-only half | **3/3**: the file service's shape; `files_list` totals with no token in the text or the structured content; a clash refusal on `public_html/demo-login` that names the folder and registers nothing |
+| 13:26–13:27 | milestone B regression | **4/4**, after the D1 changes to the database creates |
+| 13:26–13:27 | milestone C regression | **2/2**, after the D1 changes to `persistent_app_create` |
+| 13:38 | D1 suite with the create half (`ENHANCE_E2E_CREATE=1`, subscription 686) | **4/4**: `d1-5911d7-1/2/3.vahi.dev` created in parallel (two of them through a 3 s client) and soft-deleted by the suite. The panel answered all three inside 3 s, so this run **did not** exercise the unclear path |
+| 13:40 | forced check (one-off script, not committed) | the `website_create` POST reached the panel (HTTP 201 in the background) while the client was told `TimeoutError` after 150 ms. The tool answered `created=true`, `confirmedBy=verify`, "…confirmed by reading it back: it did land.", in 5.96 s: the domain re-check found the site on its second read. `d1v-652a97.vahi.dev` was soft-deleted afterwards |
+
+**Before D1**, the same situation (four parallel creates on 2026-09-17, "Other findings" under Live
+test C3) was reported as a client-side timeout error for two sites the panel did create. The forced
+check is the first live proof that the helper turns that into a confirmed create.
+
+These runs came before the final-review fix wave (the real-clock bound on the re-reads, the unknown
+sentence worded from the reads actually made, and the reworded clash-refusal lines). Those changes
+are covered by unit tests only; none of them adds a request, and the clock bound can only end the
+re-reads sooner, never later.
+
+**Not yet done:** the section 8 walkthrough inside Claude Code (`files_list`, a clash refusal, a
+typed `website_delete`), pending the plugin refresh after the merge.

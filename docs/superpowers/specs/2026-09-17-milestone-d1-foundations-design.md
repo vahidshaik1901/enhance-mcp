@@ -86,6 +86,16 @@ try/catch whose failure is reported inside a success, never as an error. The pol
 (`ceil(windowMs / intervalMs)`, the first one immediate) rather than watching a clock, so a test with
 a no-op `sleep` pins it exactly.
 
+**(amended 2026-09-24, final review)** The count stays the upper bound, but the window is now also
+kept on the real clock: one read can take the client's whole 30 s timeout (a GET is also retried on
+a 5xx or a reset), and counting alone let a struggling panel hold `website_create` for about ten
+minutes behind its 90 s window (the review's simulation, ~625 s). No read starts once `windowMs` has
+passed since the first read (a `now` option, default `Date.now`, is the test seam; adopters leave it
+unset), so the wait is at most the window plus the read in flight. The settled outcomes carry the
+reads actually made and the real time they took (`reads`, `elapsedMs`), and the unknown sentence is
+worded from them ("18 re-reads over 92 s did not find it") instead of from the window; `unknownOutcome`
+no longer takes `windowMs`. Only `undefined` from `find` means "not there yet".
+
 **(amended 2026-09-24)** "An object found after an unclear write is the one this call created" has
 to be made true, not assumed: a write that timed out after a pre-existing object would otherwise be
 "confirmed" by that object, and `db_user_create` would then hand back a password that is not the
@@ -98,7 +108,7 @@ object, or it writes a slot nothing else can hold (a crontab line past the last 
 | Tool | Verify read | Found object is ours because | Window |
 |---|---|---|---|
 | `website_create` | `POST /orgs/{org}/domains/check` → `inUseCurrentOrg` with a `websiteId`, then the resolver's `getWebsite` | `domain_check` said `notInUse` just before (existing) | 90 s, a read every 5 s (the panel keeps working after the client's 30 s cut-off; seen live with parallel creates) |
-| `domain_add` | the website's domain listing contains the domain | new pre-check: already mapped with the same kind → idempotent success (`added: false`); another kind → refusal | default |
+| `domain_add` | the website's domain listing contains the domain | new pre-check: already mapped with the same kind → idempotent success (`added: false`); another kind → refusal; the same kind with a different `document_root` → refusal, since "already done" would send a deploy into a folder the domain does not serve | default |
 | `db_create`, `pg_db_create` | the database listing contains the prefixed name | new pre-check: exists → refusal, nothing sent | default |
 | `db_user_create`, `pg_user_create` | the user listing contains the prefixed name. The password the tool sent is returned once when the create is confirmed, and also on an unknown outcome (labelled "valid only if the user now exists") | new pre-check: exists → refusal, nothing sent | default |
 | `ssh_key_add` | the key listing contains the same key body | existing idempotent pre-check | default |
@@ -143,9 +153,9 @@ minting 240-second tokens):
   asking for L levels means `maxDepth=L-1`, and "at most 8" means at most 8 levels (`maxDepth=7`).
 - Without `recursive=true`, `maxDepth` is ignored and one level comes back.
 - Paths are relative to the home and `/`-separated (`.ssh/authorized_keys`); the root is `""`.
-- A **symlink** is a `file` node whose `metadata.kind` is `symlink` (15 of 8,944 nodes in a seven-level
-  listing, `maxDepth=6`, all under `.nvm`); `kind` is otherwise `file` or `directory`. Every node carried all four metadata
-  fields.
+- A **symlink** is a `file` node whose `metadata.kind` is `symlink` (15 of 8,944 nodes in a
+  seven-level listing, `maxDepth=6`, all under `.nvm`); `kind` is otherwise `file` or `directory`.
+  Every node carried all four metadata fields.
 - An **empty folder has no `entries` key at all**; a folder at the depth limit has `entries: []`
   (all 210 empty arrays in that seven-level listing sat on the last level, all 7 missing keys on real
   empty folders such as `.nvm/.git/branches`). So a missing key means "known empty" and `[]` on the
@@ -213,7 +223,12 @@ refusal:
 - a directory or file exists at `<document root>/<path>` (the website's own document root,
   normally `public_html`): what it is and how many entries it holds;
 - nothing on disk: that the answer comes from the web server (a rewrite rule, a redirect-everything
-  site or another app), so `replace_existing_path=true` shadows no files.
+  site or another app), so `replace_existing_path=true` shadows no files. **(amended 2026-09-24,
+  final review)** The line adds that the override would still replace what the URL answers today:
+  a rewrite serves a live page (a WordPress or Laravel route) from nowhere on disk, so "no files"
+  must never read as leave to override. The HTTP detail likewise words a bare-path redirect as
+  "a redirect to /<path>/, which is how an existing directory in <document root>/ shows", with the
+  website's own document root, rather than stating a directory as fact.
 
 For `serve_at_root` the line gives the entry count of `public_html`. Any `FileServiceUnavailable`
 adds nothing. The decision to refuse stays with the HTTP preflight, exactly as today.
@@ -256,11 +271,13 @@ One task, no behaviour change beyond what is listed:
   typing each name.
 - **(amended 2026-09-24)** The create half is automated as an opt-in part of the live suite
   (`ENHANCE_E2E_CREATE=1`): one create with the normal client timeout and two in parallel through a
-  second client whose timeout is 3 s, which forces the unclear path deterministically instead of
-  hoping for a slow panel. Every create must end as created; the suite soft-deletes its own sites in
-  `afterAll` (the milestone A precedent for resources a run made itself) after re-checking each
-  domain, so even an "unknown" create is found and removed. The human-typed `website_delete` stays
-  in the walkthrough inside Claude Code.
+  second client whose timeout is 3 s, meant to force the unclear path instead of hoping for a slow
+  panel. On 2026-09-24 the panel answered all three inside 3 s, so that run did not exercise it; the
+  unclear path was proven by a separate forced check (a client told `TimeoutError` after 150 ms
+  while the panel created the site; "Live test D1" in `docs/research.md`). Every create must end
+  as created; the suite soft-deletes its own sites in `afterAll` (the milestone A precedent for
+  resources a run made itself) after re-checking each domain, so even an "unknown" create is found
+  and removed. The human-typed `website_delete` stays in the walkthrough inside Claude Code.
 
 ## 9. Delivery
 

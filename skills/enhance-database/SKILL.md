@@ -56,10 +56,15 @@ as TCP to 127.0.0.1, which the server refuses; it needs `socketPath: '/run/mysql
 
 ## 4. A new database for an app, in this order
 
-1. `db_create website=<site> name=<db>` → note the **full** database name it returns.
+1. `db_create website=<site> name=<db>` → note the **full** database name it returns. A name that
+   already exists is refused before anything is sent: use that database, or pick another name.
 2. `db_user_create website=<site> username=<user>` → a strong password is generated and returned
    **once**, in `structuredContent.password`. Capture it now; it is never shown again (safety
-   rule 10). Pass `password=` yourself only if the user insists on a specific one.
+   rule 10). Pass `password=` yourself only if the user insists on a specific one. An existing
+   user is refused before anything is sent (change its password with `db_user_update` instead).
+   An answer that says **OUTCOME UNKNOWN** still returns the password: keep it until the settling
+   read. If `db_users_list` then shows the user, that is its password; if the user never appears,
+   the password is worthless, and safety rule 13 applies before any second create.
 3. `db_user_set_privileges website=<site> username=<user> database=<db> grants=["all"]`.
 4. Write the app config (`.env`, `wp-config.php`, `config/database.php`) with `DB_HOST=localhost`
    for PHP (or `socketPath: '/run/mysqld/mysqld.sock'` and no host for a Node client),
@@ -151,7 +156,8 @@ but both can take an app offline. Say what you are about to remove before you ca
 Same flow, `pg_*` names, only when `canUse.postgresql` is true:
 
 1. `pg_db_create` → full name.
-2. `pg_user_create` → password shown once.
+2. `pg_user_create` → password shown once (and, after an OUTCOME UNKNOWN, kept until
+   `pg_users_list` shows whether the user exists, exactly as for MySQL).
 3. `pg_user_grant website=<site> username=<user> database=<db>`.
 
 PostgreSQL has no per-privilege enum: the grant is all-or-nothing, and `pg_user_revoke` (a

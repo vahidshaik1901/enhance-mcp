@@ -154,8 +154,10 @@ createSuite('milestone D1: website_create lands and is reported, even when the c
 
   beforeAll(async () => {
     ({ ctx, tools } = await bootstrap(process.env));
-    // A client that stops waiting after 3 s while the panel keeps creating: the unclear write the
-    // helper exists for, forced instead of hoped for.
+    // A client that stops waiting after 3 s while the panel keeps creating, meant to force the
+    // unclear write the helper exists for. On 2026-09-24 the panel answered all three creates inside
+    // 3 s, so that run did not exercise it; the unclear path was proven by a separate forced check
+    // (see "Live test D1" in docs/research.md). Every create must still end as created.
     impatient = await bootstrap({ ...process.env, ENHANCE_TIMEOUT_MS: '3000' });
   });
 
