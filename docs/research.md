@@ -817,6 +817,14 @@ Findings:
   `server/scripts/patch-spec.ts` (and the `test/unit/spec.test.ts` assertion that reads it) needed
   no change.
 
+## Spec re-vendored: 12.25.11 → 12.25.12 (2026-09-24)
+
+- The `spec-drift` job failed on the D1 pull request because upstream published 12.25.12 that day.
+  The only diff is again the `info.version` line (`version: 12.25.11` → `version: 12.25.12`), so
+  both vendored copies and `server/spec/VERSION` were updated, `npm run gen:types` produced no change
+  to `server/src/client/generated/types.ts`, and `npm run check:spec` reports "vendored spec matches
+  upstream". The live test panel still reported 12.25.11 that morning.
+
 ## Live test C: Node runtime and persistent apps on vahi.dev (2026-09-16/17)
 
 Driver: the milestone C e2e suite (`server/test/e2e/milestone-c.e2e.test.ts`) calling the tool
