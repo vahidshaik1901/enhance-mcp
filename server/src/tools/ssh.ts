@@ -7,6 +7,7 @@ import { identityBlock, websiteHome } from '../core/identity.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
 import { kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
+import { confirmedByReadNote, DEFAULT_WINDOW_MS, unknownOutcome, writeThenVerify } from '../core/verify.js';
 
 type SshKey = components['schemas']['SshKey'];
 
@@ -161,12 +162,20 @@ export const sshKeyAdd = defineTool({
       return ok(`${id}\nkey ${fp} is already authorized (id ${existing.id}${existing.name ? `, "${safe(existing.name)}"` : ''}). Nothing changed.`, { website: w.id, keyId: existing.id, fingerprint: fp, added: false });
     }
     const name = args.name ?? key.comment ?? 'claude-code';
-    const res = await ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/ssh/keys', () =>
-      ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/ssh/keys', { params: { path: { org_id: org, website_id: w.id } }, body: { value: `${key.type} ${key.blob}`, name } }),
-    );
+    const outcome = await writeThenVerify({
+      write: () => ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/ssh/keys', () => ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/ssh/keys', { params: { path: { org_id: org, website_id: w.id } }, body: { value: `${key.type} ${key.blob}`, name } })),
+      // The idempotency check above found no key with this body, so one listed now is this call's.
+      find: async () => (await listKeys(ctx, org, w.id)).find((k) => k.type === key.type && k.blob === key.blob)?.id,
+      sleep: ctx.sleep,
+    });
+    if (outcome.state === 'unknown') {
+      return unknownOutcome(id, outcome, { action: `authorizing key ${fp}`, settle: `ssh_keys_list website=${safe(w.domain.domain)}`, windowMs: DEFAULT_WINDOW_MS }, { website: w.id, fingerprint: fp, added: null });
+    }
+    const keyId = outcome.confirmedBy === 'response' ? outcome.written.id : outcome.found;
     const c = conn(w);
     const sshCommand = c.user && c.host ? `ssh -p ${c.port} ${c.user}@${c.host}` : undefined;
-    return ok(`${id}\nkey ${fp} authorized as "${safe(name)}" (id ${res.id}).${sshCommand ? `\nconnect with: ${safe(sshCommand)}` : ''}`, { website: w.id, keyId: res.id, fingerprint: fp, name, added: true, sshCommand });
+    const confirmed = outcome.confirmedBy === 'verify' ? `\n${confirmedByReadNote(outcome.writeError)}` : '';
+    return ok(`${id}\nkey ${fp} authorized as "${safe(name)}" (id ${keyId}).${confirmed}${sshCommand ? `\nconnect with: ${safe(sshCommand)}` : ''}`, { website: w.id, keyId, fingerprint: fp, name, added: true, sshCommand });
   },
 });
 

@@ -6,6 +6,7 @@ import { identityBlock, previewDomain } from '../core/identity.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { DomainMapping, Website } from '../core/resolver.js';
+import { confirmedByReadNote, DEFAULT_WINDOW_MS, unknownOutcome, writeThenVerify } from '../core/verify.js';
 
 type DnsRecord = components['schemas']['DnsRecord'];
 type Cert = Pick<components['schemas']['DomainSslCert'], 'cn' | 'issuer' | 'issued' | 'expires' | 'sans'> & { forceHttps?: boolean };
@@ -100,11 +101,30 @@ export const domainAdd = defineTool({
     const { client } = ctx;
     const org = requireOrg(client);
     const w = await ctx.resolver.resolveWebsite(args.website);
-    const res = await client.call('POST', '/orgs/{org_id}/websites/{website_id}/domains', () =>
-      client.api.POST('/orgs/{org_id}/websites/{website_id}/domains', { params: { path: { org_id: org, website_id: w.id } }, body: { domain: args.domain, kind: args.kind, ...(args.document_root ? { documentRoot: args.document_root } : {}) } }),
-    );
+    const identity = identityBlock({ name: client.orgName, id: org }, w);
+    const mapped = async (): Promise<DomainMapping | undefined> => (await ctx.resolver.listDomains(w.id)).find((d) => d.domain.toLowerCase() === args.domain);
+    // Read first: an unclear write is settled by finding the domain in this same list, which only
+    // proves anything when the domain was not in it before.
+    const existing = await mapped();
+    if (existing) {
+      if (existing.mappingKind === args.kind) {
+        return ok(`${identity}\n${safe(args.domain)} is already mapped to this website as ${safe(existing.mappingKind)} (${existing.domainId}). Nothing changed.`, { website: w.id, domainId: existing.domainId, domain: args.domain, kind: args.kind, added: false });
+      }
+      return fail(`${identity}\n${safe(args.domain)} is already mapped to this website as ${safe(existing.mappingKind)}, not ${args.kind}. Nothing was sent to the panel; remove it with domain_remove first if the kind has to change.`, { website: w.id, domainId: existing.domainId, domain: args.domain, added: false });
+    }
+    const outcome = await writeThenVerify({
+      write: () => client.call('POST', '/orgs/{org_id}/websites/{website_id}/domains', () => client.api.POST('/orgs/{org_id}/websites/{website_id}/domains', { params: { path: { org_id: org, website_id: w.id } }, body: { domain: args.domain, kind: args.kind, ...(args.document_root ? { documentRoot: args.document_root } : {}) } })),
+      find: async () => (await mapped())?.domainId,
+      sleep: ctx.sleep,
+    });
     ctx.resolver.invalidate();
-    return ok(`${identityBlock({ name: client.orgName, id: org }, w)}\nadded ${args.kind} domain ${safe(args.domain)} (${res.id}). Run domain_dns_status website=${safe(w.domain.domain)} domain=${safe(args.domain)} for DNS instructions.`, { website: w.id, domainId: res.id, domain: args.domain, kind: args.kind });
+    if (outcome.state === 'unknown') {
+      return unknownOutcome(identity, outcome, { action: `adding ${safe(args.domain)} to ${safe(w.domain.domain)}`, settle: `domains_list website=${safe(w.domain.domain)}`, windowMs: DEFAULT_WINDOW_MS }, { website: w.id, domain: args.domain, added: null });
+    }
+    const domainId = outcome.confirmedBy === 'response' ? outcome.written.id : outcome.found;
+    const lines = [identity, `added ${args.kind} domain ${safe(args.domain)} (${domainId}). Run domain_dns_status website=${safe(w.domain.domain)} domain=${safe(args.domain)} for DNS instructions.`];
+    if (outcome.confirmedBy === 'verify') lines.push(confirmedByReadNote(outcome.writeError));
+    return ok(lines.join('\n'), { website: w.id, domainId, domain: args.domain, kind: args.kind, added: true });
   },
 });
 
