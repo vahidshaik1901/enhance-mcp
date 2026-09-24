@@ -137,10 +137,10 @@ describe('collectCapped', () => {
     expect(collectCapped([Buffer.from('mcp-c '), Buffer.from('ok')], 512)).toEqual({ body: 'mcp-c ok', hitCap: false });
     expect(collectCapped([], 512)).toEqual({ body: '', hitCap: false });
   });
-  it('truncates at the cap and flags it, which is what stops the read', () => {
+  it('truncates at the cap and flags it for a caller that asks afterwards', () => {
     expect(collectCapped([Buffer.from('abcdef')], 4)).toEqual({ body: 'abcd', hitCap: true });
-    // Exactly the cap counts as reached: there is nothing further the probe would ever report,
-    // so httpsProbe settles and destroys the socket rather than draining a streaming body.
+    // Exactly the cap counts as reached. httpsProbe does not read this flag: it counts the bytes
+    // itself and settles at the cap; `hitCap` is for callers that collect first and ask afterwards.
     expect(collectCapped([Buffer.from('ab'), Buffer.from('cd')], 4)).toEqual({ body: 'abcd', hitCap: true });
   });
 });
@@ -189,13 +189,16 @@ describe('mapLimit edges', () => {
     for (const [limit, peakWanted] of [[Infinity, 5], [Number.NaN, 1]] as const) {
       let inFlight = 0;
       let peak = 0;
-      await mapLimit([1, 2, 3, 4, 5], limit, async () => {
+      const results = await mapLimit([1, 2, 3, 4, 5], limit, async (n) => {
         inFlight += 1;
         peak = Math.max(peak, inFlight);
-        await new Promise((r) => setTimeout(r, 1));
+        // Later items finish first, so input order has to be restored, not merely kept.
+        await new Promise((r) => setTimeout(r, 6 - n));
         inFlight -= 1;
+        return n * 10;
       });
       expect(peak, String(limit)).toBe(peakWanted);
+      expect(results, String(limit)).toEqual([10, 20, 30, 40, 50].map((value) => ({ status: 'fulfilled', value })));
     }
   });
 

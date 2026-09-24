@@ -124,6 +124,8 @@ describe('files_list', () => {
     expect(r.text).toContain('canUse.fileManager');
     expect(r.text).toContain('ssh_connection_info');
     expect(f.calls.some((c) => c.path === tokenPath)).toBe(false);
+    // The same `listed: false` every other refusal of this tool carries.
+    expect(r.structured).toEqual({ listed: false, available: false });
   });
 
   it('degrades to the SSH fallback when the file service is unavailable', async () => {
@@ -132,7 +134,7 @@ describe('files_list', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toContain(websiteLine);
     expect(r.text).toContain("The panel's file service is unavailable for this website (unauthorized:");
-    expect(r.text).toContain(`ls -la /var/www/${WEBSITE_ID}/public_html`);
+    expect(r.text).toContain(`ls -la '/var/www/${WEBSITE_ID}/public_html'.`);
     expect(r.structured).toMatchObject({ listed: false, available: false, reason: 'unauthorized' });
   });
 
@@ -140,7 +142,7 @@ describe('files_list', () => {
     const { ctx } = await makeContext([...fileServiceRoutes(site1, [], { status: 503 }), ...base()]);
     const r = await callTool(filesList, { website: 'vahi.dev', path: '', depth: 1 }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toContain(`then ls -la /var/www/${WEBSITE_ID}.`);
+    expect(r.text).toContain(`then ls -la '/var/www/${WEBSITE_ID}'.`);
     expect(r.text).not.toContain(`/var/www/${WEBSITE_ID}/-`);
   });
 
@@ -168,5 +170,94 @@ describe('validateListPath', () => {
     expect(validateListPath('public_html/')).toBe('public_html');
     expect(validateListPath('nodeapp/dist')).toBe('nodeapp/dist');
     expect(validateListPath('')).toBe('');
+  });
+
+  it('refuses "/" and "///" instead of trimming them into the home', () => {
+    // A caller who wrote "/" named the filesystem root, not the site home: listing the home under
+    // that name would answer a question nobody asked.
+    for (const bad of ['/', '///', ' / ']) expect(() => validateListPath(bad), bad).toThrow(/no leading slash/);
+    // Whitespace alone names nothing, and the home is the least surprising reading of it.
+    expect(validateListPath('   ')).toBe('');
+  });
+});
+
+describe('files_list edges', () => {
+  it('quotes the path in the SSH suggestion, so a hostile folder name is never a command', async () => {
+    // Whatever the caller typed lands in a line a human may paste into a shell: `$(…)` must stay
+    // literal, and a single quote inside the name must not end the quoting.
+    const { ctx } = await makeContext([...fileServiceRoutes(site3, [], { status: 401 }), ...base()]);
+    const r = await callTool(filesList, { website: 'vahi.dev', path: "public_html/$(curl x)'y" }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`then ls -la '/var/www/${WEBSITE_ID}/public_html/$(curl x)'\\''y'.`);
+  });
+
+  it('refuses "/" and "///" through the tool, reading nothing', async () => {
+    for (const path of ['/', '///']) {
+      const { ctx, f } = await makeContext([...fileServiceRoutes(site3), ...base()]);
+      const r = await callTool(filesList, { website: 'vahi.dev', path }, ctx);
+      expect(r.isError, path).toBe(true);
+      expect(r.text, path).toContain('Nothing was read');
+      expect(r.structured, path).toMatchObject({ listed: false });
+      expect(f.calls.some((c) => c.path === tokenPath), path).toBe(false);
+    }
+  });
+
+  it('calls an empty heavy folder empty, not skipped, and the listing complete', async () => {
+    const tree = fsRoot(fsDir('nodeapp', [fsFile('nodeapp/server.js', 812), fsDir('nodeapp/node_modules')]));
+    const { ctx } = await makeContext([...fileServiceRoutes(tree), ...base()]);
+    const r = await callTool(filesList, { website: 'vahi.dev', path: 'nodeapp', depth: 1 }, ctx);
+    expect(r.isError, r.text).toBeUndefined();
+    expect(r.text.split('\n')).toContain('node_modules/  755  2026-09-17 07:17 UTC  (empty)');
+    expect(r.text).not.toContain('contents skipped');
+    expect(r.text).toContain('This is everything under nodeapp, 1 level(s) deep.');
+    expect(r.structured).toMatchObject({ entries: [{ path: 'nodeapp/node_modules', contentsSkipped: false }, { path: 'nodeapp/server.js' }], totals: { complete: true } });
+  });
+
+  it('lists a deep path with the depth capped at the service limit, and says so', async () => {
+    // 6 segments + depth 3 asks for 9 levels; the service reads 8, so 2 levels below the path are
+    // shown. The tree is no deeper than those 8 levels.
+    const p = 'a/b/c/d/e/f';
+    const chain = (depth: number): unknown => {
+      const here = p.split('/').slice(0, depth).join('/');
+      if (depth === 6) return fsDir(here, [fsDir(`${p}/g`, [fsFile(`${p}/g/h.txt`, 7)]), fsFile(`${p}/x.txt`, 3)]);
+      return fsDir(here, [chain(depth + 1)]);
+    };
+    const seen: Request[] = [];
+    const { ctx } = await makeContext([...fileServiceRoutes(fsRoot(chain(1)), seen), ...base()]);
+    const r = await callTool(filesList, { website: 'vahi.dev', path: p, depth: 3 }, ctx);
+    expect(r.isError, r.text).toBeUndefined();
+    expect(new URL(seen[0]!.url).searchParams.get('maxDepth')).toBe('7');
+    expect(r.text).toContain(`files under ${p} (/var/www/${WEBSITE_ID}/${p}), 2 level(s) deep:`);
+    expect(r.text.split('\n')).toEqual(expect.arrayContaining(['g/  755  2026-09-17 07:17 UTC  (1 entry)', '  h.txt  7 B  644  2026-09-17 07:17 UTC', 'x.txt  3 B  644  2026-09-17 07:17 UTC']));
+    expect(r.text).toContain('depth capped at 2 level(s) below this path: the file service reads at most 8 levels from the home');
+    expect(r.structured).toMatchObject({ depth: 2, totals: { found: 3, depthCapped: true } });
+  });
+
+  it('describes a symlink at the path instead of listing it', async () => {
+    const { ctx } = await makeContext([...fileServiceRoutes(site3), ...base()]);
+    const r = await callTool(filesList, { website: 'vahi.dev', path: 'public_html/current' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('"public_html/current" is a symlink, not a folder: 9 B, mode 777');
+    expect(r.structured).toMatchObject({ listed: false, entry: { path: 'public_html/current', kind: 'symlink' } });
+  });
+
+  it('falls back to the home when no folder on the way exists', async () => {
+    const { ctx } = await makeContext([...fileServiceRoutes(site3), ...base()]);
+    const r = await callTool(filesList, { website: 'vahi.dev', path: 'nope/deeper' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('The nearest folder that exists is the home itself: list it with files_list path="".');
+    expect(r.structured).toMatchObject({ listed: false, nearest: '' });
+  });
+
+  it('renders the rows of the home listing in tree order', async () => {
+    const { ctx } = await makeContext([...fileServiceRoutes(site1), ...base()]);
+    const r = await callTool(filesList, { website: 'vahi.dev', path: '', depth: 1 }, ctx);
+    const lines = r.text.split('\n');
+    const rows = ['.bashrc  100 B  644  2026-09-17 07:17 UTC', 'nodeapp/  755  2026-09-17 07:17 UTC  (not opened: depth limit)', 'public_html/  755  2026-09-17 07:17 UTC  (not opened: depth limit)'];
+    const at = lines.indexOf(rows[0]!);
+    expect(at, r.text).toBeGreaterThan(0);
+    expect(lines.slice(at, at + 3)).toEqual(rows);
+    expect(r.text).toContain('entries: 3 found, 3 shown. 2 folder(s) on the last level were not opened');
+    expect(r.structured).toMatchObject({ path: '', depth: 1, totals: { found: 3, unexpandedFolders: 2, complete: false } });
   });
 });

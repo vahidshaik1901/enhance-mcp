@@ -11,7 +11,11 @@ export const HEAVY_FOLDERS = new Set(['node_modules', 'vendor', '.git', '.cache'
 
 /** Relative to the site home, no way out of it. `""` is the home itself. */
 export function validateListPath(input: string): string {
-  const path = input.trim().replace(/\/+$/, '');
+  const trimmed = input.trim();
+  // A leading slash is refused before the trailing ones are trimmed: "/" and "///" name the
+  // filesystem root, and trimming them first turned them into "" and listed the home instead.
+  // Whitespace alone still means the home.
+  const path = trimmed.startsWith('/') ? trimmed : trimmed.replace(/\/+$/, '');
   if (path === '') return '';
   if (path.startsWith('/') || path.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) {
     throw new Error(`path "${safe(input)}" must be relative to the site home (for example "public_html" or "nodeapp/dist"), with no leading slash, no "." or ".." segments and no empty segments`);
@@ -22,7 +26,7 @@ export function validateListPath(input: string): string {
 /** The plan gate, in the same shape as persistentAppsGate: checked before anything is sent. */
 export function fileManagerGate(site: DbSite, w: Website): ToolResult | undefined {
   if (w.canUse?.fileManager === true) return undefined;
-  return fail(`${site.identity}\nThe file manager is not enabled for this website's plan (canUse.fileManager is not true), so nothing was read. List the files over SSH instead: ssh_connection_info gives the login.`, { available: false });
+  return fail(`${site.identity}\nThe file manager is not enabled for this website's plan (canUse.fileManager is not true), so nothing was read. List the files over SSH instead: ssh_connection_info gives the login.`, { listed: false, available: false });
 }
 
 function humanSize(bytes: number | null): string {
@@ -51,6 +55,10 @@ function octal(mode: number | null): string {
 }
 
 const entriesWord = (n: number): string => `${n} entr${n === 1 ? 'y' : 'ies'}`;
+
+/** POSIX single quoting for a path printed inside a suggested shell command: whatever the caller
+ *  typed (a folder named `$(curl x|sh)`) stays one literal word, and a `'` inside it becomes `'\''`. */
+const shellQuote = (s: string): string => `'${s.split("'").join("'\\''")}'`;
 
 /** Parent before child, siblings in byte order: compares path segment by segment, because a plain
  *  string sort puts `a-c` between `a` and `a/b`. */
@@ -103,7 +111,7 @@ export const filesList = defineTool({
     } catch (e) {
       if (!(e instanceof FileServiceUnavailable)) throw e;
       return fail(
-        `${site.identity}\nThe panel's file service is unavailable for this website (${e.reason}: ${e.message}), so nothing was listed. List the files over SSH instead: ssh_connection_info gives the login, then ls -la ${absolute}.`,
+        `${site.identity}\nThe panel's file service is unavailable for this website (${e.reason}: ${e.message}), so nothing was listed. List the files over SSH instead: ssh_connection_info gives the login, then ls -la ${shellQuote(absolute)}.`,
         { listed: false, available: false, reason: e.reason },
       );
     }
@@ -158,7 +166,9 @@ export const filesList = defineTool({
       if (e.kind !== 'dir') return `${indent}${name}${e.kind === 'symlink' ? ' (symlink)' : ''}  ${humanSize(e.size)}  ${octal(e.mode)}  ${when(e.modified)}`;
       const n = children.get(e.path) ?? 0;
       const heavy = !args.include_heavy && HEAVY_FOLDERS.has(last);
-      const note = e.unexpanded ? '(not opened: depth limit)' : heavy ? `(${entriesWord(n)}, contents skipped)` : n === 0 ? '(empty)' : `(${entriesWord(n)})`;
+      // Empty before heavy: "(0 entries, contents skipped)" next to totals calling the listing
+      // complete read as if something had been left out.
+      const note = e.unexpanded ? '(not opened: depth limit)' : n === 0 ? '(empty)' : heavy ? `(${entriesWord(n)}, contents skipped)` : `(${entriesWord(n)})`;
       return `${indent}${name}/  ${octal(e.mode)}  ${when(e.modified)}  ${note}`;
     });
     const counts = [`${under.length} found`, `${shown.length} shown`];
@@ -180,7 +190,7 @@ export const filesList = defineTool({
         website: w.id,
         path,
         depth: depthShown,
-        entries: shown.map((e) => ({ ...e, contentsSkipped: e.kind === 'dir' && !args.include_heavy && HEAVY_FOLDERS.has(e.path.split('/').at(-1) ?? '') })),
+        entries: shown.map((e) => ({ ...e, contentsSkipped: e.kind === 'dir' && !args.include_heavy && HEAVY_FOLDERS.has(e.path.split('/').at(-1) ?? '') && (children.get(e.path) ?? 0) > 0 })),
         totals: { found: under.length, shown: shown.length, skippedHeavy, cut, unexpandedFolders, depthCapped, complete },
       },
     );

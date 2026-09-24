@@ -18,3 +18,9 @@ describe('the registered tool set', () => {
     expect(allTools.every((t) => t.tier === 'customer')).toBe(true);
   });
 });
+
+describe('tool descriptions', () => {
+  it('stay under 1000 characters, so the model reads all of them', () => {
+    for (const t of allTools) expect(t.description.length, t.name).toBeLessThanOrEqual(1000);
+  });
+});

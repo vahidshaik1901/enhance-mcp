@@ -81,7 +81,8 @@ export function siteOf(ctx: ToolContext, org: string, w: Website): DbSite {
  */
 export async function dbTargetSite(ctx: ToolContext, target: Target): Promise<{ site: DbSite; name: string; website: Website }> {
   const cut = target.id.indexOf(':');
-  if (cut <= 0) throw new Error(`malformed database target "${safe(target.id)}"`);
+  // Persistent apps use this shape too, so the message names the shape, not a database.
+  if (cut <= 0) throw new Error(`malformed target "${safe(target.id)}": expected "<website id>:<name>"`);
   const { org, w } = await siteWebsiteById(ctx, target.id.slice(0, cut));
   // No unix user is looked up here: the name is already the full prefixed one carried by
   // `target.id`, so only the create/user-facing paths need the prefix.

@@ -82,6 +82,10 @@ function attributes(tag: string): Record<string, string> {
  * `<url> <descriptor>, <url> <descriptor>`, and a URL may itself hold commas (`/a,b.png`) or be a
  * `data:` URI whose base64 is full of them — so the split needs the whitespace that always follows
  * the separating comma, and a `data:` candidate is dropped rather than cut in half.
+ *
+ * A candidate list with no space after its commas (`/a.png,/b.png`) is taken whole on purpose: the
+ * HTML srcset parser collects every non-space character into the URL, so a browser requests exactly
+ * that string too.
  */
 function firstSrcsetCandidate(value: string): string | undefined {
   const first = value.trim().split(/\s*,\s+/)[0]?.trim();
