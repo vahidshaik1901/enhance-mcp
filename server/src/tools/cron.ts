@@ -3,6 +3,7 @@ import type { components } from '../client/generated/types.js';
 import type { ToolContext } from '../core/context.js';
 import { defineTool, type Target, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
+import { confirmedByReadNote, unknownOutcome, writeThenVerify, type WriteOutcome } from '../core/verify.js';
 import { partialFailure, siteOf, siteWebsite, siteWebsiteById, websiteArg, type DbSite } from './dbcommon.js';
 
 async function cronSite(ctx: ToolContext, website: string): Promise<DbSite> {
@@ -103,18 +104,39 @@ export const cronAdd = defineTool({
     // One request per job, in order. Whether a single PATCH carrying several append-range line
     // numbers keeps them apart was never verified live, and getting it wrong would collapse two
     // jobs onto one line.
+    const confirmedByRead: number[] = [];
+    const notes: string[] = [];
     for (const [i, { line, expr }] of added.entries()) {
+      let outcome: WriteOutcome<unknown, true>;
       try {
-        await ctx.client.call('PATCH', CRON_PATH, () =>
-          ctx.client.api.PATCH(CRON_PATH, { params: { path: { org_id: s.org, website_id: s.id } }, body: { items: [{ cronCmd: { lineNumber: line, expr } }] } }),
-        );
+        outcome = await writeThenVerify<unknown, true>({
+          write: () => ctx.client.call('PATCH', CRON_PATH, () => ctx.client.api.PATCH(CRON_PATH, { params: { path: { org_id: s.org, website_id: s.id } }, body: { items: [{ cronCmd: { lineNumber: line, expr } }] } })),
+          // The line number was past the last line when the crontab was read, so a command with this
+          // exact text on it now is this call's.
+          find: async () => ((await readCrontab(ctx, s)).some((it) => 'cronCmd' in it && it.cronCmd.lineNumber === line && it.cronCmd.expr.trim() === expr) ? true : undefined),
+          sleep: ctx.sleep,
+        });
       } catch (e) {
         throw partialFailure('added', i, added.length, line, e);
       }
+      if (outcome.state === 'unknown') {
+        const before = i === 0 ? 'No earlier line was added' : `${i} earlier line(s) were added (line(s) ${added.slice(0, i).map((a) => a.line).join(', ')})`;
+        const rest = added.length - i - 1;
+        return unknownOutcome(
+          s.identity,
+          outcome,
+          { action: `adding cron line ${line}`, settle: `cron_get website=${safe(website)}`, extra: `${before}; ${rest === 0 ? 'it was the last line' : `the ${rest} line(s) after it were not sent`}.` },
+          { added: added.slice(0, i), ...(confirmedByRead.length > 0 ? { confirmedByRead } : {}), unknown: { line, expr }, notSent: added.slice(i + 1) },
+        );
+      }
+      if (outcome.confirmedBy === 'verify') {
+        confirmedByRead.push(line);
+        notes.push(`line ${line}: ${confirmedByReadNote(outcome.writeError)}`);
+      }
     }
     return ok(
-      `${s.identity}\nadded ${added.length} cron line(s) at line(s) ${added.map((a) => a.line).join(', ')} (0-based), appended past the highest line the crontab already had. Re-read cron_get to see the file as the panel numbers it now.`,
-      { added },
+      [`${s.identity}\nadded ${added.length} cron line(s) at line(s) ${added.map((a) => a.line).join(', ')} (0-based), appended past the highest line the crontab already had. Re-read cron_get to see the file as the panel numbers it now.`, ...notes].join('\n'),
+      { added, ...(confirmedByRead.length > 0 ? { confirmedByRead } : {}) },
     );
   },
 });

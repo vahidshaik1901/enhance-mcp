@@ -691,6 +691,10 @@ guardrails (item 14 came out of its review, and corrected the guard):
     and treats the path as free only when both answer 404 (the root app asks `/` alone); the refusal
     quotes which form answered, e.g. `HTTP 301 on /assets: an existing directory in public_html`.
     Before this, an empty or index-less directory read as free and the app would have shadowed it.
+    (Since the D1 final review the refusal words that 301 as `a redirect to /assets/, which is how an
+    existing directory in public_html/ shows`, with the website's own document root: a
+    redirect-everything rule answers the same way, and the file service's line may then say nothing
+    is on disk there.)
 15. **The asset check's own first version false-failed a healthy page** (found by the user on
     `https://vahi.dev/next/`, 2026-09-17). It fetched up to 12 assets **in parallel** with a
     **2 s** deadline. From a client about **0.8 s** of round trip away from the server, the twelve
@@ -812,6 +816,14 @@ Findings:
 - The non-standard `type: int` count is still exactly 2, so `EXPECTED_INT_OCCURRENCES` in
   `server/scripts/patch-spec.ts` (and the `test/unit/spec.test.ts` assertion that reads it) needed
   no change.
+
+## Spec re-vendored: 12.25.11 → 12.25.12 (2026-09-24)
+
+- The `spec-drift` job failed on the D1 pull request because upstream published 12.25.12 that day.
+  The only diff is again the `info.version` line (`version: 12.25.11` → `version: 12.25.12`), so
+  both vendored copies and `server/spec/VERSION` were updated, `npm run gen:types` produced no change
+  to `server/src/client/generated/types.ts`, and `npm run check:spec` reports "vendored spec matches
+  upstream". The live test panel still reported 12.25.11 that morning.
 
 ## Live test C: Node runtime and persistent apps on vahi.dev (2026-09-16/17)
 
@@ -1095,7 +1107,13 @@ confirmed it works.
   returned two "operation was aborted due to timeout" errors although the panel had created both
   sites; `domain_check` then reported `inUseCurrentOrg` for them. Create sites one at a time, and on
   a timeout re-check with `domain_check` instead of retrying. (Minor for the final review:
-  `website_create` could do that re-check itself and report the real outcome.)
+  `website_create` could do that re-check itself and report the real outcome.) Done in milestone
+  D1: after an unclear answer `website_create` re-reads `domain_check` every 5 s for up to 90 s (no
+  read starts after 90 s on the clock, so a slow panel stretches it by at most the read in flight) and reports a site it finds
+  as created; only when none appears does it answer "OUTCOME UNKNOWN", with the reads it made and the
+  seconds they took, and name the read that settles it (spec
+  `docs/superpowers/specs/2026-09-17-milestone-d1-foundations-design.md`, section 3). Verified live
+  on 2026-09-24 by a forced check (see "Live test D1").
 - **A stale cached tool schema is not the running server.** After the restart, `ToolSearch` showed a
   `persistent_app_create` schema without `serve_at_root`, while the running server (repo `dist`,
   Task 9) accepted the argument and enforced the preflight. Trust behaviour, not the cached schema.
@@ -1108,7 +1126,7 @@ confirmed it works.
   fresh site the root answered 404, the preflight allowed the create, and the app then owned the
   whole domain.
 
-### Discovery: the site file listing (filerd), held for a later milestone
+### Discovery: the site file listing (filerd), later built as `files_list` (milestone D1)
 
 Asked whether the plugin could list a site's files, the controller found a working, **undocumented**
 path (verified read-only on vahi.dev):
@@ -1123,7 +1141,7 @@ Notes: `?path=` is ignored (the whole tree comes back); the panel session cookie
 `/version` reports 12.25.8. **filerd is not in the public OpenAPI spec**, so a `files_list` tool
 built on it would be betting on an unversioned internal API — worth doing (it would also make the
 path-clash guard exact instead of HTTP-based), but as its own task with an HTTP fallback, not inside
-milestone C.
+milestone C. Taken up in milestone D1: see "File service probe" below.
 
 ### Left running
 
@@ -1131,3 +1149,113 @@ The four trial sites (`start`, `ghost`, `payload`, `emdash` under vahi.dev) and 
 persistent apps on vahi.dev (`/express/`, `/next/`) were deliberately left live as test resources.
 They are to be removed when the user says so: `persistent_app_delete` per app (typed-domain prompt),
 `rm -rf` the app directories and `persistent_app_*.log` over SSH, then `website_delete` per site.
+
+## File service probe (2026-09-17, re-probed 2026-09-24)
+
+The facts `server/src/core/files.ts` and `files_list` are built on. First probed read-only on
+vahi.dev on 2026-09-17 (filerd's `/version` said 12.25.8; see "Discovery: the site file listing"
+under Live test C3), then re-probed on panel and filerd 12.25.11 on 2026-09-24, read-only apart from
+minting 240-second site tokens. Source: section 5.1 of
+`docs/superpowers/specs/2026-09-17-milestone-d1-foundations-design.md` and its 2026-09-24 amendment.
+
+### The site token
+
+- `POST /orgs/{org_id}/websites/{website_id}/access-tokens` (`getSiteAccessToken`, in the public
+  spec) returns a site JWT as a JSON string.
+- Claims: `euid`, `egid`, `exp`, `website_id`, `read_only`. The token lives **240 seconds**.
+- **`read_only: false`: the token can write.** The spec defines no request body for the endpoint, so
+  there is no documented way to ask for a read-only token. Unchanged on the 2026-09-24 re-probe.
+
+### The address and the route
+
+- The website object carries **`filerdAddress`** (in the public spec), e.g. `/filerd/<uuid>`.
+- `GET <panel><filerdAddress>/websites/{website_id}/entries?recursive=true&maxDepth=N&fetchMetadata=true`
+  with `Authorization: Bearer <site token>` returns the tree. **The file service's routes are not in
+  the public spec.**
+- **Always from the site home.** Every narrowing parameter tried (`path`, `dir`, `root`, `prefix`,
+  `directory`, `base`) is ignored, and `entries/<sub-path>` answers 404 (both probes).
+- **`maxDepth=N` returns N+1 levels** below the home: `maxDepth=0` already lists the home's direct
+  children (23 nodes on vahi.dev), `maxDepth=1` their children too (87), `maxDepth=2` three levels
+  (270). Asking for L levels means `maxDepth=L-1`.
+- **`recursive=true` is needed**: without it `maxDepth` is ignored and one level comes back.
+
+### Shape
+
+- `{ dir: { path, entries: [ {file:{path, metadata}} | {dir:{path, entries, metadata}} ], metadata } }`
+  with `metadata = { size, modified (epoch s), permissions (decimal mode), kind }`. Every node
+  carried all four metadata fields.
+- Paths are relative to the home and `/`-separated (`.ssh/authorized_keys`); the root's path is `""`.
+- `kind` is `file` or `directory`, except for **symlinks: a symlink is a `file` node whose
+  `metadata.kind` is `symlink`** (15 of 8,944 nodes in a seven-level listing, `maxDepth=6`, all under
+  `.nvm`). A `file` node has no entries, so nothing behind a symlink is listed.
+- **An empty folder has no `entries` key at all; a folder at the depth limit has `entries: []`.** In
+  that seven-level listing all 210 empty arrays sat on the last level, and all 7 missing keys were real
+  empty folders such as `.nvm/.git/branches`. So a missing key means "known empty" and `[]` on the
+  last level means "not opened".
+
+### Refusals
+
+| Request | Answer |
+|---|---|
+| no `Authorization` header | 401 |
+| the panel session cookie alone | 401 `"Token header not found"` |
+| a malformed bearer | 400 `"Base64 error: …"` |
+| the session JWT as a Bearer (2026-09-17) | `"InvalidSignature"` |
+
+### Sizes and timings
+
+- One level: **3 KB in 0.2 s**.
+- Seven levels (`maxDepth=6`) with metadata: **1.4 MB in 0.9 s**, the 8,944-node listing above;
+  the zod schema in `core/files.ts` validates it in about 12 ms. Eight levels (`maxDepth=7`), the
+  most the code asks for: 2.0 MB.
+- Depth 8 without metadata: **1.2 MB in 1.6 s**, mostly `node_modules` (the first probe's figure;
+  "depth" as that probe named it, before the N+1 reading was known).
+- **The controller's live depth check (2026-09-24):** `maxDepth` 0 to 7 on vahi.dev each returned
+  exactly `maxDepth+1` levels, with `[]` only on the last level. Sizes 3 KB, 11 KB, 36 KB, 199 KB,
+  394 KB, 859 KB, 1.4 MB and 2.0 MB; 0.2 to 1.1 s each, all far below the 8 MB cap.
+
+### What the code does with it
+
+- One request shape only: this GET with fixed query parameters. No function in `core/files.ts`
+  takes a method, a body or a route, because the token it mints can write. The token stays a local
+  of `listSiteFiles`: never logged, audited, returned or put in an error, and sent only to a
+  `filerdAddress` matching `^/[A-Za-z0-9/_-]+$` without `//`, checked before a token is minted,
+  with redirects refused.
+- At most 8 levels (`maxDepth=7`, 2.0 MB on vahi.dev), an 8 MB response cap, a 15 s default
+  timeout, the response validated with zod, and every failure a typed `FileServiceUnavailable`.
+- **A node below the last level asked for is refused as `bad_shape`.** The depth check is why: the
+  service answered exactly `maxDepth+1` levels at every depth, so a deeper answer means it no longer
+  reads `maxDepth` the way it was probed, and nothing it sent is trusted.
+- Because the service cannot narrow, `files_list` asks for the levels down to its `path` plus the
+  depth wanted, then narrows, prunes the heavy folders and cuts at `max_entries` on its own side.
+
+## Live test D1 (2026-09-24)
+
+Driver: the milestone D1 e2e suite (`server/test/e2e/milestone-d1.e2e.test.ts`) and the milestone B
+and C suites as regressions, against vahi.dev on panel 12.25.11 with a fresh session JWT as the `id0`
+cookie, plus one forced check by a one-off script that is not committed. The cookie was never
+printed.
+
+| When | Run | Result |
+|---|---|---|
+| before the suites | file service re-probe | see "File service probe" above; the depth check, `maxDepth` 0 to 7, returned exactly `maxDepth+1` levels each time |
+| 13:26 | D1 suite, read-only half | **3/3**: the file service's shape; `files_list` totals with no token in the text or the structured content; a clash refusal on `public_html/demo-login` that names the folder and registers nothing |
+| 13:26–13:27 | milestone B regression | **4/4**, after the D1 changes to the database creates |
+| 13:26–13:27 | milestone C regression | **2/2**, after the D1 changes to `persistent_app_create` |
+| 13:38 | D1 suite with the create half (`ENHANCE_E2E_CREATE=1`, subscription 686) | **4/4**: `d1-5911d7-1/2/3.vahi.dev` created in parallel (two of them through a 3 s client) and soft-deleted by the suite. The panel answered all three inside 3 s, so this run **did not** exercise the unclear path |
+| 13:40 | forced check (one-off script, not committed) | the `website_create` POST reached the panel (HTTP 201 in the background) while the client was told `TimeoutError` after 150 ms. The tool answered `created=true`, `confirmedBy=verify`, "…confirmed by reading it back: it did land.", in 5.96 s: the domain re-check found the site on its second read. `d1v-652a97.vahi.dev` was soft-deleted afterwards |
+
+**Before D1**, the same situation (four parallel creates on 2026-09-17, "Other findings" under Live
+test C3) was reported as a client-side timeout error for two sites the panel did create. The forced
+check is the first live proof that the helper turns that into a confirmed create.
+
+These runs came before the final-review fix wave: the real-clock bound on the re-reads, the unknown
+sentence worded from the reads actually made, the reworded clash-refusal lines, a mint that fails
+with a network error or a 5xx reported as `network` rather than refused, an unknown outcome audited
+as `unknown`, and the handling of a 2xx that carries no id (website_create, domain_add,
+ssh_key_add). Those changes are covered by unit tests only. The clock bound can only end the
+re-reads sooner, never later; the one request they add is a single `domain_check` when a
+website_create 2xx carries no id, which the panel's documented answer always does.
+
+**Not yet done:** the section 8 walkthrough inside Claude Code (`files_list`, a clash refusal, a
+typed `website_delete`), pending the plugin refresh after the merge.

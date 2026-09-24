@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import type { HttpProbe, ProbeRequest, ProbeResponse } from '../../src/core/probe.js';
+import { describe, expect, it, vi } from 'vitest';
+import { ASSET_CONCURRENCY, ASSET_TIMEOUT_MS, MAX_ASSETS, type HttpProbe, type ProbeRequest, type ProbeResponse } from '../../src/core/probe.js';
 import { commandArg, tools, validateCommand, validateProxyPath, validateWorkingDirectory } from '../../src/tools/apps.js';
-import { APP_ID, base, ORG_ID, persistentApp, persistentApps, SERVER_IP, websiteDetail, WEBSITE_ID } from '../fixtures/panel.js';
+import { APP_ID, base, fileServiceRoutes, FILERD_ADDRESS, fsDir, fsFile, fsLink, fsRoot, ORG_ID, persistentApp, persistentApps, SERVER_IP, SITE_TOKEN, websiteDetail, WEBSITE_ID } from '../fixtures/panel.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
-import type { Route } from '../helpers/fakeFetch.js';
+import { writeThenList, type Route } from '../helpers/fakeFetch.js';
 
 const websiteLine = `website: vahi.dev (${WEBSITE_ID})`;
 const appsPath = `/websites/${WEBSITE_ID}/apps/persistent`;
@@ -26,6 +26,26 @@ function captureBody(route: Omit<Route, 'handler'>, sink: { body?: unknown; path
       return new Response(null, { status });
     },
   };
+}
+
+/**
+ * The create POST (its body captured into `sink`) and the app listing around it: `before` until the
+ * POST, `after` from then on. The create now snapshots the listing before it writes and only counts
+ * an app that was not in it, so a test that wants the new app's id must list it only AFTER the POST.
+ */
+function appsCreate(sink: { body?: unknown; path?: string }, after: unknown, before: unknown = [], status = 201): Route[] {
+  return writeThenList({
+    writePath: appsPath,
+    listPath: appsPath,
+    before,
+    after,
+    write: async (req) => {
+      const text = await req.text();
+      sink.body = text ? JSON.parse(text) : undefined;
+      sink.path = new URL(req.url).pathname.replace(/^\/api/, '');
+      return new Response(null, { status });
+    },
+  });
 }
 
 /**
@@ -165,11 +185,7 @@ describe('persistent_apps_list', () => {
 describe('persistent_app_create', () => {
   it('posts the panel shape, then finds the new app in the listing and names its URL', async () => {
     const sink: { body?: unknown; path?: string } = {};
-    const { ctx } = await makeContext([
-      ...base(),
-      captureBody({ method: 'POST', path: appsPath }, sink, 201),
-      { method: 'GET', path: appsPath, body: persistentApps },
-    ]);
+    const { ctx } = await makeContext([...base(), ...appsCreate(sink, persistentApps)]);
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', working_directory: 'nodeapp', proxy_path: 'node', port: 3000, node_version: '22.23.2' }, ctx);
     expect(sink.body).toEqual({ command: 'npm start', workingDirectory: 'nodeapp', startMode: 'automatic', nodeVersion: '22.23.2', proxyDetails: { path: 'node', port: 3000, allowWebSocketUpgrade: false } });
     expect(r.isError).toBeUndefined();
@@ -185,7 +201,7 @@ describe('persistent_app_create', () => {
 
   it('always sends a node version and omits proxyDetails when no proxy path is given; requires a port when one is', async () => {
     const sink: { body?: unknown } = {};
-    const { ctx, f } = await makeContext([...base(), captureBody({ method: 'POST', path: appsPath }, sink, 201), { method: 'GET', path: appsPath, body: [{ ...persistentApp, proxyDetails: undefined, command: 'node worker.js' }] }]);
+    const { ctx, f } = await makeContext([...base(), ...appsCreate(sink, [{ ...persistentApp, proxyDetails: undefined, command: 'node worker.js' }])]);
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node worker.js' }, ctx);
     // Verified live: an app created without a nodeVersion never starts ("exec: node: not found").
     expect(sink.body).toEqual({ command: 'node worker.js', startMode: 'automatic', nodeVersion: 'default' });
@@ -202,7 +218,7 @@ describe('persistent_app_create', () => {
 
   it('says so when port or allow_websocket is given without a proxy path', async () => {
     const sink: { body?: unknown } = {};
-    const { ctx } = await makeContext([...base(), captureBody({ method: 'POST', path: appsPath }, sink, 201), { method: 'GET', path: appsPath, body: [{ ...persistentApp, proxyDetails: undefined, command: 'node worker.js' }] }]);
+    const { ctx } = await makeContext([...base(), ...appsCreate(sink, [{ ...persistentApp, proxyDetails: undefined, command: 'node worker.js' }])]);
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node worker.js', port: 3000, allow_websocket: true }, ctx);
     // Nothing exposes the app, so the port and the WebSocket flag were dropped: say it.
     expect(sink.body).toEqual({ command: 'node worker.js', startMode: 'automatic', nodeVersion: 'default' });
@@ -213,7 +229,7 @@ describe('persistent_app_create', () => {
 
   it('strips one leading slash from the proxy path and says so; rejects an absolute working directory', async () => {
     const sink: { body?: unknown } = {};
-    const { ctx, f } = await makeContext([...base(), captureBody({ method: 'POST', path: appsPath }, sink, 201), { method: 'GET', path: appsPath, body: persistentApps }]);
+    const { ctx, f } = await makeContext([...base(), ...appsCreate(sink, persistentApps)]);
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: '/node', port: 3000 }, ctx);
     expect((sink.body as { proxyDetails: { path: string } }).proxyDetails.path).toBe('node');
     expect(r.text).toMatch(/leading slash/);
@@ -226,7 +242,7 @@ describe('persistent_app_create', () => {
   });
 
   it('refuses a command the runner cannot exec without sending anything', async () => {
-    const { ctx, f } = await makeContext([...base(), { method: 'POST', path: appsPath, status: 201 }, { method: 'GET', path: appsPath, body: persistentApps }]);
+    const { ctx, f } = await makeContext([...base(), ...appsCreate({}, persistentApps)]);
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'PORT=3000 node server.js' }, ctx);
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/environment/);
@@ -235,7 +251,7 @@ describe('persistent_app_create', () => {
   });
 
   it('reports the app even when the listing cannot match it', async () => {
-    const { ctx } = await makeContext([...base(), { method: 'POST', path: appsPath, status: 201 }, { method: 'GET', path: appsPath, body: [] }]);
+    const { ctx } = await makeContext([...base(), ...appsCreate({}, [])]);
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node other.js' }, ctx);
     expect(r.isError).toBeUndefined();
     expect(r.structured).toMatchObject({ created: true, id: null });
@@ -245,7 +261,12 @@ describe('persistent_app_create', () => {
   it('stays a success when the follow-up listing fails, because the app was already created', async () => {
     // The POST landed; only the read that looks up its id failed. Reporting that as an error would
     // tell the caller nothing was created and invite a second create of the same app.
-    const { ctx } = await makeContext([...base(), { method: 'POST', path: appsPath, status: 201 }, { method: 'GET', path: appsPath, status: 500, body: { code: 'internal', message: 'listing is down' } }]);
+    let posted = false;
+    const { ctx } = await makeContext([
+      { method: 'POST', path: appsPath, handler: async () => { posted = true; return new Response(null, { status: 201 }); } },
+      { method: 'GET', path: appsPath, handler: async () => (posted ? new Response(JSON.stringify({ code: 'internal', message: 'listing is down' }), { status: 500, headers: { 'content-type': 'application/json' } }) : new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })) },
+      ...base(),
+    ]);
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node other.js' }, ctx);
     expect(r.isError, r.text).toBeUndefined();
     expect(r.structured).toMatchObject({ created: true, id: null });
@@ -279,11 +300,71 @@ describe('persistent_app_create', () => {
     expect(d).toMatch(/strips the path prefix/);
     expect(d).toMatch(/not basePath/);
   });
+
+  it('reports the app this call created, not an older one with the same command', async () => {
+    const OLD_ID = '11111111-2222-4333-8444-555555555555';
+    const worker = { ...persistentApp, id: OLD_ID, command: 'node worker.js', workingDirectory: 'nodeapp', proxyDetails: undefined };
+    // The new app is listed FIRST: "the last match" (the old heuristic) would pick the older app.
+    const { ctx } = await makeContext([...appsCreate({}, [{ ...worker, id: APP_ID }, worker], [worker]), ...base()]);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node worker.js', working_directory: 'nodeapp' }, ctx);
+    expect(r.isError, r.text).toBeUndefined();
+    expect(r.structured).toMatchObject({ id: APP_ID, created: true });
+  });
+
+  it('confirms a create whose answer never came by finding the new app in the listing', async () => {
+    const { ctx, f } = await makeContext([
+      ...writeThenList({ writePath: appsPath, listPath: appsPath, before: [], after: persistentApps, write: () => { throw new TypeError('fetch failed'); } }),
+      ...base(),
+    ]);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', working_directory: 'nodeapp', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.isError, r.text).toBeUndefined();
+    expect(r.text).toContain('confirmed by reading it back');
+    expect(r.structured).toMatchObject({ id: APP_ID, created: true });
+    expect(f.calls.filter((c) => c.method === 'POST' && c.path === appsPath)).toHaveLength(1);
+  });
+
+  it('says the outcome is unknown when the new app never appears, and posts once', async () => {
+    const { ctx, f } = await makeContext([
+      ...writeThenList({ writePath: appsPath, listPath: appsPath, before: [], after: [], write: () => { throw new TypeError('fetch failed'); } }),
+      ...base(),
+    ]);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', working_directory: 'nodeapp', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(websiteLine);
+    expect(r.text).toContain('OUTCOME UNKNOWN');
+    expect(r.text).toContain('persistent_apps_list website=vahi.dev');
+    expect(r.structured).toMatchObject({ outcome: 'unknown', created: null, id: null, url: 'https://vahi.dev/node/' });
+    expect(f.calls.filter((c) => c.method === 'POST' && c.path === appsPath)).toHaveLength(1);
+  });
+
+  it('passes the duplicate-path 409 through as the panel refusing, with no re-reads', async () => {
+    const { ctx, f } = await makeContext([{ method: 'POST', path: appsPath, status: 409, body: { code: 'already_exists', detail: 'website', message: 'An app already exists with this path' } }, { method: 'GET', path: appsPath, body: [] }, ...base()]);
+    await expect(callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx)).rejects.toThrow(/409/);
+    // One read: the snapshot before the write. A refusal is never re-read.
+    expect(f.calls.filter((c) => c.method === 'GET' && c.path === appsPath)).toHaveLength(1);
+  });
+
+  it('refuses without sending anything when the listing before the write cannot be read', async () => {
+    // Without the snapshot the id it would report could be an older app's, so it stops before the POST.
+    const { ctx, f } = await makeContext([
+      { method: 'POST', path: appsPath, status: 201 },
+      { method: 'GET', path: appsPath, status: 500, body: { code: 'internal', message: 'listing is down' } },
+      ...base(),
+    ]);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node other.js' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(websiteLine);
+    expect(r.text).toContain('listing is down');
+    expect(r.text).toMatch(/nothing was sent to the panel/);
+    expect(r.text).toContain('persistent_apps_list');
+    expect(r.structured).toMatchObject({ created: false });
+    expect(f.calls.some((c) => c.method === 'POST' && c.path === appsPath)).toBe(false);
+  });
 });
 
 describe('persistent_app_create path preflight', () => {
   /** Create routes plus whatever the follow-up listing should return. */
-  const routes = (sink: { body?: unknown; path?: string }, listing: unknown = persistentApps): Route[] => [...base(), captureBody({ method: 'POST', path: appsPath }, sink, 201), { method: 'GET', path: appsPath, body: listing }];
+  const routes = (sink: { body?: unknown; path?: string }, listing: unknown = persistentApps): Route[] => [...appsCreate(sink, listing), ...base()];
   const rootApp = { ...persistentApp, workingDirectory: undefined, proxyDetails: { path: '', port: 3000, allowWebSocketUpgrade: false } };
 
   it('refuses a proxy path that already serves something, and sends nothing', async () => {
@@ -300,10 +381,10 @@ describe('persistent_app_create path preflight', () => {
     expect(r.text).toContain('https://vahi.dev/node/');
     expect(r.text).toContain('Registering this app would replace');
     expect(r.text).toContain('replace_existing_path');
-    expect(r.text).toMatch(/Nothing was sent to the panel/);
+    expect(r.text).toMatch(/nothing on the site was changed/);
     // Both forms are asked, because they answer differently on a real site.
     expect(seen.map((s) => s.path)).toEqual(['/node', '/node/']);
-    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+    expect(f.calls.some((c) => c.method === 'POST' && c.path === appsPath)).toBe(false);
     expect(r.structured).toMatchObject({ created: false });
   });
 
@@ -317,10 +398,10 @@ describe('persistent_app_create path preflight', () => {
     ctx.httpProbe = pathProbe({ '/assets': { status: 301, location: 'https://vahi.dev/assets/' } }, seen);
     const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'assets', port: 3000 }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('HTTP 301 on /assets: an existing directory in public_html');
-    expect(r.text).toMatch(/Nothing was sent to the panel/);
+    expect(r.text).toContain('HTTP 301 on /assets: a redirect to /assets/, which is how an existing directory in public_html/ shows');
+    expect(r.text).toMatch(/nothing on the site was changed/);
     expect(seen.map((s) => s.path)).toEqual(['/assets', '/assets/']);
-    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+    expect(f.calls.some((c) => c.method === 'POST' && c.path === appsPath)).toBe(false);
     expect(r.structured).toMatchObject({ created: false, pathStatus: 301 });
   });
 
@@ -341,7 +422,7 @@ describe('persistent_app_create path preflight', () => {
       const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: path, port: 3000 }, ctx);
       expect(r.isError, seenText).toBe(true);
       expect(r.text).toContain(seenText);
-      expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+      expect(f.calls.some((c) => c.method === 'POST' && c.path === appsPath)).toBe(false);
     }
   });
 
@@ -367,9 +448,37 @@ describe('persistent_app_create path preflight', () => {
     expect(r.isError).toBeUndefined();
     expect(f.calls.some((c) => c.method === 'POST')).toBe(true);
     expect(r.text).toMatch(/replaced/);
-    expect(r.text).toContain('HTTP 301 on /node: an existing directory in public_html');
+    expect(r.text).toContain('HTTP 301 on /node: a redirect to /node/, which is how an existing directory in public_html/ shows');
     // Machine-readable, so a caller that has to put the replaced content back knows what it was.
     expect(r.structured).toMatchObject({ created: true, replaced: { status: 301, path: '/node' } });
+  });
+
+  it('keeps what it took off the web when a create over a taken path has an unknown outcome', async () => {
+    // Only this call saw what answered there before, and an app that lands late still replaces it.
+    const { ctx } = await makeContext([
+      ...writeThenList({ writePath: appsPath, listPath: appsPath, before: [], after: [], write: () => { throw new TypeError('fetch failed'); } }),
+      ...base(),
+    ]);
+    ctx.httpProbe = pathProbe({ '/node': { status: 301, location: 'https://vahi.dev/node/' } });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', working_directory: 'nodeapp', proxy_path: 'node', port: 3000, replace_existing_path: true }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('OUTCOME UNKNOWN');
+    expect(r.text).toContain('replaced what https://vahi.dev/node/ served before');
+    expect(r.text).toContain('HTTP 301 on /node: a redirect to /node/, which is how an existing directory in public_html/ shows');
+    expect(r.structured).toMatchObject({ outcome: 'unknown', created: null, id: null, url: 'https://vahi.dev/node/', replaced: { status: 301, path: '/node' } });
+  });
+
+  it('says a whole-site app would own the domain even when its outcome is unknown', async () => {
+    const { ctx } = await makeContext([
+      ...writeThenList({ writePath: appsPath, listPath: appsPath, before: [], after: [], write: () => { throw new TypeError('fetch failed'); } }),
+      ...base(),
+    ]);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', serve_at_root: true, port: 3000 }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('OUTCOME UNKNOWN');
+    expect(r.text).toContain('owns the whole domain');
+    expect(r.structured).toMatchObject({ outcome: 'unknown', created: null, id: null, url: 'https://vahi.dev/' });
+    expect(r.structured).not.toHaveProperty('replaced');
   });
 
   it('creates anyway when the preflight cannot run, and says the path was not checked', async () => {
@@ -411,8 +520,8 @@ describe('persistent_app_create path preflight', () => {
     expect(r.text).toContain('HTTP 200 on /');
     expect(r.text).toMatch(/subdomain/);
     // Every refusal in this server says what did not happen, and this one is no exception.
-    expect(r.text).toMatch(/Nothing was sent to the panel/);
-    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+    expect(r.text).toMatch(/nothing on the site was changed/);
+    expect(f.calls.some((c) => c.method === 'POST' && c.path === appsPath)).toBe(false);
   });
 
   it('refuses serve_at_root together with proxy_path without probing or sending anything', async () => {
@@ -792,7 +901,7 @@ describe('persistent_app_probe', () => {
     };
     const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
     expect(r.isError).toBeUndefined();
-    expect(r.text).toMatch(/1 asset.? could not be checked in time/);
+    expect(r.text).toMatch(/1 asset.? could not be checked \(no answer in time, or no HTTP status\)/);
     expect(r.text).toContain('/node/slow.png');
     // `checked` counts assets that produced a definite status: a timed-out fetch is not one of them.
     expect(r.structured).toMatchObject({ assets: { attempted: 1, checked: 0, failed: [], restricted: [], unchecked: [{ url: '/node/slow.png', reason: 'no response within 8000 ms' }] } });
@@ -851,7 +960,7 @@ describe('persistent_app_probe', () => {
     const assets = (r.structured as { assets: { failed: unknown[]; unchecked: unknown[] } }).assets;
     expect(assets.failed).toEqual([{ url: '/next.svg', status: 404, outsidePrefix: true }]);
     expect(assets.unchecked).toEqual([{ url: '/node/slow.js', reason: 'no response within 8000 ms' }]);
-    expect(r.text).toMatch(/could not be checked in time/);
+    expect(r.text).toMatch(/could not be checked \(no answer in time, or no HTTP status\)/);
     expect(r.text).toContain('/node/slow.js');
   });
 
@@ -965,5 +1074,230 @@ describe('persistent_app_probe', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/proxy path/);
     expect(r.structured).toMatchObject({ reachable: false });
+  });
+});
+
+describe('the clash refusal asks the file service what is on disk', () => {
+  const withNodeFolder = fsRoot(fsDir('public_html', [fsDir('public_html/node', [fsFile('public_html/node/index.php'), fsFile('public_html/node/app.js')]), fsFile('public_html/index.html')]));
+  const withoutNodeFolder = fsRoot(fsDir('public_html', [fsFile('public_html/index.html')]));
+
+  it('names the folder the app would hide, and asks for exactly the levels it needs', async () => {
+    const seen: Request[] = [];
+    const { ctx, f } = await makeContext([...appsCreate({}, persistentApps), ...fileServiceRoutes(withNodeFolder, seen), ...base()]);
+    ctx.httpProbe = pathProbe({ '/node/': 200 });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("on disk (the panel's file service): public_html/node is an existing folder holding 2 entries, which the app would hide.");
+    expect(r.structured).toMatchObject({ created: false, onDisk: expect.stringContaining('existing folder') });
+    expect(new URL(seen[0]!.url).searchParams.get('maxDepth')).toBe('2');
+    expect(f.calls.some((c) => c.method === 'POST' && c.path === appsPath)).toBe(false);
+  });
+
+  it('says nothing on disk is at stake when the web server alone answers', async () => {
+    const { ctx } = await makeContext([...appsCreate({}, persistentApps), ...fileServiceRoutes(withoutNodeFolder), ...base()]);
+    ctx.httpProbe = pathProbe({ '/node/': 200 });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.text).toContain('nothing exists at public_html/node, so that answer comes from the web server itself');
+    // No files at stake is not "nothing at stake": a rewrite can serve a live page from nowhere on disk.
+    expect(r.text).toContain('replace_existing_path=true would hide no files there, but it would still replace what https://vahi.dev/node/ answers today.');
+  });
+
+  it('never states a directory as fact when the redirect that suggests one has nothing on disk behind it', async () => {
+    const { ctx } = await makeContext([...appsCreate({}, persistentApps), ...fileServiceRoutes(withoutNodeFolder), ...base()]);
+    ctx.httpProbe = pathProbe({ '/node': { status: 301, location: 'https://vahi.dev/node/' } });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.text).toContain('HTTP 301 on /node: a redirect to /node/, which is how an existing directory in public_html/ shows');
+    expect(r.text).toContain('nothing exists at public_html/node');
+    expect(r.text).not.toContain(': an existing directory');
+  });
+
+  it('counts the document root for a whole-site clash', async () => {
+    // Two levels, as a whole-site clash asks for: the file service's tree is refused when it is
+    // deeper than the levels asked, so a folder on the last level is sent unopened (`[]`).
+    const twoLevels = fsRoot(fsDir('public_html', [fsDir('public_html/node', []), fsFile('public_html/index.html')]));
+    const { ctx } = await makeContext([...appsCreate({}, persistentApps), ...fileServiceRoutes(twoLevels), ...base()]);
+    ctx.httpProbe = pathProbe({ '/': 200 });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', serve_at_root: true, port: 3000 }, ctx);
+    expect(r.text).toContain('public_html holds 2 entries, and none of it is served while a whole-site app is registered');
+  });
+
+  it('gives a moved proxy the same line', async () => {
+    const { ctx } = await makeContext([{ method: 'GET', path: appsPath, body: persistentApps }, { method: 'PATCH', path: appPath }, ...fileServiceRoutes(fsRoot(fsDir('public_html', [fsDir('public_html/demo-login', [fsFile('public_html/demo-login/index.php')])]))), ...base()]);
+    ctx.httpProbe = pathProbe({ '/demo-login/': 200 });
+    const r = await callTool(byName(tools, 'persistent_app_update'), { website: 'vahi.dev', app_id: APP_ID, proxy_path: 'demo-login' }, ctx);
+    expect(r.text).toContain('public_html/demo-login is an existing folder holding 1 entry');
+    expect(r.structured).toMatchObject({ updated: false, onDisk: expect.any(String) });
+  });
+
+  it('goes out without the line when the service fails or the plan has no file manager, and never decides', async () => {
+    const failing = await makeContext([...appsCreate({}, persistentApps), ...fileServiceRoutes(withNodeFolder, [], { status: 500 }), ...base()]);
+    failing.ctx.httpProbe = pathProbe({ '/node/': 200 });
+    const a = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, failing.ctx);
+    expect(a.isError).toBe(true);
+    expect(a.text).not.toContain('on disk');
+    expect(a.structured).toMatchObject({ onDisk: null });
+    const noManager = await makeContext([{ method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: { ...websiteDetail, canUse: { ...websiteDetail.canUse, fileManager: false } } }, ...appsCreate({}, persistentApps), ...fileServiceRoutes(withNodeFolder), ...base()]);
+    noManager.ctx.httpProbe = pathProbe({ '/node/': 200 });
+    await callTool(byName(tools, 'persistent_app_create'), { website: WEBSITE_ID, command: 'npm start', proxy_path: 'node', port: 3000 }, noManager.ctx);
+    expect(noManager.f.calls.some((c) => c.path.endsWith('/access-tokens'))).toBe(false);
+    // A free path is decided by HTTP alone: the file service is never asked.
+    const free = await makeContext([...appsCreate({}, persistentApps), ...fileServiceRoutes(withNodeFolder), ...base()]);
+    const c = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, free.ctx);
+    expect(c.isError, c.text).toBeUndefined();
+    expect(free.f.calls.some((x) => x.path.endsWith('/access-tokens'))).toBe(false);
+  });
+
+  it('waits at most five seconds for a file service that never answers, then refuses without the line', async () => {
+    // The second opinion must never hold the refusal hostage: the budget is the whole wait, token
+    // mint included, whatever the service does after it.
+    let reached!: () => void;
+    const atService = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const { ctx } = await makeContext([
+      ...appsCreate({}, persistentApps),
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/access-tokens`, body: SITE_TOKEN },
+      {
+        method: 'GET',
+        path: `${FILERD_ADDRESS}/websites/${WEBSITE_ID}/entries`,
+        handler: () => {
+          reached();
+          return new Promise<Response>(() => undefined);
+        },
+      },
+      ...base(),
+    ]);
+    ctx.httpProbe = pathProbe({ '/node/': 200 });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let settled = false;
+      const pending = callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx).then((r) => {
+        settled = true;
+        return r;
+      });
+      await Promise.race([atService, pending]);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const r = await pending;
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('Registering this app would replace');
+      expect(r.text).not.toContain('on disk');
+      expect(r.structured).toMatchObject({ created: false, onDisk: null });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('adds nothing when a folder on the way is a symlink, because what it points at was not read', async () => {
+    // The service lists a symlink without following it. "Nothing exists at public_html/node" under a
+    // symlinked document root would be a false all-clear, and "public_html holds 0 entries" a false
+    // count: both would talk the caller into replace_existing_path=true.
+    for (const [tree, args, probed] of [
+      [fsRoot(fsLink('public_html')), { proxy_path: 'node' }, '/node/'],
+      [fsRoot(fsLink('public_html')), { serve_at_root: true }, '/'],
+      [fsRoot(fsDir('public_html', [fsLink('public_html/api')])), { proxy_path: 'api/v1' }, '/api/v1/'],
+    ] as const) {
+      const { ctx, f } = await makeContext([...appsCreate({}, persistentApps), ...fileServiceRoutes(tree), ...base()]);
+      ctx.httpProbe = pathProbe({ [probed]: 200 });
+      const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', port: 3000, ...args }, ctx);
+      expect(r.isError, probed).toBe(true);
+      expect(f.calls.some((c) => c.path.endsWith('/access-tokens')), probed).toBe(true);
+      expect(r.text, probed).not.toContain('on disk');
+      expect(r.structured, probed).toMatchObject({ onDisk: null });
+    }
+  });
+
+  it('says a missing parent folder means nothing exists at the path', async () => {
+    const { ctx } = await makeContext([...appsCreate({}, persistentApps), ...fileServiceRoutes(fsRoot(fsDir('public_html', [fsFile('public_html/index.php')]))), ...base()]);
+    ctx.httpProbe = pathProbe({ '/api/v1/': 200 });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'api/v1', port: 3000 }, ctx);
+    expect(r.text).toContain('nothing exists at public_html/api/v1, so that answer comes from the web server itself');
+  });
+
+  it('names a file or a symlink at the path itself', async () => {
+    for (const [entry, words] of [
+      [fsFile('public_html/report.pdf', 2048), 'public_html/report.pdf is an existing file of 2048 bytes, which the app would hide.'],
+      [fsLink('public_html/report.pdf'), 'public_html/report.pdf is an existing symlink, which the app would hide.'],
+    ] as const) {
+      const { ctx } = await makeContext([...appsCreate({}, persistentApps), ...fileServiceRoutes(fsRoot(fsDir('public_html', [entry]))), ...base()]);
+      ctx.httpProbe = pathProbe({ '/report.pdf': 200 });
+      const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'report.pdf', port: 3000 }, ctx);
+      expect(r.text).toContain(words);
+    }
+  });
+});
+
+describe('milestone C minors', () => {
+  it('recognises a relative redirect to the trailing-slash form as a directory', async () => {
+    const { ctx } = await makeContext([...appsCreate({}, persistentApps), ...base()]);
+    ctx.httpProbe = pathProbe({ '/api/v1': { status: 301, location: 'v1/' } });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'api/v1', port: 3000 }, ctx);
+    expect(r.text).toContain('HTTP 301 on /api/v1: a redirect to /api/v1/, which is how an existing directory in public_html/ shows');
+  });
+
+  it("names the website's own document root for a directory redirect, not a hard-coded public_html", async () => {
+    const htdocs = { ...websiteDetail, domain: { ...websiteDetail.domain, documentRoot: 'htdocs/' } };
+    const { ctx } = await makeContext([{ method: 'GET', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}`, body: htdocs }, ...appsCreate({}, persistentApps), ...base()]);
+    ctx.httpProbe = pathProbe({ '/node': { status: 301, location: 'https://vahi.dev/node/' } });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.text).toContain('HTTP 301 on /node: a redirect to /node/, which is how an existing directory in htdocs/ shows');
+    expect(r.text).not.toContain('public_html/ shows');
+  });
+
+  it('calls a path taken when one form answers 200 and the other never answers', async () => {
+    const { ctx } = await makeContext([...appsCreate({}, persistentApps), ...base()]);
+    const answers = pathProbe({ '/node/': 200 });
+    ctx.httpProbe = async (req) => {
+      if (req.path === '/node') throw new Error('reset');
+      return answers(req);
+    };
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', proxy_path: 'node', port: 3000 }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('HTTP 200 on /node/');
+  });
+
+  it("names the other apps a delete leaves on the site, and says when it is the only one", async () => {
+    const OTHER = '99999999-8888-4777-8666-555555555555';
+    const other = { ...persistentApp, id: OTHER, command: 'node worker.js', proxyDetails: undefined };
+    const del = byName(tools, 'persistent_app_delete');
+    const args = del.input.parse({ website: 'vahi.dev', app_id: APP_ID });
+    const two = await makeContext([...base(), { method: 'GET', path: appsPath, body: [persistentApp, other] }]);
+    const p2 = await del.preview!(args, two.ctx, await del.target!(args, two.ctx));
+    expect(p2).toContain(`${OTHER} (node worker.js, not exposed)`);
+    expect(p2).toContain('the container restart interrupts them too');
+    const one = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    expect(await del.preview!(args, one.ctx, await del.target!(args, one.ctx))).toContain('It is the only persistent app on this site.');
+  });
+
+  it('does not call a vanished app "the only one" when the listing no longer shows it', async () => {
+    // target() found the app; by the time preview() re-reads the listing it may be gone.
+    const del = byName(tools, 'persistent_app_delete');
+    const args = del.input.parse({ website: 'vahi.dev', app_id: APP_ID });
+    const before = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    const target = await del.target!(args, before.ctx);
+    const gone = await makeContext([...base(), { method: 'GET', path: appsPath, body: [] }]);
+    const preview = await del.preview!(args, gone.ctx, target);
+    expect(preview).toContain('an app the listing no longer shows');
+    expect(preview).not.toContain('the only persistent app');
+    expect(preview).toContain('No other persistent app is listed on this site.');
+  });
+
+  it('words an unchecked asset for both causes: no answer in time, or no HTTP status', async () => {
+    // Status 0 is the transport saying "no status line came back": not a timeout, and not broken.
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: appsPath, body: persistentApps }]);
+    ctx.httpProbe = pathProbe({ '/node/': { status: 200, body: '<img src="/node/odd.png">' }, '/node/odd.png': 0 });
+    const r = await callTool(byName(tools, 'persistent_app_probe'), { website: 'vahi.dev', app_id: APP_ID }, ctx);
+    expect(r.isError).toBeUndefined();
+    expect(r.text).toContain('1 of the 1 assets could not be checked (no answer in time, or no HTTP status), which is not the same as broken');
+    expect(r.text).toContain('/node/odd.png: no HTTP status');
+  });
+
+  it("states the asset check's worst case from the constants it quotes", () => {
+    // The page is re-read (5 s) and the assets go in rounds of ASSET_CONCURRENCY, ASSET_TIMEOUT_MS each.
+    const worst = Math.ceil(MAX_ASSETS / ASSET_CONCURRENCY) * (ASSET_TIMEOUT_MS / 1000) + 5;
+    const d = byName(tools, 'persistent_app_probe').description;
+    expect(d).toContain(`up to about ${worst} s`);
+    expect(d).not.toContain('half a minute');
   });
 });

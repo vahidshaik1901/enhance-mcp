@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { tools } from '../../src/tools/websites.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
+import type { Route } from '../helpers/fakeFetch.js';
 import { branding, brandingNoStaging, domainMappings, ORG_ID, subscriptions, WEBSITE_ID, websiteDetail, websitesList } from '../fixtures/panel.js';
 
 const base = () => [
@@ -92,6 +93,172 @@ describe('website_create', () => {
     const bad = await callTool(byName(tools, 'website_create'), { domain: 'other.example', subscription_id: 664 }, ctx);
     expect(bad.isError).toBe(true);
     expect(bad.text).toContain('Eligible: 686.');
+  });
+
+  const created = { ...websiteDetail, id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', domain: { ...websiteDetail.domain, domain: 'new.example' }, aliases: [] };
+  const oneSubscription = { method: 'GET', path: `/orgs/${ORG_ID}/subscriptions`, body: { ...subscriptions, items: [subscriptions.items[0]] } };
+  /** domain_check answers notInUse to the pre-check, then `later` to every re-read after the create. */
+  const checkThen = (later: unknown, seen: { checks: number }): Route => ({
+    method: 'POST',
+    path: `/orgs/${ORG_ID}/domains/check`,
+    handler: async () => {
+      seen.checks += 1;
+      return new Response(JSON.stringify(seen.checks === 1 ? { status: 'notInUse', websiteId: null } : later), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  const websitesPost = (c: { method: string; path: string }) => c.method === 'POST' && c.path === `/orgs/${ORG_ID}/websites`;
+
+  it('confirms a create whose answer never came by re-checking the domain, and never posts twice', async () => {
+    const seen = { checks: 0 };
+    const { ctx, f } = await makeContext([
+      ...base(),
+      checkThen({ status: 'inUseCurrentOrg', websiteId: created.id }, seen),
+      oneSubscription,
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, handler: async () => { throw new TypeError('fetch failed'); } },
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${created.id}`, body: created },
+    ]);
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain('website: new.example');
+    expect(r.text).toContain('confirmed by reading it back');
+    expect(r.text).toContain('next steps');
+    expect(r.structured).toMatchObject({ created: true, websiteId: created.id, confirmedBy: 'verify' });
+    expect(f.calls.filter(websitesPost)).toHaveLength(1);
+    expect(seen.checks).toBe(2);
+  });
+
+  it('says the outcome is unknown, not failed, when 90 s of re-checks never see the site', async () => {
+    const seen = { checks: 0 };
+    const { ctx, f } = await makeContext([
+      ...base(),
+      checkThen({ status: 'notInUse', websiteId: null }, seen),
+      oneSubscription,
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, handler: async () => { throw new DOMException('The operation was aborted due to timeout', 'TimeoutError'); } },
+    ]);
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('OUTCOME UNKNOWN');
+    expect(r.text).toContain('Do not retry yet');
+    expect(r.text).toContain('domain_check domain=new.example');
+    expect(r.structured).toMatchObject({ outcome: 'unknown', created: null, domain: 'new.example', reads: 18 });
+    expect(f.calls.filter(websitesPost)).toHaveLength(1);
+    // The pre-check, then a re-read every 5 s for 90 s.
+    expect(seen.checks).toBe(1 + 18);
+    // The sentence counts the reads that were made, not the window they were allowed.
+    expect(r.text).toContain('18 re-reads');
+  });
+
+  it('passes a 409 through as the panel refusing, with no re-reads', async () => {
+    const seen = { checks: 0 };
+    const { ctx } = await makeContext([
+      ...base(),
+      checkThen({ status: 'inUseCurrentOrg', websiteId: created.id }, seen),
+      oneSubscription,
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, status: 409, body: { code: 'already_exists', message: 'website exists' } },
+    ]);
+    await expect(callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx)).rejects.toThrow(/409/);
+    expect(seen.checks).toBe(1);
+  });
+
+  it('confirms a create the gateway answered 502 for, by re-checking the domain', async () => {
+    const seen = { checks: 0 };
+    const { ctx, f } = await makeContext([
+      ...base(),
+      checkThen({ status: 'inUseCurrentOrg', websiteId: created.id }, seen),
+      oneSubscription,
+      // A proxy in front of the panel gives up on a slow create and answers 502 while the panel
+      // carries on and finishes the site.
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, handler: async () => new Response('<html><body><h1>502 Bad Gateway</h1></body></html>', { status: 502, headers: { 'content-type': 'text/html' } }) },
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${created.id}`, body: created },
+    ]);
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain('HTTP 502');
+    expect(r.text).toContain('confirmed by reading it back');
+    expect(r.structured).toMatchObject({ created: true, websiteId: created.id, confirmedBy: 'verify' });
+    expect(f.calls.filter(websitesPost)).toHaveLength(1);
+    expect(seen.checks).toBe(2);
+  });
+
+  it('settles the id of a create answered 2xx with no body by one domain check, and renders the site', async () => {
+    // openapi-fetch hands back `undefined` for an empty 2xx body: the site exists, only its id is
+    // missing, and the same question `find` asks names it.
+    const seen = { checks: 0 };
+    const { ctx, f } = await makeContext([
+      ...base(),
+      checkThen({ status: 'inUseCurrentOrg', websiteId: created.id }, seen),
+      oneSubscription,
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, handler: async () => new Response(null, { status: 201 }) },
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${created.id}`, body: created },
+    ]);
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain('website: new.example');
+    expect(r.text).not.toContain('undefined');
+    expect(r.structured).toMatchObject({ created: true, websiteId: created.id, confirmedBy: 'response' });
+    expect(f.calls.filter(websitesPost)).toHaveLength(1);
+    // The pre-check, then exactly one read for the id: the write answered, so nothing polls.
+    expect(seen.checks).toBe(2);
+  });
+
+  it('stays a success with no id when a body-less create cannot be found by the domain check either', async () => {
+    const seen = { checks: 0 };
+    const { ctx, f } = await makeContext([
+      ...base(),
+      checkThen({ status: 'notInUse', websiteId: null }, seen),
+      oneSubscription,
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, handler: async () => new Response(null, { status: 201 }) },
+    ]);
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text.split('\n')[0]).toContain('org:');
+    expect(r.text).toContain('website new.example created; the panel returned no id — run domain_check domain=new.example (inUseCurrentOrg shows its id), then website_get');
+    expect(r.text).not.toContain('undefined');
+    expect(r.structured).toEqual({ created: true, websiteId: null, confirmedBy: 'response', website: null });
+    expect(f.calls.filter(websitesPost)).toHaveLength(1);
+    expect(seen.checks).toBe(2);
+    // Never a read of a website with no id.
+    expect(f.calls.some((c) => c.method === 'GET' && c.path.startsWith(`/orgs/${ORG_ID}/websites/`))).toBe(false);
+  });
+
+  it('stays a success with no id when the domain check for a body-less create fails, and says why', async () => {
+    let checks = 0;
+    const { ctx } = await makeContext([
+      ...base(),
+      {
+        method: 'POST',
+        path: `/orgs/${ORG_ID}/domains/check`,
+        handler: async () => {
+          checks += 1;
+          return checks === 1
+            ? new Response(JSON.stringify({ status: 'notInUse', websiteId: null }), { status: 200, headers: { 'content-type': 'application/json' } })
+            : new Response(JSON.stringify({ code: 'internal', message: 'check is down' }), { status: 500, headers: { 'content-type': 'application/json' } });
+        },
+      },
+      oneSubscription,
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, handler: async () => new Response(null, { status: 201 }) },
+    ]);
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain('the panel returned no id');
+    expect(r.text).toContain('The domain check for the id failed (HTTP 500 internal: check is down).');
+    expect(r.structured).toEqual({ created: true, websiteId: null, confirmedBy: 'response', website: null });
+  });
+
+  it('stays a success when the read-back of a created site fails, and names website_get', async () => {
+    const { ctx } = await makeContext([
+      ...base(),
+      { method: 'POST', path: `/orgs/${ORG_ID}/domains/check`, body: { status: 'notInUse', websiteId: null } },
+      oneSubscription,
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, status: 201, body: { id: created.id } },
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${created.id}`, status: 500, body: { code: 'internal', message: 'detail is down' } },
+    ]);
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain(`created (id ${created.id})`);
+    expect(r.text).toContain(`website_get website=${created.id}`);
+    expect(r.text).toContain('detail is down');
+    expect(r.structured).toMatchObject({ created: true, websiteId: created.id, confirmedBy: 'response', website: null });
   });
 });
 

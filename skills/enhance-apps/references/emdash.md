@@ -103,6 +103,10 @@ the customer anything.
   start. Anything else is a problem.
 - Do **not** grep the admin HTML for "error": it carries the whole i18n catalogue, "an error
   occurred" strings included, and they mean nothing.
+- (expected from this recipe's layout; not yet re-run with files_list) `files_list website=<site> path=emdashapp` → `dist/` (list `path=emdashapp/dist` to see
+  `server/entry.mjs`, the file the start script runs), `node_modules/` with its contents skipped,
+  `.env` with mode `600`, and — once the probe has made the first request — the SQLite file
+  `data.db`.
 
 ## First admin (skill step 15) — a passkey, so a human must do it
 

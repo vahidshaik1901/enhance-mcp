@@ -50,6 +50,24 @@ This applies to every enhance tool, not just `doctor`: the plugin always runs th
 | `credential spans N orgs` | login is a member of several orgs | set `ENHANCE_ORG_ID` from the list in `auth_status` |
 | ssh/rsync fail with `Connection reset by peer` from Claude Code but work in a terminal | Claude Code sandbox | run the command with the sandbox disabled, or add `ssh` and `rsync` to `sandbox.excludedCommands` |
 
+## Two tool behaviours to know
+
+The binding part of both is in `references/safety-rules.md` (rules 11 to 13), the one file every
+enhance skill loads; this is the longer explanation.
+
+- **`files_list` is the read-only look at a site's files**: a tree under the document root, or any
+  folder in the site home, with sizes, modes and modified times. It mints a four-minute site token
+  for that one read and never shows it. Safety rule 12 has the SSH fallback for when the file
+  service cannot answer.
+- **A create that answers "OUTCOME UNKNOWN" is never retried until its settling read shows the
+  object absent.** Nine create tools — `website_create`, `domain_add`, `ssh_key_add`, `db_create`,
+  `db_user_create`, `pg_db_create`, `pg_user_create`, `cron_add` and `persistent_app_create` —
+  confirm an unclear panel answer by reading the object back, and say so ("confirmed by reading it
+  back"). Only when that read-back cannot settle it does the answer say OUTCOME UNKNOWN. Then run
+  the settling read the answer names first: if it shows the object, the create landed, so carry on
+  with it; if it shows it absent, tell the user before creating it again, because it may still land
+  late. Retrying a create that did land makes a duplicate or fails with "already exists".
+
 ## After connecting
 
 Offer the next step, both halves of it: "Want me to deploy something? I can take a static site, PHP or WordPress project, or a Node app from this folder to one of your sites — or install a ready-made app for you, like Ghost or a CMS, on a domain or subdomain." Deploying what is in the folder is the `enhance-deploy` skill; installing a ready-made app or a fresh scaffold is `enhance-apps`.

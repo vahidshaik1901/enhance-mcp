@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { allTools } from '../../src/tools/index.js';
 import { fingerprint, parsePublicKey, tools } from '../../src/tools/ssh.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
+import { writeThenList } from '../helpers/fakeFetch.js';
 import { domainMappings, ORG_ID, sshKeys, WEBSITE_ID, websiteDetail, websitesList } from '../fixtures/panel.js';
 
 const PUB = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO/0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa user@laptop';
@@ -105,6 +106,34 @@ describe('ssh_keys_list / ssh_key_add / ssh_key_remove', () => {
     expect(await t.preview!({ website: 'vahi.dev', key: 'claude-mcp-test' }, ctx, target)).toContain('claude-mcp-test');
     await t.handler({ website: 'vahi.dev', key: 'claude-mcp-test' }, ctx, target);
     expect(f.calls.find((c) => c.method === 'DELETE')?.path).toBe(`/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys/0`);
+  });
+  it('stays a success when the add answers 2xx with no body, and names the listing that has the id', async () => {
+    const other = PUB.replace('AAAAIO/0aaaa', 'AAAAIO/0dddd');
+    const { ctx, f } = await makeContext([{ method: 'POST', path: `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys`, handler: async () => new Response(null, { status: 201 }) }, ...base()]);
+    const r = await callTool(byName(tools, 'ssh_key_add'), { website: 'vahi.dev', public_key: other, name: 'ci' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain('authorized as "ci"');
+    expect(r.text).toContain('run ssh_keys_list website=vahi.dev for its id');
+    expect(r.text).not.toContain('undefined');
+    expect(r.structured).toMatchObject({ keyId: null, added: true });
+    expect(f.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+  });
+  it('confirms a key whose add answer never came, and says unknown when it never shows up', async () => {
+    const keysPath = `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/ssh/keys`;
+    const other = PUB.replace('AAAAIO/0aaaa', 'AAAAIO/0cccc');
+    const listed = { items: [...sshKeys.items, { id: '7', name: 'ci', createdAt: '2026-09-24T00:00:00Z', value: other.split(' ').slice(0, 2).join(' ') }] };
+    const landed = await makeContext([...writeThenList({ writePath: keysPath, listPath: keysPath, before: sshKeys, after: listed, write: () => { throw new TypeError('fetch failed'); } }), ...base()]);
+    const a = await callTool(byName(tools, 'ssh_key_add'), { website: 'vahi.dev', public_key: other, name: 'ci' }, landed.ctx);
+    expect(a.isError, a.text).toBeFalsy();
+    expect(a.text).toContain('confirmed by reading it back');
+    expect(a.structured).toMatchObject({ keyId: '7', added: true });
+    expect(landed.f.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+    const lost = await makeContext([...writeThenList({ writePath: keysPath, listPath: keysPath, before: sshKeys, after: sshKeys, write: () => { throw new TypeError('fetch failed'); } }), ...base()]);
+    const b = await callTool(byName(tools, 'ssh_key_add'), { website: 'vahi.dev', public_key: other, name: 'ci' }, lost.ctx);
+    expect(b.isError).toBe(true);
+    expect(b.text).toContain('OUTCOME UNKNOWN');
+    expect(b.text).toContain('ssh_keys_list website=vahi.dev');
+    expect(b.structured).toMatchObject({ outcome: 'unknown', added: null });
   });
 });
 

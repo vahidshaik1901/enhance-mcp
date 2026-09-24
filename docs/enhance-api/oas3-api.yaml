@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   description: orchd API docs
-  version: 12.25.11
+  version: 12.25.12
   title: orchd
 tags:
   - name: install

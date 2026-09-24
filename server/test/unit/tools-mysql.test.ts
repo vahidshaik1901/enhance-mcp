@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { tools } from '../../src/tools/mysql.js';
 import { base, MYSQL_DB, mysqlDbs, ORG_ID, SERVER_IP, websiteDetail, WEBSITE_ID, websiteSummary, websitesList } from '../fixtures/panel.js';
 import { byName, callTool, makeContext } from '../helpers/context.js';
-import type { Route } from '../helpers/fakeFetch.js';
+import { type Route, writeThenList } from '../helpers/fakeFetch.js';
 
 const dbsPath = `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/mysql-dbs`;
 const websiteLine = `website: vahi.dev (${WEBSITE_ID})`;
@@ -72,6 +72,7 @@ describe('db_create', () => {
     let sent: unknown;
     const { ctx } = await makeContext([
       ...base(),
+      { method: 'GET', path: dbsPath, body: { items: [] } },
       { method: 'POST', path: dbsPath, handler: async (req) => { sent = await req.json(); return new Response(null, { status: 201 }); } },
     ]);
     const r = await callTool(byName(tools, 'db_create'), { website: 'vahi.dev', name: 'demo' }, ctx);
@@ -86,6 +87,7 @@ describe('db_create', () => {
     let sent: unknown;
     const { ctx } = await makeContext([
       ...base(),
+      { method: 'GET', path: dbsPath, body: { items: [] } },
       { method: 'POST', path: dbsPath, handler: async (req) => { sent = await req.json(); return new Response(null, { status: 201 }); } },
     ]);
     const r = await callTool(byName(tools, 'db_create'), { website: 'vahi.dev', name: MYSQL_DB }, ctx);
@@ -389,7 +391,7 @@ describe('db_users_list', () => {
 describe('db_user_create', () => {
   it('generates a password when none is given and shows it once', async () => {
     const sink: { body?: unknown } = {};
-    const { ctx } = await makeContext([...base(), captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: usersPath, body: { items: [] } }, captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
     const r = await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app' }, ctx);
     const body = sink.body as { username: string; password: string };
     // The panel adds the `<unixUser>_` prefix itself, so only the short name goes over the wire.
@@ -399,7 +401,7 @@ describe('db_user_create', () => {
     // shell double quotes.
     expect(body.password).toHaveLength(36);
     expect(body.password).toMatch(/^Db[A-Za-z0-9_-]{32}9x$/);
-    expect(r.structured).toMatchObject({ user: MYSQL_USER, password: body.password });
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, created: true, password: body.password });
     expect(r.text).toContain('DB_HOST=localhost');
     // Node is the other half of this: the same "localhost" is TCP to a Node driver and refused.
     expect(r.text).toContain('/run/mysqld/mysqld.sock');
@@ -412,6 +414,7 @@ describe('db_user_create', () => {
     const seen: string[] = [];
     const { ctx } = await makeContext([
       ...base(),
+      { method: 'GET', path: usersPath, body: { items: [] } },
       { method: 'POST', path: usersPath, handler: async (req) => { seen.push(((await req.json()) as { password: string }).password); return new Response(null, { status: 201 }); } },
     ]);
     await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app' }, ctx);
@@ -423,16 +426,16 @@ describe('db_user_create', () => {
 
   it('sends the password the user supplied and keeps it out of the rendered text', async () => {
     const sink: { body?: unknown } = {};
-    const { ctx } = await makeContext([...base(), captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: usersPath, body: { items: [] } }, captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
     const r = await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app', password: 'sup3r-secret-pw' }, ctx);
     expect(sink.body).toEqual({ username: 'app', password: 'sup3r-secret-pw' });
-    expect(r.structured).toMatchObject({ user: MYSQL_USER, password: 'sup3r-secret-pw' });
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, created: true, password: 'sup3r-secret-pw' });
     expect(r.text).not.toContain('sup3r-secret-pw');
   });
 
   it('strips the prefix the user typed rather than sending it twice', async () => {
     const sink: { body?: unknown } = {};
-    const { ctx } = await makeContext([...base(), captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
+    const { ctx } = await makeContext([...base(), { method: 'GET', path: usersPath, body: { items: [] } }, captureBody({ method: 'POST', path: usersPath }, 201, sink)]);
     const r = await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: MYSQL_USER, password: 'sup3r-secret-pw' }, ctx);
     expect(sink.body).toMatchObject({ username: 'app' });
     expect(r.structured).toMatchObject({ user: MYSQL_USER });
@@ -547,5 +550,75 @@ describe('db_user_delete', () => {
     expect(preview).not.toContain(OTHER_WEBSITE_ID);
     await del.handler(args, ctx, target);
     expect(seen).toEqual([`${usersPath}/${MYSQL_USER}`]);
+  });
+});
+
+describe('db_create and db_user_create settle an unclear answer (write-then-verify)', () => {
+  const noDbs = { items: [] };
+  const oneDb = { items: [{ name: MYSQL_DB, size: 0, createdAt: '2026-09-24T00:00:00Z', websiteId: WEBSITE_ID, serverId: '4b5f6a1e-2c3d-4e5f-8a9b-0c1d2e3f4a5b', userCount: 0 }] };
+  const failed502 = (): Response => new Response(JSON.stringify({ code: 'http_502' }), { status: 502, headers: { 'content-type': 'application/json' } });
+
+  it('refuses a database that already exists, sending nothing', async () => {
+    const { ctx, f } = await makeContext([...base(), { method: 'GET', path: dbsPath, body: oneDb }]);
+    const r = await callTool(byName(tools, 'db_create'), { website: 'vahi.dev', name: 'demo' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(websiteLine);
+    expect(r.text).toContain(`database ${MYSQL_DB} already exists`);
+    expect(r.text).toMatch(/Nothing was sent to the panel/);
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+    expect(r.structured).toMatchObject({ database: MYSQL_DB, created: false });
+  });
+
+  it('confirms a database whose create answer never came, by finding it in the listing', async () => {
+    const { ctx, f } = await makeContext([...writeThenList({ writePath: dbsPath, listPath: dbsPath, before: noDbs, after: oneDb, write: () => { throw new TypeError('fetch failed'); } }), ...base()]);
+    const r = await callTool(byName(tools, 'db_create'), { website: 'vahi.dev', name: 'demo' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain('confirmed by reading it back');
+    expect(r.structured).toMatchObject({ database: MYSQL_DB, created: true });
+    expect(f.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+  });
+
+  it('says the outcome is unknown, not failed, when the database never shows up', async () => {
+    const { ctx, f } = await makeContext([...writeThenList({ writePath: dbsPath, listPath: dbsPath, before: noDbs, after: noDbs, write: failed502 }), ...base()]);
+    const r = await callTool(byName(tools, 'db_create'), { website: 'vahi.dev', name: 'demo' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('OUTCOME UNKNOWN');
+    expect(r.text).toContain('HTTP 502');
+    expect(r.text).toContain('db_list website=vahi.dev');
+    expect(r.structured).toMatchObject({ outcome: 'unknown', database: MYSQL_DB, created: null });
+    expect(f.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+    // The existence check, then five re-reads over the default 10 s window.
+    expect(f.calls.filter((c) => c.method === 'GET' && c.path === dbsPath)).toHaveLength(6);
+  });
+
+  it('refuses a user that already exists, sending nothing', async () => {
+    const { ctx, f } = await makeContext([...base(), { method: 'GET', path: usersPath, body: { items: [mysqlUser] } }]);
+    const r = await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(`MySQL user ${MYSQL_USER} already exists`);
+    expect(r.text).toContain('db_user_update');
+    expect(f.calls.some((c) => c.method === 'POST')).toBe(false);
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, created: false });
+  });
+
+  it('confirms a user whose create answer never came and hands back the password it was created with', async () => {
+    let sent: { password?: string } = {};
+    const { ctx } = await makeContext([...writeThenList({ writePath: usersPath, listPath: usersPath, before: { items: [] }, after: { items: [mysqlUser] }, write: async (req) => { sent = (await req.json()) as { password: string }; throw new TypeError('fetch failed'); } }), ...base()]);
+    const r = await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.structured).toMatchObject({ user: MYSQL_USER, created: true, password: sent.password });
+    expect(r.text).not.toContain(sent.password!);
+  });
+
+  it('on an unknown outcome still returns the password, labelled as valid only if the user exists', async () => {
+    let sent: { password?: string } = {};
+    const { ctx } = await makeContext([...writeThenList({ writePath: usersPath, listPath: usersPath, before: { items: [] }, after: { items: [] }, write: async (req) => { sent = (await req.json()) as { password: string }; throw new TypeError('fetch failed'); } }), ...base()]);
+    const r = await callTool(byName(tools, 'db_user_create'), { website: 'vahi.dev', username: 'app' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('OUTCOME UNKNOWN');
+    expect(r.text).toContain('db_users_list website=vahi.dev');
+    expect(r.text).toContain('structuredContent.password');
+    expect(r.text).not.toContain(sent.password!);
+    expect(r.structured).toMatchObject({ outcome: 'unknown', user: MYSQL_USER, created: null, password: sent.password, passwordNote: expect.stringContaining('only if') });
   });
 });

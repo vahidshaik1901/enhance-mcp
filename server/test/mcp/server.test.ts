@@ -5,7 +5,7 @@ import { selectTools } from '../../src/core/registry.js';
 import { createServer } from '../../src/server.js';
 import { allTools } from '../../src/tools/index.js';
 import { makeContext } from '../helpers/context.js';
-import type { FakeFetch, Route } from '../helpers/fakeFetch.js';
+import { type FakeFetch, type Route, writeThenList } from '../helpers/fakeFetch.js';
 import { APP_ID, domainMappings, MYSQL_DB, ORG_ID, persistentApps, PREVIEW_DOMAIN_ID, sshKeys, WEBSITE_ID, websiteDetail, websitesList, websiteSummary } from '../fixtures/panel.js';
 
 /**
@@ -125,6 +125,17 @@ describe('createServer', () => {
     expect(r.isError).toBe(false);
     expect(r.text).toContain(`website: vahi.dev (${WEBSITE_ID})`);
     expect((r.structured as { home: string }).home).toBe(`/var/www/${WEBSITE_ID}`);
+  });
+
+  it('audits a create whose outcome is unknown as unknown, not as an error', async () => {
+    // An unknown create may have landed: an audit line saying "error" would tell whoever reads the
+    // trail later that nothing happened, which is the one thing this outcome cannot promise.
+    const dbsPath = `/orgs/${ORG_ID}/websites/${WEBSITE_ID}/mysql-dbs`;
+    const { call, auditLines } = await connect({ routes: [...writeThenList({ writePath: dbsPath, listPath: dbsPath, before: { items: [] }, after: { items: [] }, write: () => { throw new TypeError('fetch failed'); } }), ...base()] });
+    const r = await call('db_create', { website: 'vahi.dev', name: 'demo' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('OUTCOME UNKNOWN');
+    expect(JSON.parse(auditLines.at(-1)!)).toMatchObject({ tool: 'db_create', risk: 'write', outcome: 'unknown', message: expect.stringContaining('OUTCOME UNKNOWN') });
   });
 
   it('turns tool errors into isError results with suggestions', async () => {

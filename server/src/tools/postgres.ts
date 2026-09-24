@@ -3,6 +3,7 @@ import type { ToolContext } from '../core/context.js';
 import { defineTool, type Target, type ToolDef, type ToolResult } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
+import { confirmedByReadNote, unknownOutcome, writeThenVerify } from '../core/verify.js';
 import { dbTargetSite, generatePassword, resolveDbName, resolveDbUser, siteOf, siteWebsite, unixUserOf, websiteArg, type DbSite, type DbSiteWithUser } from './dbcommon.js';
 
 const nameArg = z.string().min(1).describe('Database name (short, or the full <unixUser>_ prefixed form)');
@@ -52,6 +53,18 @@ async function pgConfirmed(ctx: ToolContext, target: Target): Promise<{ site: Db
   return { site, name, website, gate: pgGate(site, website) };
 }
 
+/** Every PostgreSQL database name on the site; the creates read it first and to settle an unclear
+ *  answer, exactly as the MySQL tools do (mysqlDbNames). */
+async function pgDbNames(ctx: ToolContext, s: DbSiteWithUser): Promise<string[]> {
+  const res = await ctx.client.call('GET', '/orgs/{org_id}/websites/{website_id}/postgresql-dbs', () => ctx.client.api.GET('/orgs/{org_id}/websites/{website_id}/postgresql-dbs', { params: { path: { org_id: s.org, website_id: s.id } } }));
+  return (res.items ?? []).map((d) => d.name);
+}
+
+async function pgUserNames(ctx: ToolContext, s: DbSiteWithUser): Promise<string[]> {
+  const res = await ctx.client.call('GET', '/orgs/{org_id}/websites/{website_id}/postgresql-users', () => ctx.client.api.GET('/orgs/{org_id}/websites/{website_id}/postgresql-users', { params: { path: { org_id: s.org, website_id: s.id } } }));
+  return (res.items ?? []).map((u) => u.username);
+}
+
 // Like the MySQL tools, none of these invalidates the resolver cache: it holds only the website
 // list, and databases and users are not in it, so a write here cannot make it stale.
 export const pgDbList = defineTool({
@@ -85,13 +98,22 @@ export const pgDbCreate = defineTool({
     // The panel adds the prefix itself, so send the short form even when the user typed the
     // full name; sending the prefixed name back would create `<unixUser>_<unixUser>_<name>`.
     const short = full.slice(s.unixUser.length + 1);
-    await ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/postgresql-dbs', () =>
-      ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/postgresql-dbs', { params: { path: { org_id: s.org, website_id: s.id } }, body: { name: short } }),
-    );
+    if ((await pgDbNames(ctx, s)).includes(full)) {
+      return fail(`${s.identity}\nPostgreSQL database ${safe(full)} already exists. Nothing was sent to the panel; use it, or pick another name.`, { database: full, created: false });
+    }
+    const outcome = await writeThenVerify({
+      write: () => ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/postgresql-dbs', () => ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/postgresql-dbs', { params: { path: { org_id: s.org, website_id: s.id } }, body: { name: short } })),
+      find: async () => ((await pgDbNames(ctx, s)).includes(full) ? full : undefined),
+      sleep: ctx.sleep,
+    });
+    if (outcome.state === 'unknown') {
+      return unknownOutcome(s.identity, outcome, { action: `the create of PostgreSQL database ${safe(full)}`, settle: `pg_db_list website=${safe(website)}` }, { database: full, created: null });
+    }
     return ok(
       [
         s.identity,
         `PostgreSQL database ${safe(full)} created.`,
+        ...(outcome.confirmedBy === 'verify' ? [confirmedByReadNote(outcome.writeError)] : []),
         kv([
           ['connect from PHP', 'host DB_HOST=localhost'],
           ['next', `pg_user_create website=${safe(website)} to add a login, then pg_user_grant`],
@@ -160,21 +182,36 @@ export const pgUserCreate = defineTool({
     const full = resolveDbUser(s.unixUser, username);
     // As with databases, the panel adds the prefix itself: send the short form (see pgDbCreate).
     const short = full.slice(s.unixUser.length + 1);
+    // Checked first so a password is never handed back for a user that already existed.
+    if ((await pgUserNames(ctx, s)).includes(full)) {
+      return fail(`${s.identity}\nPostgreSQL user ${safe(full)} already exists. Nothing was sent to the panel; change its password with pg_user_update, or pick another name.`, { user: full, created: false });
+    }
     const pw = password ?? generatePassword();
-    await ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/postgresql-users', () =>
-      ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/postgresql-users', { params: { path: { org_id: s.org, website_id: s.id } }, body: { username: short, password: pw } }),
-    );
+    const outcome = await writeThenVerify({
+      write: () => ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/postgresql-users', () => ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/postgresql-users', { params: { path: { org_id: s.org, website_id: s.id } }, body: { username: short, password: pw } })),
+      find: async () => ((await pgUserNames(ctx, s)).includes(full) ? full : undefined),
+      sleep: ctx.sleep,
+    });
+    if (outcome.state === 'unknown') {
+      return unknownOutcome(
+        s.identity,
+        outcome,
+        { action: `the create of PostgreSQL user ${safe(full)}`, settle: `pg_users_list website=${safe(website)}`, extra: 'If the user does appear, its password is the one in structuredContent.password (shown once); if it never appears, nothing was created.' },
+        { user: full, created: null, password: pw, passwordNote: 'valid only if pg_users_list now shows this user' },
+      );
+    }
     return ok(
       [
         s.identity,
         `PostgreSQL user ${safe(full)} created.`,
+        ...(outcome.confirmedBy === 'verify' ? [confirmedByReadNote(outcome.writeError)] : []),
         kv([
           ['password', 'shown once, in structuredContent.password; store it now'],
           ['connect from PHP', 'host DB_HOST=localhost'],
           ['next', `pg_user_grant website=${safe(website)} username=${safe(short)} database=<db>`],
         ]),
       ].join('\n'),
-      { user: full, password: pw },
+      { user: full, created: true, password: pw },
     );
   },
 });

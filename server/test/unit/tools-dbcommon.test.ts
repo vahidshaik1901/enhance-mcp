@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MYSQL_GRANTS, resolveDbName, resolveDbUser, siteWebsite, unixUserOf, websiteArg } from '../../src/tools/dbcommon.js';
+import { dbTargetSite, MYSQL_GRANTS, resolveDbName, resolveDbUser, siteWebsite, unixUserOf, websiteArg } from '../../src/tools/dbcommon.js';
 import { base, ORG_ID, WEBSITE_ID } from '../fixtures/panel.js';
 import { makeContext } from '../helpers/context.js';
 
@@ -64,5 +64,12 @@ describe('unixUserOf', () => {
     const { w } = await siteWebsite(ctx, 'vahi.dev');
     expect(unixUserOf(w)).toBe('vahi_dev1');
     expect(() => unixUserOf({ ...w, unixUser: undefined })).toThrow(/no unix user/);
+  });
+});
+
+describe('dbTargetSite', () => {
+  it('describes a malformed target without calling it a database target', async () => {
+    const { ctx } = await makeContext([]);
+    await expect(dbTargetSite(ctx, { kind: 'persistent_app', id: 'no-colon', name: 'vahi.dev' })).rejects.toThrow('malformed target "no-colon": expected "<website id>:<name>"');
   });
 });

@@ -6,6 +6,7 @@ import { identityBlock, previewDomain, websiteHome } from '../core/identity.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
 import type { Website } from '../core/resolver.js';
+import { confirmedByReadNote, describeError, unknownOutcome, writeThenVerify } from '../core/verify.js';
 
 export const PHP_VERSIONS = ['php52', 'php53', 'php54', 'php55', 'php56', 'php70', 'php71', 'php72', 'php73', 'php74', 'php80', 'php81', 'php82', 'php83', 'php84', 'php85'] as const;
 
@@ -79,6 +80,16 @@ export const websiteGet = defineTool({
   },
 });
 
+/** Live 2026-09-17: four parallel creates, two client-side timeouts at 30 s, and the panel finished
+ *  both sites anyway. The panel keeps working long after the client gives up, so the re-reads cover
+ *  a long window, spaced so they cost one request every 5 s. */
+const WEBSITE_CREATE_WINDOW_MS = 90_000;
+const WEBSITE_CREATE_INTERVAL_MS = 5_000;
+
+function nextSteps(domain: string): string {
+  return ['next steps:', `1. DNS: domain_dns_status website=${domain} (point the registrar at the platform nameservers or add the A record; the preview domain works meanwhile).`, `2. SSL: domain_ssl_issue website=${domain} once DNS resolves.`, `3. SSH: ssh_key_add website=${domain} public_key=<your key>, then ssh_connection_info.`].join('\n');
+}
+
 export const websiteCreate = defineTool({
   name: 'website_create',
   tier: 'customer',
@@ -96,7 +107,9 @@ export const websiteCreate = defineTool({
     const { client } = ctx;
     const org = requireOrg(client);
     const id = identityBlock({ name: client.orgName, id: org });
-    const check = await client.call('POST', '/orgs/{org_id}/domains/check', () => client.api.POST('/orgs/{org_id}/domains/check', { params: { path: { org_id: org } }, body: { domain: args.domain } }));
+    // The pre-check and every re-read after an unclear create ask the panel the same question.
+    const checkDomain = () => client.call('POST', '/orgs/{org_id}/domains/check', () => client.api.POST('/orgs/{org_id}/domains/check', { params: { path: { org_id: org } }, body: { domain: args.domain } }));
+    const check = await checkDomain();
     if (check.status !== 'notInUse') {
       return fail(
         [id, `Cannot create ${safe(args.domain)}: domain_check returned ${safe(check.status)}${check.websiteId ? ` (website ${check.websiteId})` : ''}.`, check.status === 'inUseCurrentOrg' ? 'It is already a website in this org; use website_get.' : undefined].filter(Boolean).join('\n'),
@@ -120,14 +133,56 @@ export const websiteCreate = defineTool({
     } else if (!eligible.some((s) => s.id === subscriptionId)) {
       return fail([id, `Subscription ${subscriptionId} is not active with free website quota. Eligible: ${eligible.map((s) => s.id).join(', ') || 'none'}.`].join('\n'));
     }
-    const created = await client.call('POST', '/orgs/{org_id}/websites', () =>
-      client.api.POST('/orgs/{org_id}/websites', { params: { path: { org_id: org } }, body: { domain: args.domain, subscriptionId, ...(args.php_version ? { phpVersion: args.php_version } : {}) } }),
-    );
+    // domain_check said notInUse a moment ago, so a website of this org that holds the domain now
+    // is the one this call created.
+    const findCreated = async (): Promise<string | undefined> => {
+      const again = await checkDomain();
+      return again.status === 'inUseCurrentOrg' && again.websiteId ? again.websiteId : undefined;
+    };
+    const outcome = await writeThenVerify({
+      write: () => client.call('POST', '/orgs/{org_id}/websites', () => client.api.POST('/orgs/{org_id}/websites', { params: { path: { org_id: org } }, body: { domain: args.domain, subscriptionId, ...(args.php_version ? { phpVersion: args.php_version } : {}) } })),
+      find: findCreated,
+      windowMs: WEBSITE_CREATE_WINDOW_MS,
+      intervalMs: WEBSITE_CREATE_INTERVAL_MS,
+      sleep: ctx.sleep,
+    });
+    // Whatever happened, the website list may have changed under the resolver's cache.
     ctx.resolver.invalidate();
-    const w = await ctx.resolver.getWebsite(created.id);
-    const domain = safe(w.domain.domain);
-    const next = ['next steps:', `1. DNS: domain_dns_status website=${domain} (point the registrar at the platform nameservers or add the A record; the preview domain works meanwhile).`, `2. SSL: domain_ssl_issue website=${domain} once DNS resolves.`, `3. SSH: ssh_key_add website=${domain} public_key=<your key>, then ssh_connection_info.`].join('\n');
-    return ok(`${websiteText(ctx, w)}\n${next}`, { website: w, home: websiteHome(w), previewDomain: previewDomain(w) ?? null, serverIp: serverIp(w) ?? null });
+    const domain = safe(args.domain);
+    if (outcome.state === 'unknown') {
+      return unknownOutcome(id, outcome, { action: `the create of website ${domain}`, settle: `domain_check domain=${domain} (inUseCurrentOrg with a website id means it exists; then website_get)` }, { created: null, domain: args.domain });
+    }
+    let websiteId: string | undefined = outcome.confirmedBy === 'response' ? outcome.written?.id : outcome.found;
+    const confirmed = outcome.confirmedBy === 'verify' ? confirmedByReadNote(outcome.writeError) : undefined;
+    if (websiteId === undefined) {
+      // A 2xx with no body reaches here as `undefined` (openapi-fetch's empty-body answer): the site
+      // was created, only its id is missing. One read of the question `find` asks names it; the
+      // write answered, so there is nothing to poll for.
+      let checkError: string | undefined;
+      try {
+        websiteId = await findCreated();
+      } catch (e) {
+        checkError = describeError(e);
+      }
+      if (websiteId === undefined) {
+        return ok(
+          [id, `website ${domain} created; the panel returned no id — run domain_check domain=${domain} (inUseCurrentOrg shows its id), then website_get.`, checkError ? `The domain check for the id failed (${checkError}).` : undefined, nextSteps(domain)].filter(Boolean).join('\n'),
+          { created: true, websiteId: null, confirmedBy: 'response', website: null },
+        );
+      }
+    }
+    let w: Website;
+    try {
+      w = await ctx.resolver.getWebsite(websiteId);
+    } catch (e) {
+      // The website exists; only the read that renders it failed. Reporting that as an error would
+      // tell the caller nothing was created and invite a second create of the same domain.
+      return ok(
+        [id, `website ${domain} created (id ${websiteId}).`, confirmed, `Reading it back failed (${describeError(e)}); run website_get website=${websiteId} for its details.`, nextSteps(domain)].filter(Boolean).join('\n'),
+        { created: true, websiteId, confirmedBy: outcome.confirmedBy, website: null },
+      );
+    }
+    return ok([websiteText(ctx, w), confirmed, nextSteps(safe(w.domain.domain))].filter(Boolean).join('\n'), { created: true, websiteId: w.id, confirmedBy: outcome.confirmedBy, website: w, home: websiteHome(w), previewDomain: previewDomain(w) ?? null, serverIp: serverIp(w) ?? null });
   },
 });
 

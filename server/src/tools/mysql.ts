@@ -5,6 +5,7 @@ import type { ToolContext } from '../core/context.js';
 import { websiteHome } from '../core/identity.js';
 import { defineTool, type ToolDef } from '../core/registry.js';
 import { fail, kv, ok, safe, table } from '../core/respond.js';
+import { confirmedByReadNote, unknownOutcome, writeThenVerify } from '../core/verify.js';
 import { dbTargetSite, generatePassword, MYSQL_GRANTS, resolveDbName, resolveDbUser, siteOf, siteWebsite, unixUserOf, websiteArg, type DbSiteWithUser } from './dbcommon.js';
 
 const nameArg = z.string().min(1).describe('Database name (short, or the full <unixUser>_ prefixed form)');
@@ -15,6 +16,20 @@ const userArg = z.string().min(1).describe('Database user name (short, or the fu
 export async function dbSite(ctx: ToolContext, website: string): Promise<DbSiteWithUser> {
   const { org, w } = await siteWebsite(ctx, website);
   return { ...siteOf(ctx, org, w), unixUser: unixUserOf(w) };
+}
+
+/** Every MySQL database name on the site, full prefixed form. The creates read it before writing
+ *  (an unclear write is settled by finding the name here, which only proves anything when the name
+ *  was not here before) and again to settle an unclear answer. */
+async function mysqlDbNames(ctx: ToolContext, s: DbSiteWithUser): Promise<string[]> {
+  const res = await ctx.client.call('GET', '/orgs/{org_id}/websites/{website_id}/mysql-dbs', () => ctx.client.api.GET('/orgs/{org_id}/websites/{website_id}/mysql-dbs', { params: { path: { org_id: s.org, website_id: s.id } } }));
+  return (res.items ?? []).map((d) => d.name);
+}
+
+/** Every MySQL user name on the site, full prefixed form; used like `mysqlDbNames`. */
+async function mysqlUserNames(ctx: ToolContext, s: DbSiteWithUser): Promise<string[]> {
+  const res = await ctx.client.call('GET', '/orgs/{org_id}/websites/{website_id}/mysql-users', () => ctx.client.api.GET('/orgs/{org_id}/websites/{website_id}/mysql-users', { params: { path: { org_id: s.org, website_id: s.id } } }));
+  return (res.items ?? []).map((u) => u.username);
 }
 
 /**
@@ -61,13 +76,22 @@ export const dbCreate = defineTool({
     // The panel adds the prefix itself, so send the short form even when the user typed the
     // full name; sending the prefixed name back would create `<unixUser>_<unixUser>_<name>`.
     const short = full.slice(s.unixUser.length + 1);
-    await ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/mysql-dbs', () =>
-      ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/mysql-dbs', { params: { path: { org_id: s.org, website_id: s.id } }, body: { name: short } }),
-    );
+    if ((await mysqlDbNames(ctx, s)).includes(full)) {
+      return fail(`${s.identity}\ndatabase ${safe(full)} already exists. Nothing was sent to the panel; use it, or pick another name.`, { database: full, created: false });
+    }
+    const outcome = await writeThenVerify({
+      write: () => ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/mysql-dbs', () => ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/mysql-dbs', { params: { path: { org_id: s.org, website_id: s.id } }, body: { name: short } })),
+      find: async () => ((await mysqlDbNames(ctx, s)).includes(full) ? full : undefined),
+      sleep: ctx.sleep,
+    });
+    if (outcome.state === 'unknown') {
+      return unknownOutcome(s.identity, outcome, { action: `the create of database ${safe(full)}`, settle: `db_list website=${safe(website)}` }, { database: full, created: null });
+    }
     return ok(
       [
         s.identity,
         `database ${safe(full)} created.`,
+        ...(outcome.confirmedBy === 'verify' ? [confirmedByReadNote(outcome.writeError)] : []),
         kv([
           ['connect from PHP', 'host DB_HOST=localhost, socket; not 127.0.0.1'],
           ['connect from Node', "socketPath '/run/mysqld/mysqld.sock', no host: a Node driver reads localhost as TCP and the server refuses it"],
@@ -268,14 +292,32 @@ export const dbUserCreate = defineTool({
     const full = resolveDbUser(s.unixUser, username);
     // As with databases, the panel adds the prefix itself: send the short form (see dbCreate).
     const short = full.slice(s.unixUser.length + 1);
+    // Checked first so a password is never handed back for a user that already existed: after an
+    // unclear write, finding the name would otherwise "confirm" someone else's login.
+    if ((await mysqlUserNames(ctx, s)).includes(full)) {
+      return fail(`${s.identity}\nMySQL user ${safe(full)} already exists. Nothing was sent to the panel; change its password with db_user_update, or pick another name.`, { user: full, created: false });
+    }
     const pw = password ?? generatePassword();
-    await ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/mysql-users', () =>
-      ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/mysql-users', { params: { path: { org_id: s.org, website_id: s.id } }, body: { username: short, password: pw } }),
-    );
+    const outcome = await writeThenVerify({
+      write: () => ctx.client.call('POST', '/orgs/{org_id}/websites/{website_id}/mysql-users', () => ctx.client.api.POST('/orgs/{org_id}/websites/{website_id}/mysql-users', { params: { path: { org_id: s.org, website_id: s.id } }, body: { username: short, password: pw } })),
+      find: async () => ((await mysqlUserNames(ctx, s)).includes(full) ? full : undefined),
+      sleep: ctx.sleep,
+    });
+    if (outcome.state === 'unknown') {
+      // The user may still appear, with exactly this password: hand it back, labelled, rather than
+      // lose it. A user that never appears makes it worthless, and harmless.
+      return unknownOutcome(
+        s.identity,
+        outcome,
+        { action: `the create of MySQL user ${safe(full)}`, settle: `db_users_list website=${safe(website)}`, extra: 'If the user does appear, its password is the one in structuredContent.password (shown once); if it never appears, nothing was created.' },
+        { user: full, created: null, password: pw, passwordNote: 'valid only if db_users_list now shows this user' },
+      );
+    }
     return ok(
       [
         s.identity,
         `MySQL user ${safe(full)} created.`,
+        ...(outcome.confirmedBy === 'verify' ? [confirmedByReadNote(outcome.writeError)] : []),
         kv([
           ['password', 'shown once, in structuredContent.password; store it now'],
           ['connect from PHP', 'host DB_HOST=localhost'],
@@ -283,7 +325,7 @@ export const dbUserCreate = defineTool({
           ['next', `db_user_set_privileges website=${safe(website)} username=${safe(short)} database=<db> grants=all`],
         ]),
       ].join('\n'),
-      { user: full, password: pw },
+      { user: full, created: true, password: pw },
     );
   },
 });
