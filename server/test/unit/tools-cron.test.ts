@@ -221,7 +221,24 @@ describe('cron_add settles an unclear answer (write-then-verify)', () => {
     expect(r.text).toContain('cron_get website=vahi.dev');
     expect(r.text).toContain('1 line(s) after it were not sent');
     expect(r.structured).toMatchObject({ outcome: 'unknown', added: [], unknown: { line: 2, expr: JOB_B }, notSent: [{ line: 3, expr: '@daily /usr/bin/backup.sh' }] });
+    // No line was confirmed by reading, so the key is absent rather than an empty list.
+    expect(r.structured).not.toHaveProperty('confirmedByRead');
     expect(seen.filter((s) => s.method === 'PATCH')).toHaveLength(1);
+  });
+
+  it('names the earlier lines it added, those it confirmed by reading, and says when the unknown one was the last', async () => {
+    // Both PATCHes throw. The first line then shows on line 2 and is confirmed by reading; line 3
+    // never appears, so the second stays unknown with nothing after it.
+    const seen: Array<{ method: string }> = [];
+    const { ctx } = await makeContext([...base(), ...unclearPatches(withLine2, seen)]);
+    const r = await callTool(byName(tools, 'cron_add'), { website: 'vahi.dev', jobs: [JOB_B, '@daily /usr/bin/backup.sh'] }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('OUTCOME UNKNOWN');
+    expect(r.text).toContain('1 earlier line(s) were added (line(s) 2)');
+    expect(r.text).toContain('it was the last line');
+    expect(r.text).not.toContain('the 0 line(s)');
+    expect(r.structured).toMatchObject({ outcome: 'unknown', added: [{ line: 2, expr: JOB_B }], confirmedByRead: [2], unknown: { line: 3, expr: '@daily /usr/bin/backup.sh' }, notSent: [] });
+    expect(seen.filter((s) => s.method === 'PATCH')).toHaveLength(2);
   });
 });
 

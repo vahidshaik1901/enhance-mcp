@@ -121,11 +121,12 @@ export const cronAdd = defineTool({
       }
       if (outcome.state === 'unknown') {
         const before = i === 0 ? 'No earlier line was added' : `${i} earlier line(s) were added (line(s) ${added.slice(0, i).map((a) => a.line).join(', ')})`;
+        const rest = added.length - i - 1;
         return unknownOutcome(
           s.identity,
           outcome,
-          { action: `adding cron line ${line}`, settle: `cron_get website=${safe(website)}`, windowMs: DEFAULT_WINDOW_MS, extra: `${before}; the ${added.length - i - 1} line(s) after it were not sent.` },
-          { added: added.slice(0, i), unknown: { line, expr }, notSent: added.slice(i + 1) },
+          { action: `adding cron line ${line}`, settle: `cron_get website=${safe(website)}`, windowMs: DEFAULT_WINDOW_MS, extra: `${before}; ${rest === 0 ? 'it was the last line' : `the ${rest} line(s) after it were not sent`}.` },
+          { added: added.slice(0, i), ...(confirmedByRead.length > 0 ? { confirmedByRead } : {}), unknown: { line, expr }, notSent: added.slice(i + 1) },
         );
       }
       if (outcome.confirmedBy === 'verify') {

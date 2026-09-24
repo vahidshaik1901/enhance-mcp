@@ -343,6 +343,23 @@ describe('persistent_app_create', () => {
     // One read: the snapshot before the write. A refusal is never re-read.
     expect(f.calls.filter((c) => c.method === 'GET' && c.path === appsPath)).toHaveLength(1);
   });
+
+  it('refuses without sending anything when the listing before the write cannot be read', async () => {
+    // Without the snapshot the id it would report could be an older app's, so it stops before the POST.
+    const { ctx, f } = await makeContext([
+      { method: 'POST', path: appsPath, status: 201 },
+      { method: 'GET', path: appsPath, status: 500, body: { code: 'internal', message: 'listing is down' } },
+      ...base(),
+    ]);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'node other.js' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(websiteLine);
+    expect(r.text).toContain('listing is down');
+    expect(r.text).toMatch(/nothing was sent to the panel/);
+    expect(r.text).toContain('persistent_apps_list');
+    expect(r.structured).toMatchObject({ created: false });
+    expect(f.calls.some((c) => c.method === 'POST' && c.path === appsPath)).toBe(false);
+  });
 });
 
 describe('persistent_app_create path preflight', () => {
@@ -434,6 +451,34 @@ describe('persistent_app_create path preflight', () => {
     expect(r.text).toContain('HTTP 301 on /node: an existing directory in public_html');
     // Machine-readable, so a caller that has to put the replaced content back knows what it was.
     expect(r.structured).toMatchObject({ created: true, replaced: { status: 301, path: '/node' } });
+  });
+
+  it('keeps what it took off the web when a create over a taken path has an unknown outcome', async () => {
+    // Only this call saw what answered there before, and an app that lands late still replaces it.
+    const { ctx } = await makeContext([
+      ...writeThenList({ writePath: appsPath, listPath: appsPath, before: [], after: [], write: () => { throw new TypeError('fetch failed'); } }),
+      ...base(),
+    ]);
+    ctx.httpProbe = pathProbe({ '/node': { status: 301, location: 'https://vahi.dev/node/' } });
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', working_directory: 'nodeapp', proxy_path: 'node', port: 3000, replace_existing_path: true }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('OUTCOME UNKNOWN');
+    expect(r.text).toContain('replaced what https://vahi.dev/node/ served before');
+    expect(r.text).toContain('HTTP 301 on /node: an existing directory in public_html');
+    expect(r.structured).toMatchObject({ outcome: 'unknown', created: null, id: null, url: 'https://vahi.dev/node/', replaced: { status: 301, path: '/node' } });
+  });
+
+  it('says a whole-site app would own the domain even when its outcome is unknown', async () => {
+    const { ctx } = await makeContext([
+      ...writeThenList({ writePath: appsPath, listPath: appsPath, before: [], after: [], write: () => { throw new TypeError('fetch failed'); } }),
+      ...base(),
+    ]);
+    const r = await callTool(byName(tools, 'persistent_app_create'), { website: 'vahi.dev', command: 'npm start', serve_at_root: true, port: 3000 }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('OUTCOME UNKNOWN');
+    expect(r.text).toContain('owns the whole domain');
+    expect(r.structured).toMatchObject({ outcome: 'unknown', created: null, id: null, url: 'https://vahi.dev/' });
+    expect(r.structured).not.toHaveProperty('replaced');
   });
 
   it('creates anyway when the preflight cannot run, and says the path was not checked', async () => {

@@ -354,8 +354,16 @@ export const persistentAppCreate = defineTool({
     if (proxy) body.proxyDetails = { path: proxy.path, port: args.port!, allowWebSocketUpgrade: args.allow_websocket };
     // Every app the site has just before the write. The create answers 201 with no body, so the new
     // app's id comes from the listing, and only an app that was NOT listed before can be this one:
-    // the panel accepts two apps with the same command and directory when neither has a proxy.
-    const before = new Set((await listApps(ctx, s.id)).map((a) => a.id));
+    // nothing observed live says the panel refuses two apps with the same command and directory —
+    // only a duplicate proxy path is a 409 (research, Milestone C probe item 3) — so an older
+    // look-alike can exist. Without the snapshot the id could be that older app's, so a failed read
+    // here stops the create before anything is sent.
+    let before: Set<string>;
+    try {
+      before = new Set((await listApps(ctx, s.id)).map((a) => a.id));
+    } catch (e) {
+      return fail(`${s.identity}\ncould not read the app listing before registering (${describeError(e)}), so nothing was sent to the panel. Retry, or check persistent_apps_list.`, { created: false });
+    }
     const newMatch = (apps: ListedApp[]): ListedApp | undefined =>
       apps.filter((a) => !before.has(a.id) && a.command === body.command && (a.workingDirectory ?? undefined) === body.workingDirectory && (a.proxyDetails?.path ?? undefined) === body.proxyDetails?.path).at(-1);
     const outcome = await writeThenVerify({
@@ -365,7 +373,15 @@ export const persistentAppCreate = defineTool({
     });
     const url = appUrl(s.w, proxy?.path);
     if (outcome.state === 'unknown') {
-      return unknownOutcome(s.identity, outcome, { action: `registering the app "${safe(command)}"`, settle: `persistent_apps_list website=${safe(args.website)}`, windowMs: DEFAULT_WINDOW_MS }, { created: null, id: null, url });
+      // An app that lands late still takes its path (or the whole site) off the web, and only this
+      // call saw what answered there before, so that travels with the unknown outcome.
+      const ifItLands = [...notes.map((n) => `${n}.`), ...(proxy?.path === '' ? [rootAppNote(safe(url))] : [])];
+      return unknownOutcome(
+        s.identity,
+        outcome,
+        { action: `registering the app "${safe(command)}"`, settle: `persistent_apps_list website=${safe(args.website)}`, windowMs: DEFAULT_WINDOW_MS, ...(ifItLands.length > 0 ? { extra: `If it lands: ${ifItLands.join(' ')}` } : {}) },
+        { created: null, id: null, url, ...(replaced ? { replaced } : {}) },
+      );
     }
     // After a clear answer the listing read is a convenience, and the write it follows has already
     // landed. A blip on it — a 5xx, a reset, the client's own timeout — must not come back as an
