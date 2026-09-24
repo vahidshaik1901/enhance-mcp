@@ -133,14 +133,15 @@ export const websiteCreate = defineTool({
     } else if (!eligible.some((s) => s.id === subscriptionId)) {
       return fail([id, `Subscription ${subscriptionId} is not active with free website quota. Eligible: ${eligible.map((s) => s.id).join(', ') || 'none'}.`].join('\n'));
     }
+    // domain_check said notInUse a moment ago, so a website of this org that holds the domain now
+    // is the one this call created.
+    const findCreated = async (): Promise<string | undefined> => {
+      const again = await checkDomain();
+      return again.status === 'inUseCurrentOrg' && again.websiteId ? again.websiteId : undefined;
+    };
     const outcome = await writeThenVerify({
       write: () => client.call('POST', '/orgs/{org_id}/websites', () => client.api.POST('/orgs/{org_id}/websites', { params: { path: { org_id: org } }, body: { domain: args.domain, subscriptionId, ...(args.php_version ? { phpVersion: args.php_version } : {}) } })),
-      // domain_check said notInUse a moment ago, so a website of this org that holds the domain now
-      // is the one this call created.
-      find: async () => {
-        const again = await checkDomain();
-        return again.status === 'inUseCurrentOrg' && again.websiteId ? again.websiteId : undefined;
-      },
+      find: findCreated,
       windowMs: WEBSITE_CREATE_WINDOW_MS,
       intervalMs: WEBSITE_CREATE_INTERVAL_MS,
       sleep: ctx.sleep,
@@ -151,8 +152,25 @@ export const websiteCreate = defineTool({
     if (outcome.state === 'unknown') {
       return unknownOutcome(id, outcome, { action: `the create of website ${domain}`, settle: `domain_check domain=${domain} (inUseCurrentOrg with a website id means it exists; then website_get)` }, { created: null, domain: args.domain });
     }
-    const websiteId = outcome.confirmedBy === 'response' ? outcome.written.id : outcome.found;
+    let websiteId: string | undefined = outcome.confirmedBy === 'response' ? outcome.written?.id : outcome.found;
     const confirmed = outcome.confirmedBy === 'verify' ? confirmedByReadNote(outcome.writeError) : undefined;
+    if (websiteId === undefined) {
+      // A 2xx with no body reaches here as `undefined` (openapi-fetch's empty-body answer): the site
+      // was created, only its id is missing. One read of the question `find` asks names it; the
+      // write answered, so there is nothing to poll for.
+      let checkError: string | undefined;
+      try {
+        websiteId = await findCreated();
+      } catch (e) {
+        checkError = describeError(e);
+      }
+      if (websiteId === undefined) {
+        return ok(
+          [id, `website ${domain} created; the panel returned no id — run domain_check domain=${domain} (inUseCurrentOrg shows its id), then website_get.`, checkError ? `The domain check for the id failed (${checkError}).` : undefined, nextSteps(domain)].filter(Boolean).join('\n'),
+          { created: true, websiteId: null, confirmedBy: 'response', website: null },
+        );
+      }
+    }
     let w: Website;
     try {
       w = await ctx.resolver.getWebsite(websiteId);

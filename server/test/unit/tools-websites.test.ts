@@ -180,6 +180,71 @@ describe('website_create', () => {
     expect(seen.checks).toBe(2);
   });
 
+  it('settles the id of a create answered 2xx with no body by one domain check, and renders the site', async () => {
+    // openapi-fetch hands back `undefined` for an empty 2xx body: the site exists, only its id is
+    // missing, and the same question `find` asks names it.
+    const seen = { checks: 0 };
+    const { ctx, f } = await makeContext([
+      ...base(),
+      checkThen({ status: 'inUseCurrentOrg', websiteId: created.id }, seen),
+      oneSubscription,
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, handler: async () => new Response(null, { status: 201 }) },
+      { method: 'GET', path: `/orgs/${ORG_ID}/websites/${created.id}`, body: created },
+    ]);
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain('website: new.example');
+    expect(r.text).not.toContain('undefined');
+    expect(r.structured).toMatchObject({ created: true, websiteId: created.id, confirmedBy: 'response' });
+    expect(f.calls.filter(websitesPost)).toHaveLength(1);
+    // The pre-check, then exactly one read for the id: the write answered, so nothing polls.
+    expect(seen.checks).toBe(2);
+  });
+
+  it('stays a success with no id when a body-less create cannot be found by the domain check either', async () => {
+    const seen = { checks: 0 };
+    const { ctx, f } = await makeContext([
+      ...base(),
+      checkThen({ status: 'notInUse', websiteId: null }, seen),
+      oneSubscription,
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, handler: async () => new Response(null, { status: 201 }) },
+    ]);
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text.split('\n')[0]).toContain('org:');
+    expect(r.text).toContain('website new.example created; the panel returned no id — run domain_check domain=new.example (inUseCurrentOrg shows its id), then website_get');
+    expect(r.text).not.toContain('undefined');
+    expect(r.structured).toEqual({ created: true, websiteId: null, confirmedBy: 'response', website: null });
+    expect(f.calls.filter(websitesPost)).toHaveLength(1);
+    expect(seen.checks).toBe(2);
+    // Never a read of a website with no id.
+    expect(f.calls.some((c) => c.method === 'GET' && c.path.startsWith(`/orgs/${ORG_ID}/websites/`))).toBe(false);
+  });
+
+  it('stays a success with no id when the domain check for a body-less create fails, and says why', async () => {
+    let checks = 0;
+    const { ctx } = await makeContext([
+      ...base(),
+      {
+        method: 'POST',
+        path: `/orgs/${ORG_ID}/domains/check`,
+        handler: async () => {
+          checks += 1;
+          return checks === 1
+            ? new Response(JSON.stringify({ status: 'notInUse', websiteId: null }), { status: 200, headers: { 'content-type': 'application/json' } })
+            : new Response(JSON.stringify({ code: 'internal', message: 'check is down' }), { status: 500, headers: { 'content-type': 'application/json' } });
+        },
+      },
+      oneSubscription,
+      { method: 'POST', path: `/orgs/${ORG_ID}/websites`, handler: async () => new Response(null, { status: 201 }) },
+    ]);
+    const r = await callTool(byName(tools, 'website_create'), { domain: 'new.example' }, ctx);
+    expect(r.isError, r.text).toBeFalsy();
+    expect(r.text).toContain('the panel returned no id');
+    expect(r.text).toContain('The domain check for the id failed (HTTP 500 internal: check is down).');
+    expect(r.structured).toEqual({ created: true, websiteId: null, confirmedBy: 'response', website: null });
+  });
+
   it('stays a success when the read-back of a created site fails, and names website_get', async () => {
     const { ctx } = await makeContext([
       ...base(),
