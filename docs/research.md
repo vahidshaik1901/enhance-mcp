@@ -1171,10 +1171,10 @@ minting 240-second site tokens. Source: section 5.1 of
   carried all four metadata fields.
 - Paths are relative to the home and `/`-separated (`.ssh/authorized_keys`); the root's path is `""`.
 - `kind` is `file` or `directory`, except for **symlinks: a symlink is a `file` node whose
-  `metadata.kind` is `symlink`** (15 of 8,944 nodes at depth 6, all under `.nvm`). A `file` node has
-  no entries, so nothing behind a symlink is listed.
+  `metadata.kind` is `symlink`** (15 of 8,944 nodes in a seven-level listing, `maxDepth=6`, all under
+  `.nvm`). A `file` node has no entries, so nothing behind a symlink is listed.
 - **An empty folder has no `entries` key at all; a folder at the depth limit has `entries: []`.** In
-  a six-level listing all 210 empty arrays sat on the last level, and all 7 missing keys were real
+  that seven-level listing all 210 empty arrays sat on the last level, and all 7 missing keys were real
   empty folders such as `.nvm/.git/branches`. So a missing key means "known empty" and `[]` on the
   last level means "not opened".
 
@@ -1190,15 +1190,14 @@ minting 240-second site tokens. Source: section 5.1 of
 ### Sizes and timings
 
 - One level: **3 KB in 0.2 s**.
-- Six levels with metadata: **1.4 MB in 0.9 s** (re-probe); the zod schema in `core/files.ts`
-  validates it in about 12 ms.
+- Seven levels (`maxDepth=6`) with metadata: **1.4 MB in 0.9 s**, the 8,944-node listing above;
+  the zod schema in `core/files.ts` validates it in about 12 ms. Eight levels (`maxDepth=7`), the
+  most the code asks for: 2.0 MB.
 - Depth 8 without metadata: **1.2 MB in 1.6 s**, mostly `node_modules` (the first probe's figure;
   "depth" as that probe named it, before the N+1 reading was known).
 - **The controller's live depth check (2026-09-24):** `maxDepth` 0 to 7 on vahi.dev each returned
   exactly `maxDepth+1` levels, with `[]` only on the last level. Sizes 3 KB, 11 KB, 36 KB, 199 KB,
-  394 KB, 859 KB, 1.4 MB and 2.0 MB; 0.2 to 1.1 s each. In that run 1.4 MB is `maxDepth=6` (seven
-  levels) and six levels (`maxDepth=5`) is 859 KB, so the re-probe's "1.4 MB at six levels" most
-  likely counted `maxDepth`; every figure is far below the 8 MB cap either way.
+  394 KB, 859 KB, 1.4 MB and 2.0 MB; 0.2 to 1.1 s each, all far below the 8 MB cap.
 
 ### What the code does with it
 

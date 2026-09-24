@@ -143,14 +143,16 @@ minting 240-second tokens):
   asking for L levels means `maxDepth=L-1`, and "at most 8" means at most 8 levels (`maxDepth=7`).
 - Without `recursive=true`, `maxDepth` is ignored and one level comes back.
 - Paths are relative to the home and `/`-separated (`.ssh/authorized_keys`); the root is `""`.
-- A **symlink** is a `file` node whose `metadata.kind` is `symlink` (15 of 8,944 nodes at depth 6,
-  all under `.nvm`); `kind` is otherwise `file` or `directory`. Every node carried all four metadata
+- A **symlink** is a `file` node whose `metadata.kind` is `symlink` (15 of 8,944 nodes in a seven-level
+  listing, `maxDepth=6`, all under `.nvm`); `kind` is otherwise `file` or `directory`. Every node carried all four metadata
   fields.
 - An **empty folder has no `entries` key at all**; a folder at the depth limit has `entries: []`
-  (all 210 empty arrays in a six-level listing sat on the last level, all 7 missing keys on real
+  (all 210 empty arrays in that seven-level listing sat on the last level, all 7 missing keys on real
   empty folders such as `.nvm/.git/branches`). So a missing key means "known empty" and `[]` on the
   last level means "not opened"; the schema makes `entries` optional.
-- Six levels with metadata: 1.4 MB in 0.9 s; the zod schema below validates it in about 12 ms.
+- Seven levels (`maxDepth=6`) with metadata: 1.4 MB in 0.9 s; the zod schema below validates it in
+  about 12 ms. Eight levels (`maxDepth=7`) with metadata: 2.0 MB (the controller's depth check of
+  2026-09-24, `maxDepth` 0 to 7, each exactly `maxDepth+1` levels).
 - Refusals: no `Authorization` → 401; the session cookie alone → 401 `"Token header not found"`; a
   malformed bearer → 400 `"Base64 error: …"`. Every narrowing parameter is still ignored and
   `entries/<sub-path>` still 404s. The token is still `read_only: false` and lives 240 s.
@@ -233,7 +235,8 @@ One task, no behaviour change beyond what is listed:
 ## 7. Skills and docs
 
 - `enhance-deploy`: look before a deploy (`files_list` on the target folder) and confirm after it
-  (the uploaded files are there, with today's modified time); the fallback is `ls` over SSH.
+  (the key files are there with the local copies' exact sizes and modified times: `rsync -t` keeps
+  the local modified time, so an old date is not a failure); the fallback is `ls` over SSH.
 - `enhance-apps`: use `files_list` in the verification step and when the clash guard refuses.
 - `enhance-connect`: tool overview and the "outcome unknown, do not retry yet" rule for creates.
 - `safety-rules.md`: file names are data; the file tool is read-only by design.

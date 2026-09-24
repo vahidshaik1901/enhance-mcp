@@ -3,8 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bootstrap } from '../../src/bootstrap.js';
 import type { ToolContext } from '../../src/core/context.js';
 import { listSiteFiles } from '../../src/core/files.js';
+import { httpsProbe, type HttpProbe } from '../../src/core/probe.js';
 import type { ToolDef, ToolResult } from '../../src/core/registry.js';
-import { pathPreflight } from '../../src/tools/apps.js';
+import { PROXY_PATH_RE, pathPreflight } from '../../src/tools/apps.js';
 
 const enabled = process.env['ENHANCE_E2E'] === '1';
 const suite = enabled ? describe : describe.skip;
@@ -61,26 +62,87 @@ suite('milestone D1 against the live panel (read-only)', () => {
     expect(JSON.stringify(r.structured)).not.toMatch(JWT_RE);
   });
 
-  it('a clash refusal names what is on disk and registers nothing', async () => {
+  it('a clash refusal names what is on disk, never shows the site token and registers nothing', async () => {
     const w = await ctx.resolver.resolveWebsite(site);
     const docroot = w.domain.documentRoot;
     const { entries } = await listSiteFiles(ctx, w, { levels: docroot.split('/').length + 1 });
-    // A dot folder such as .well-known is not a proxy path the panel accepts, so the create would be
-    // refused by validation before the clash guard ever ran.
-    const folder = entries.find((e) => e.kind === 'dir' && e.path.startsWith(`${docroot}/`) && /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(e.path.slice(docroot.length + 1)));
-    expect(folder, `the test site needs one folder directly in ${docroot} (vahi.dev has demo-login)`).toBeTruthy();
-    const name = folder!.path.slice(docroot.length + 1);
-    // Belt and braces: the create is only called when HTTP already calls the path taken, so this
-    // test can never register an app or restart the container.
-    const pre = await pathPreflight(ctx, w, name);
+    // Folders directly in the document root whose name the panel would accept as a proxy path (no
+    // dot folder such as .well-known, which validation refuses before the clash guard runs), in
+    // name order with demo-login first, so every run tries the same folder.
+    const candidates = entries
+      .filter((e) => e.kind === 'dir' && e.path.startsWith(`${docroot}/`))
+      .map((e) => e.path.slice(docroot.length + 1))
+      .filter((n) => !n.includes('/') && !n.startsWith('.') && !n.includes('..') && PROXY_PATH_RE.test(n))
+      .sort((a, b) => (a === 'demo-login' ? -1 : b === 'demo-login' ? 1 : a < b ? -1 : a > b ? 1 : 0));
+    expect(candidates.length, `the test site needs one folder directly in ${docroot} (vahi.dev has demo-login)`).toBeGreaterThan(0);
+    // Prefer a folder that answers non-404 on BOTH forms (demo-login: 301 on the bare path, 200 with
+    // the slash), so the create's own preflight still sees it taken if one of its fetches fails.
+    const ip = (w.serverIps?.find((x) => x.isPrimary) ?? w.serverIps?.[0])?.ip;
+    expect(ip, `${site} has no server IP recorded, so its paths cannot be probed`).toBeTruthy();
+    const status = (path: string): Promise<number | undefined> =>
+      httpsProbe({ ip: ip!, host: w.domain.domain, path, timeoutMs: 5000, maxBodyBytes: 512 }).then(
+        (res) => res.status,
+        () => undefined,
+      );
+    let name: string | undefined;
+    for (const n of candidates) {
+      const both = await Promise.all([status(`/${n}`), status(`/${n}/`)]);
+      if (both.every((s) => s !== undefined && s !== 404)) {
+        name = n;
+        break;
+      }
+    }
+    name ??= candidates[0]!;
+    // What keeps this test from registering an app, which would restart the container and shadow a
+    // live folder:
+    // 1. HTTP must call the path taken before the create is tried at all;
+    // 2. the create runs with a fail-closed probe: a fetch that throws counts as taken (HTTP 599)
+    //    instead of "could not be checked", which the real preflight lets through to the write;
+    // 3. whatever still slips through is deleted in the finally below, and the test fails naming it.
+    const failClosedProbe: HttpProbe = async (req) => {
+      try {
+        return await httpsProbe(req);
+      } catch {
+        return { status: 599, latencyMs: 0, contentType: null, body: '', certificate: 'error:probe failed', location: null };
+      }
+    };
+    const failClosed: ToolContext = { ...ctx, httpProbe: failClosedProbe };
+    const pre = await pathPreflight(failClosed, w, name);
     expect(pre.taken, `HTTP must call /${name} taken before this test may try to register it (${pre.detail})`).toBe(true);
     const list = tool(tools, 'persistent_apps_list');
-    const ids = async (): Promise<string[]> => ((await call(ctx, list, { website: site })).structured as { items: Array<{ id: string }> }).items.map((i) => i.id);
-    const before = await ids();
-    const r = await call(ctx, tool(tools, 'persistent_app_create'), { website: site, command: 'node never-registered.js', proxy_path: name, port: 39999 });
+    type Row = { id: string; command: string };
+    const rows = async (): Promise<Row[]> => ((await call(ctx, list, { website: site })).structured as { items: Row[] }).items;
+    const before = (await rows()).map((a) => a.id);
+    const command = 'node never-registered.js';
+    let r: ToolResult;
+    try {
+      r = await call(failClosed, tool(tools, 'persistent_app_create'), { website: site, command, proxy_path: name, port: 39999 });
+    } finally {
+      // Bypasses the gate on purpose, and only for an app this call registered: new since `before`
+      // and running this test's command (the milestone A precedent for what a run itself made).
+      const leaked = (await rows()).filter((a) => !before.includes(a.id) && a.command === command);
+      const failures: string[] = [];
+      for (const app of leaked) {
+        try {
+          const del = tool(tools, 'persistent_app_delete');
+          const args = del.input.parse({ website: site, app_id: app.id });
+          const target = await del.target!(args, ctx);
+          if (!target.id.endsWith(`:${app.id}`)) throw new Error(`the delete resolved ${target.id}`);
+          await del.handler(args, ctx, target);
+        } catch (e) {
+          failures.push(`${app.id} (${(e as Error).message})`);
+        }
+      }
+      if (leaked.length > 0) {
+        throw new Error(`persistent_app_create REGISTERED ${leaked.map((a) => a.id).join(', ')} on ${site} at /${name} although the path was taken; ${failures.length > 0 ? `could not delete ${failures.join('; ')}: delete it by hand` : 'it was deleted again'}`);
+      }
+    }
     expect(r.isError).toBe(true);
     expect(r.text).toContain(`${docroot}/${name} is an existing folder`);
-    expect(await ids()).toEqual(before);
+    // The on-disk line minted a site token to read the listing; it must not show anywhere.
+    expect(r.text).not.toMatch(JWT_RE);
+    expect(JSON.stringify(r.structured)).not.toMatch(JWT_RE);
+    expect((await rows()).map((a) => a.id)).toEqual(before);
   });
 });
 
