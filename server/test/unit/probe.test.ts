@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyCertificate, collectCapped, extractAssetUrls, mapLimit } from '../../src/core/probe.js';
+import { ASSET_CONCURRENCY, ASSET_TIMEOUT_MS, checkPageAssets, classifyCertificate, collectCapped, extractAssetUrls, mapLimit, MAX_ASSETS, type HttpProbe, type ProbeResponse } from '../../src/core/probe.js';
 
 describe('classifyCertificate', () => {
   it('is valid when TLS authorised the chain', () => {
@@ -117,7 +117,8 @@ describe('mapLimit', () => {
   it('runs one worker rather than none when the limit is not a usable number', async () => {
     // Math.trunc(NaN) is NaN, and Math.max/Math.min of NaN is NaN: Array.from({length: NaN})
     // builds nothing, so every result would be a hole the caller reads as "nothing answered".
-    for (const limit of [Number.NaN, Number.POSITIVE_INFINITY, undefined as unknown as number]) {
+    // Infinity is not in this list: it is a usable limit (every item at once), see 'mapLimit edges'.
+    for (const limit of [Number.NaN, undefined as unknown as number]) {
       expect(await mapLimit([1, 2, 3], limit, async (n) => n * 2), String(limit)).toEqual([2, 4, 6].map((value) => ({ status: 'fulfilled', value })));
     }
   });
@@ -141,5 +142,69 @@ describe('collectCapped', () => {
     // Exactly the cap counts as reached: there is nothing further the probe would ever report,
     // so httpsProbe settles and destroys the socket rather than draining a streaming body.
     expect(collectCapped([Buffer.from('ab'), Buffer.from('cd')], 4)).toEqual({ body: 'abcd', hitCap: true });
+  });
+});
+
+describe('checkPageAssets', () => {
+  const at = { ip: '203.0.113.9', host: 'vahi.dev', pageUrl: 'https://vahi.dev/node/', path: 'node' };
+  const answer = (status: number, body = ''): ProbeResponse => ({ status, latencyMs: 3, contentType: 'text/html', body, certificate: 'valid' });
+
+  it('classifies each asset: broken, access-controlled, unchecked, and outside the prefix', async () => {
+    const page = '<img src="/node/ok.png"><img src="/logo.svg"><img src="/node/private.png"><script src="/node/slow.js"></script>';
+    const probe: HttpProbe = async (req) => {
+      if (req.path === '/node/') return answer(200, page);
+      if (req.path === '/node/slow.js') throw new Error('no response within 8000 ms');
+      return answer(({ '/node/ok.png': 200, '/logo.svg': 404, '/node/private.png': 403 } as Record<string, number>)[req.path] ?? 404);
+    };
+    const a = await checkPageAssets(probe, at);
+    expect(a).toEqual({
+      attempted: 4,
+      checked: 3,
+      truncated: false,
+      totalFound: 4,
+      failed: [{ url: '/logo.svg', status: 404, outsidePrefix: true }],
+      restricted: [{ url: '/node/private.png', status: 403 }],
+      unchecked: [{ url: '/node/slow.js', reason: 'no response within 8000 ms' }],
+    });
+  });
+
+  it('counts an answer with no HTTP status as unchecked, never as answered', async () => {
+    const probe: HttpProbe = async (req) => (req.path === '/node/' ? answer(200, '<img src="/node/a.png">') : answer(0));
+    const a = await checkPageAssets(probe, at);
+    expect(a).toMatchObject({ attempted: 1, checked: 0, failed: [], unchecked: [{ url: '/node/a.png', reason: 'no HTTP status' }] });
+  });
+
+  it('reports a page it could not re-read instead of checking nothing silently', async () => {
+    const probe: HttpProbe = async () => { throw new Error('reset'); };
+    expect(await checkPageAssets(probe, at)).toMatchObject({ attempted: 0, checked: 0, error: 'reset' });
+  });
+
+  it('exports the limits the tool descriptions quote', () => {
+    expect([MAX_ASSETS, ASSET_CONCURRENCY, ASSET_TIMEOUT_MS]).toEqual([12, 4, 8000]);
+  });
+});
+
+describe('mapLimit edges', () => {
+  it('runs every item at once for Infinity and one at a time for NaN', async () => {
+    for (const [limit, peakWanted] of [[Infinity, 5], [Number.NaN, 1]] as const) {
+      let inFlight = 0;
+      let peak = 0;
+      await mapLimit([1, 2, 3, 4, 5], limit, async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight -= 1;
+      });
+      expect(peak, String(limit)).toBe(peakWanted);
+    }
+  });
+
+  it('reports a function that throws synchronously as that item rejected, and runs the rest', async () => {
+    const results = await mapLimit([1, 2, 3], 2, (n: number) => {
+      if (n === 2) throw new Error('sync boom');
+      return Promise.resolve(n * 10);
+    });
+    expect(results.map((r) => r.status)).toEqual(['fulfilled', 'rejected', 'fulfilled']);
+    expect((results[1] as PromiseRejectedResult).reason).toBeInstanceOf(Error);
   });
 });
